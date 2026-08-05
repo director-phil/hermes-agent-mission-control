@@ -282,16 +282,26 @@ test("toDisplayPath never emits an absolute path outside recognized roots", () =
   assert.equal(toDisplayPath("/etc/passwd"), "passwd");
   assert.equal(toDisplayPath("/var/secret/keys/id_rsa"), "id_rsa");
   assert.equal(toDisplayPath("C:/Users/phil/secret.txt"), "secret.txt");
-  for (const p of ["/etc/shadow", "/root/.ssh/config", "/tmp/x/y/z.log"]) {
-    assert.equal(/^(\/|[A-Za-z]:\/)/.test(toDisplayPath(p)), false);
+  const home = process.env.HOME || "";
+  // Embedded double-slash must not survive prefix stripping as an absolute path.
+  for (const p of [
+    "/etc/shadow", "/root/.ssh/config", "/tmp/x/y/z.log",
+    `${home}/Documents/GitHub/repo//tmp/secret.txt`,
+    `${home}/ChatDev//tmp/secret.txt`,
+  ]) {
+    assert.equal(/^(\/|[A-Za-z]:\/|\/\/)/.test(toDisplayPath(p)), false, `leaked: ${p}`);
   }
 });
 
-test("scrubTextPaths collapses absolute paths embedded in prose", () => {
+test("scrubTextPaths collapses absolute paths but leaves URLs intact", () => {
   const prose = "Failed reading /home/phillip_downs/secret/config.env and /etc/shadow during repair";
   const scrubbed = scrubTextPaths(prose);
   assert.equal(scrubbed.includes("/home/phillip_downs"), false);
   assert.equal(scrubbed.includes("/etc/shadow"), false);
   assert.match(scrubbed, /config\.env/);
   assert.match(scrubbed, /shadow/);
+  // URLs must not be corrupted by the path scrubber.
+  const withUrl = scrubTextPaths("see https://example.com/a/b and error at /home/phil/x/y.log");
+  assert.ok(withUrl.includes("https://example.com/a/b"), "url corrupted");
+  assert.equal(withUrl.includes("/home/phil"), false);
 });

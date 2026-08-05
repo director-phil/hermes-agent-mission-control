@@ -547,7 +547,17 @@ async function* readBoundedLines(filePath, { maxBytes, maxLineBytes }) {
 export function toDisplayPath(value) {
   if (typeof value !== "string") return "";
   const home = process.env.HOME || "";
-  const normalized = value.replace(/\\/g, "/");
+  // Collapse repeated slashes so embedded `//tmp/x` cannot survive prefix stripping.
+  const normalized = value.replace(/\\/g, "/").replace(/\/{2,}/g, "/");
+  const basename = () => {
+    const parts = normalized.split("/").filter(Boolean);
+    return parts.length ? parts[parts.length - 1] : "";
+  };
+  const guard = (out) => {
+    // Final invariant: never return anything that still looks filesystem-absolute.
+    if (typeof out !== "string") return "";
+    return /^(\/|[A-Za-z]:\/|\/\/)/.test(out) ? basename() : out;
+  };
   const prefixes = [];
   if (home) {
     prefixes.push(`${home.replace(/\\/g, "/")}/Documents/GitHub/`);
@@ -558,25 +568,30 @@ export function toDisplayPath(value) {
     const stripped = normalized.slice(prefix.length);
     if (prefix.endsWith("/Documents/GitHub/")) {
       const slash = stripped.indexOf("/");
-      return slash >= 0 ? stripped.slice(slash + 1) : "";
+      return guard(slash >= 0 ? stripped.slice(slash + 1) : "");
     }
-    return stripped;
+    return guard(stripped);
   }
-  // Never emit an absolute filesystem path (leaks host directory structure).
   // Unmatched absolute/UNC/drive paths collapse to their basename.
   if (/^(\/|[A-Za-z]:\/|\/\/)/.test(normalized)) {
-    const parts = normalized.split("/").filter(Boolean);
-    return parts.length ? parts[parts.length - 1] : "";
+    return basename();
   }
   return value;
 }
 
 // Scrub absolute path tokens embedded in free-text prose (scribe bullets),
 // replacing each with its repo-relative / basename display form.
+// URL-safe: only matches POSIX-absolute paths NOT preceded by ':' or '/' (so
+// `https://host/a/b` is left intact) and Windows drive paths with a backslash.
 export function scrubTextPaths(text) {
   if (typeof text !== "string" || !text) return text;
-  return text.replace(/(?:[A-Za-z]:)?(?:\/[^\s"'`)*\]]+)+/g, (match) => {
-    if (!/^(?:\/|[A-Za-z]:\/)/.test(match)) return match;
-    return toDisplayPath(match) || match.split("/").filter(Boolean).pop() || match;
-  });
+  return text
+    // POSIX absolute path not part of a scheme://... URL
+    .replace(/(?<![:/A-Za-z0-9])\/[^\s"'`)*\]]+/g, (match) =>
+      toDisplayPath(match) || match.split("/").filter(Boolean).pop() || match,
+    )
+    // Windows drive path (e.g. C:\Users\... or C:/Users/...)
+    .replace(/\b[A-Za-z]:[\\/][^\s"'`)*\]]+/g, (match) =>
+      toDisplayPath(match) || match.split(/[\\/]/).filter(Boolean).pop() || match,
+    );
 }
