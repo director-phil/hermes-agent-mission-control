@@ -2,7 +2,7 @@
 
 /* ───────────────────────────────────────────────────────────
    Hermy HQ · Command Palette (⌘K / Ctrl-K)
-   Globally mounted. Fuzzy nav + dispatch-to-Hermes fallback.
+   Globally mounted. Fuzzy nav.
    Calm Luxury tokens, no external deps beyond lucide-react.
    ─────────────────────────────────────────────────────────── */
 
@@ -21,7 +21,6 @@ import {
   Sparkles,
   CornerDownLeft,
   Search,
-  Check,
   type LucideIcon,
 } from "lucide-react";
 
@@ -44,16 +43,13 @@ const NAV: NavItem[] = [
   { label: "Hermes", href: "/hermes", icon: Sparkles },
 ];
 
-type Row =
-  | { kind: "nav"; item: NavItem }
-  | { kind: "dispatch"; query: string };
+type Row = { kind: "nav"; item: NavItem };
 
 export function CommandPalette() {
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
-  const [dispatched, setDispatched] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
 
@@ -72,11 +68,12 @@ export function CommandPalette() {
   // ── reset + focus when opening ────────────────────────────
   useEffect(() => {
     if (open) {
-      setQuery("");
-      setActive(0);
-      setDispatched(false);
       // focus after paint so the trap works reliably
-      requestAnimationFrame(() => inputRef.current?.focus());
+      requestAnimationFrame(() => {
+        setQuery("");
+        setActive(0);
+        inputRef.current?.focus();
+      });
     }
   }, [open]);
 
@@ -99,51 +96,19 @@ export function CommandPalette() {
     );
   }, [query]);
 
-  // Build the flat row list. Dispatch shows as the last option whenever
-  // there's a query, or as the sole option when nothing matches nav.
   const rows = useMemo<Row[]>(() => {
-    const out: Row[] = navMatches.map((item) => ({ kind: "nav", item }));
-    if (query.trim()) out.push({ kind: "dispatch", query: query.trim() });
-    return out;
-  }, [navMatches, query]);
-
-  // keep highlight in range as rows shrink/grow
-  useEffect(() => {
-    setActive((a) => (rows.length === 0 ? 0 : Math.min(a, rows.length - 1)));
-  }, [rows.length]);
+    return navMatches.map((item) => ({ kind: "nav", item }));
+  }, [navMatches]);
 
   const close = useCallback(() => setOpen(false), []);
 
-  const runDispatch = useCallback(async (q: string) => {
-    // Route anything that acts on the outside world to the Approval Inbox
-    // instead of running it immediately.
-    const sideEffecting = /\b(post|tweet|send|dm|message|reply|email|buy|purchase|order|pay|transfer|withdraw|deposit|trade|delete|remove|publish|schedule|book|cancel|unsubscribe)\b/i.test(q);
-    try {
-      await fetch("/api/hermes/dispatch", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ kind: "oneshot", title: q, prompt: q, sideEffecting }),
-      });
-    } catch {
-      /* non-blocking — dispatch is best-effort */
-    }
-  }, []);
-
   const run = useCallback(
-    async (row: Row | undefined) => {
+    (row: Row | undefined) => {
       if (!row) return;
-      if (row.kind === "nav") {
-        close();
-        router.push(row.item.href);
-        return;
-      }
-      // dispatch: confirm briefly, then jump to the Hermes page so you can
-      // watch it run in the Dispatches panel.
-      setDispatched(true);
-      await runDispatch(row.query);
-      setTimeout(() => { setOpen(false); router.push("/hermes"); }, 650);
+      close();
+      router.push(row.item.href);
     },
-    [close, router, runDispatch],
+    [close, router],
   );
 
   // ── keyboard nav within the palette ───────────────────────
@@ -179,9 +144,6 @@ export function CommandPalette() {
   if (!open) return null;
 
   const navRows = rows.filter((r) => r.kind === "nav") as Extract<Row, { kind: "nav" }>[];
-  const dispatchRow = rows.find((r) => r.kind === "dispatch") as
-    | Extract<Row, { kind: "dispatch" }>
-    | undefined;
 
   return (
     <div
@@ -209,7 +171,7 @@ export function CommandPalette() {
               setQuery(e.target.value);
               setActive(0);
             }}
-            placeholder="Search, or ask Hermes…"
+            placeholder="Search"
             spellCheck={false}
             autoComplete="off"
             className="num flex-1 bg-transparent border-0 outline-none text-[15px] text-[var(--text)] placeholder-[var(--text-3)]"
@@ -241,42 +203,6 @@ export function CommandPalette() {
               })}
             </div>
           )}
-
-          {dispatchRow && (
-            <div className="px-2 pt-1">
-              <div className="eyebrow px-3 py-1.5">Dispatch to Hermes</div>
-              {(() => {
-                const idx = rows.indexOf(dispatchRow);
-                return (
-                  <PaletteRow
-                    idx={idx}
-                    active={active === idx}
-                    onHover={() => setActive(idx)}
-                    onSelect={() => run(dispatchRow)}
-                    icon={
-                      dispatched ? (
-                        <Check className="w-4 h-4" style={{ color: "var(--up)" }} />
-                      ) : (
-                        <Sparkles className="w-4 h-4" style={{ color: "var(--accent)" }} />
-                      )
-                    }
-                  >
-                    {dispatched ? (
-                      <span style={{ color: "var(--up)" }}>Dispatched ✓</span>
-                    ) : (
-                      <span className="text-[var(--text)] truncate">
-                        Ask Hermes:{" "}
-                        <span className="text-[var(--text-2)]">
-                          &ldquo;{dispatchRow.query}&rdquo;
-                        </span>
-                      </span>
-                    )}
-                  </PaletteRow>
-                );
-              })()}
-            </div>
-          )}
-
           {rows.length === 0 && (
             <div className="px-5 py-8 text-center text-[13px] text-[var(--text-3)]">
               No matches.

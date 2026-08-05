@@ -11,9 +11,6 @@ import {
 import {
   BookOpen,
   Search,
-  Plus,
-  X,
-  Pencil,
   Check,
   ChevronDown,
   Link2,
@@ -273,12 +270,10 @@ function EntryCard({
   entry,
   expanded,
   onToggle,
-  onEdit,
 }: {
   entry: Entry;
   expanded: boolean;
   onToggle: () => void;
-  onEdit: () => void;
 }) {
   return (
     <Panel className="p-0 overflow-hidden">
@@ -372,251 +367,12 @@ function EntryCard({
             </div>
           </div>
 
-          <div className="mt-5">
-            <Button variant="ghost" size="sm" onClick={onEdit}>
-              <Pencil className="w-3.5 h-3.5" />
-              Edit
-            </Button>
-          </div>
+          <p className="mt-5 text-[12px] text-[var(--text-3)]">
+            Memory editing is disabled on this read-only Mission Control surface.
+          </p>
         </div>
       )}
     </Panel>
-  );
-}
-
-// ── Edit / New slide-over ─────────────────────────────────
-interface Draft {
-  id?: string;
-  path?: string;
-  title: string;
-  type: MemType;
-  tags: string;
-  status: MemStatus;
-  confidence: string;
-  body: string;
-}
-
-function emptyDraft(): Draft {
-  return {
-    title: "",
-    type: "note",
-    tags: "",
-    status: "active",
-    confidence: "",
-    body: "",
-  };
-}
-
-function draftFrom(e: Entry): Draft {
-  return {
-    id: e.id,
-    path: e.path,
-    title: e.title,
-    type: e.type,
-    tags: e.tags.join(", "),
-    status: e.status,
-    confidence: e.confidence != null ? String(e.confidence) : "",
-    body: e.body,
-  };
-}
-
-function EntryEditor({
-  draft,
-  isNew,
-  onClose,
-  onSaved,
-}: {
-  draft: Draft;
-  isNew: boolean;
-  onClose: () => void;
-  onSaved: () => void;
-}) {
-  const [d, setD] = useState<Draft>(draft);
-  const [busy, setBusy] = useState(false);
-  const [saved, setSaved] = useState(false);
-
-  const set = <K extends keyof Draft>(k: K, v: Draft[K]) =>
-    setD((prev) => ({ ...prev, [k]: v }));
-
-  const save = async () => {
-    if (!d.title.trim() || busy) return;
-    setBusy(true);
-    const tags = d.tags
-      .split(",")
-      .map((t) => t.trim().toLowerCase())
-      .filter(Boolean);
-    const confNum = d.confidence.trim() ? Number(d.confidence) : null;
-    const body: Record<string, unknown> = {
-      id: d.id,
-      path: d.path,
-      type: d.type,
-      title: d.title.trim(),
-      body: d.body,
-      tags,
-      status: d.status,
-      confidence: Number.isFinite(confNum as number) ? confNum : null,
-    };
-    try {
-      const r = await fetch("/api/hermes/memory", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      if (r.ok) {
-        setSaved(true);
-        setTimeout(() => {
-          onSaved();
-        }, 2000);
-      } else {
-        setBusy(false);
-      }
-    } catch {
-      setBusy(false);
-    }
-  };
-
-  const inputCls =
-    "w-full bg-transparent text-[14px] text-[var(--text)] placeholder:text-[var(--text-3)] px-3.5 py-2.5 rounded-[10px] border border-[var(--line)] outline-none focus:border-[color-mix(in_srgb,var(--accent)_45%,transparent)] transition-colors";
-  const labelCls =
-    "block eyebrow !mb-2";
-
-  return (
-    <div className="fixed inset-0 z-50 flex justify-end">
-      <button
-        type="button"
-        aria-label="Close editor"
-        onClick={onClose}
-        className="absolute inset-0 bg-black/50"
-        style={{ backdropFilter: "blur(2px)" }}
-      />
-      <div className="elevated relative w-full max-w-md h-full overflow-y-auto p-6 animate-[hq-rise_0.3s_ease]">
-        <div className="flex items-start justify-between gap-4 mb-6">
-          <div>
-            <Eyebrow>{isNew ? "New memory" : "Edit memory"}</Eyebrow>
-            <h2 className="mt-1.5 text-[22px] font-semibold tracking-[-0.02em] text-[var(--text)]">
-              {isNew ? "Add entry" : "Correct entry"}
-            </h2>
-          </div>
-          <button
-            type="button"
-            onClick={onClose}
-            aria-label="Close"
-            className="btn-ghost inline-flex items-center justify-center w-9 h-9 shrink-0"
-          >
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-
-        {saved ? (
-          <div className="flex flex-col items-center justify-center text-center py-16">
-            <div
-              className="mb-4 w-12 h-12 rounded-full flex items-center justify-center"
-              style={{
-                background: "color-mix(in srgb, var(--up) 14%, transparent)",
-                border: "1px solid color-mix(in srgb, var(--up) 30%, transparent)",
-              }}
-            >
-              <Check className="w-6 h-6" style={{ color: "var(--up)" }} />
-            </div>
-            <p className="text-[15px] font-medium text-[var(--text)]">
-              Saved — Hermes will write it to memory
-            </p>
-            <p className="mt-1.5 text-[12.5px] text-[var(--text-3)] max-w-xs">
-              The bridge is committing this to the wiki. It will reappear here
-              once mirrored.
-            </p>
-          </div>
-        ) : (
-          <div className="space-y-4">
-            <div>
-              <label className={labelCls}>Title</label>
-              <input
-                value={d.title}
-                onChange={(e) => set("title", e.target.value)}
-                placeholder="What should Hermes remember?"
-                className={inputCls}
-                autoFocus
-              />
-            </div>
-
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className={labelCls}>Type</label>
-                <select
-                  value={d.type}
-                  onChange={(e) => set("type", e.target.value as MemType)}
-                  className={inputCls}
-                >
-                  {TYPES.map((t) => (
-                    <option key={t} value={t}>
-                      {t}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div>
-                <label className={labelCls}>Status</label>
-                <select
-                  value={d.status}
-                  onChange={(e) => set("status", e.target.value as MemStatus)}
-                  className={inputCls}
-                >
-                  <option value="active">active</option>
-                  <option value="superseded">superseded</option>
-                  <option value="archived">archived</option>
-                </select>
-              </div>
-            </div>
-
-            <div>
-              <label className={labelCls}>Tags</label>
-              <input
-                value={d.tags}
-                onChange={(e) => set("tags", e.target.value)}
-                placeholder="comma, separated, tags"
-                className={inputCls}
-              />
-            </div>
-
-            <div>
-              <label className={labelCls}>Confidence (optional)</label>
-              <input
-                value={d.confidence}
-                onChange={(e) => set("confidence", e.target.value)}
-                placeholder="0–1 (e.g. 0.9)"
-                inputMode="decimal"
-                className={`${inputCls} num`}
-              />
-            </div>
-
-            <div>
-              <label className={labelCls}>Body · markdown</label>
-              <textarea
-                value={d.body}
-                onChange={(e) => set("body", e.target.value)}
-                rows={10}
-                placeholder={"# Heading\n- bullet\n- [ ] task\n\nInline `code` supported."}
-                className={`${inputCls} resize-y leading-relaxed`}
-              />
-            </div>
-
-            <div className="flex items-center gap-2 pt-1">
-              <Button
-                variant="primary"
-                onClick={save}
-                disabled={busy || !d.title.trim()}
-              >
-                <Check className="w-3.5 h-3.5" />
-                Save to memory
-              </Button>
-              <Button variant="ghost" onClick={onClose}>
-                Cancel
-              </Button>
-            </div>
-          </div>
-        )}
-      </div>
-    </div>
   );
 }
 
@@ -634,9 +390,6 @@ export default function MemoryWikiPage() {
   const [loaded, setLoaded] = useState(false);
 
   const [expandedId, setExpandedId] = useState<string | null>(null);
-  const [editor, setEditor] = useState<{ draft: Draft; isNew: boolean } | null>(
-    null
-  );
 
   // Debounce search input → q
   useEffect(() => {
@@ -675,11 +428,6 @@ export default function MemoryWikiPage() {
     }));
   }, [typeCounts]);
 
-  const openNew = () =>
-    setEditor({ draft: emptyDraft(), isNew: true });
-  const openEdit = (e: Entry) =>
-    setEditor({ draft: draftFrom(e), isNew: false });
-
   return (
     <>
       <div className="relative z-10 w-full mx-auto pb-16">
@@ -691,18 +439,15 @@ export default function MemoryWikiPage() {
               Memory Wiki
             </h1>
             <p className="mt-3.5 text-[14px] text-[var(--text-2)] leading-relaxed max-w-lg">
-              Hermes&apos; long-term brain — everything it remembers, that you
-              can browse, search, and correct.
+              Hermes&apos; long-term memory metadata, available to browse and
+              search from this read-only Mission Control surface.
             </p>
             <p className="num text-[11.5px] text-[var(--text-3)] mt-3">
               synced {timeAgo(lastSync)}
             </p>
           </div>
           <div className="shrink-0">
-            <Button variant="primary" onClick={openNew}>
-              <Plus className="w-3.5 h-3.5" />
-              New entry
-            </Button>
+            <Pill tone="neutral">read-only</Pill>
           </div>
         </div>
 
@@ -816,24 +561,11 @@ export default function MemoryWikiPage() {
                 onToggle={() =>
                   setExpandedId((cur) => (cur === e.id ? null : e.id))
                 }
-                onEdit={() => openEdit(e)}
               />
             ))
           )}
         </div>
       </div>
-
-      {editor && (
-        <EntryEditor
-          draft={editor.draft}
-          isNew={editor.isNew}
-          onClose={() => setEditor(null)}
-          onSaved={() => {
-            setEditor(null);
-            load();
-          }}
-        />
-      )}
     </>
   );
 }

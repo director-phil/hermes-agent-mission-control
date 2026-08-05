@@ -1,18 +1,19 @@
 import { NextResponse } from "next/server";
-import { requireInternalApiSecret } from "@/lib/internal-api-auth";
-import { prisma } from "@/lib/prisma";
 
 export async function GET() {
-  const row = await prisma.dataStore.findUnique({ where: { key: "hermes-briefing" } });
-  return NextResponse.json(row?.data ?? { generatedAt: null, summary: null, sections: [] });
+  return NextResponse.json({
+    generatedAt: null,
+    greeting: null,
+    summary: null,
+    sections: [],
+    readonly: true,
+    source: "unavailable",
+  });
 }
 
-export async function POST(req: Request) {
-  const unauthorized = requireInternalApiSecret(req);
-  if (unauthorized) return unauthorized;
-
+export async function POST() {
   return NextResponse.json(
-    { error: "Daily briefing generation is not supported in this Mission Control release." },
+    { error: "Daily briefing generation is disabled; Mission Control is read-only." },
     { status: 410 },
   );
 }
