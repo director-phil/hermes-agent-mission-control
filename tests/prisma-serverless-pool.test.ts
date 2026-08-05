@@ -167,7 +167,7 @@ test("detects only Supabase shared-pooler URLs that need TLS compatibility mode"
     usesSupabaseSharedPoolerTlsCompatibility(
       `postgresql://${secretUsername}:${secretPassword}@aws-0-us-west-1.pooler.supabase.com:5432/postgres?pgbouncer=true`,
     ),
-    false,
+    true,
   );
   assert.equal(
     usesSupabaseSharedPoolerTlsCompatibility(
@@ -219,6 +219,34 @@ test("detects only Supabase shared-pooler URLs that need TLS compatibility mode"
       `postgresql://${secretUsername}:***@aws-0-us-west-1.pooler.supabase.com:6543/postgres?pgbouncer=true&port=5432`,
     ).ssl,
     undefined,
+  );
+  // Session-mode pooler (:5432 + sslmode=require, no pgbouncer flag) — the
+  // real production shape. Must be treated as shared-pooler compat.
+  assert.equal(
+    usesSupabaseSharedPoolerTlsCompatibility(
+      `postgresql://${secretUsername}:${secretPassword}@aws-1-ap-southeast-1.pooler.supabase.com:5432/postgres?schema=hermy_hq&sslmode=require`,
+    ),
+    true,
+  );
+  assert.deepEqual(
+    createPrismaPgPoolConfig(
+      `postgresql://${secretUsername}:${secretPassword}@aws-1-ap-southeast-1.pooler.supabase.com:5432/postgres?schema=hermy_hq&sslmode=require`,
+    ).ssl,
+    { rejectUnauthorized: false },
+  );
+  // A bare pooler URL with no compatibility signal must NOT be downgraded.
+  assert.equal(
+    usesSupabaseSharedPoolerTlsCompatibility(
+      `postgresql://${secretUsername}:${secretPassword}@aws-1-ap-southeast-1.pooler.supabase.com:5432/postgres`,
+    ),
+    false,
+  );
+  // Session-mode host with operator verify-full still disables compat.
+  assert.equal(
+    usesSupabaseSharedPoolerTlsCompatibility(
+      `postgresql://${secretUsername}:${secretPassword}@aws-1-ap-southeast-1.pooler.supabase.com:5432/postgres?sslmode=verify-full`,
+    ),
+    false,
   );
 });
 
@@ -276,7 +304,6 @@ test("pg pool config sets TLS compatibility only for Supabase shared-pooler URLs
     `postgresql://${secretUsername}:${secretPassword}@aws-0-us-west-1.pooler.supabase.com:6543/postgres?pgbouncer=true&connection_limit=1`;
   const rejectedUrls = [
     `postgresql://${secretUsername}:${secretPassword}@aws-0-us-west-1.pooler.supabase.com.evil.test:6543/postgres?pgbouncer=true`,
-    `postgresql://${secretUsername}:${secretPassword}@aws-0-us-west-1.pooler.supabase.com:5432/postgres?pgbouncer=true`,
     `postgresql://${secretUsername}:${secretPassword}@aws-0-us-west-1.pooler.supabase.com:6543/postgres`,
     `postgresql://${secretUsername}:${secretPassword}@aws-0-us-west-1.pooler.supabase.com:6543/postgres?pgbouncer=false`,
     `postgresql://${secretUsername}:${secretPassword}@db.example.com:6543/postgres?pgbouncer=true`,

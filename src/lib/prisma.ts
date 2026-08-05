@@ -60,11 +60,17 @@ export function usesSupabaseSharedPoolerTlsCompatibility(databaseUrl: string): b
     return false;
   }
 
-  if (url.port !== "6543") {
+  // Supabase pooler runs in two modes:
+  //   - transaction mode on :6543 (used with pgbouncer=true)
+  //   - session mode on :5432 (used with sslmode=require)
+  // Both present the same shared-pooler cert chain that `pg` rejects under
+  // default verify-full. Only these two authority ports are in scope.
+  if (url.port !== "6543" && url.port !== "5432") {
     return false;
   }
 
   let hasPgbouncer = false;
+  let hasCompatibleSslmode = false;
   for (const [key, value] of url.searchParams) {
     const normalizedKey = key.toLowerCase();
     const normalizedValue = value.toLowerCase();
@@ -75,7 +81,7 @@ export function usesSupabaseSharedPoolerTlsCompatibility(databaseUrl: string): b
 
     // pg-connection-string lets a `port` query param override the authority
     // port AFTER this scope check, which could move the connection off the
-    // shared pooler (:6543) while still disabling cert verification. Reject it.
+    // shared pooler while still disabling cert verification. Reject it.
     if (normalizedKey === "port") {
       return false;
     }
@@ -91,6 +97,7 @@ export function usesSupabaseSharedPoolerTlsCompatibility(databaseUrl: string): b
       ) {
         return false;
       }
+      hasCompatibleSslmode = true;
     }
 
     if (normalizedKey === "pgbouncer" && normalizedValue === "true") {
@@ -98,7 +105,11 @@ export function usesSupabaseSharedPoolerTlsCompatibility(databaseUrl: string): b
     }
   }
 
-  return hasPgbouncer;
+  // Require a positive shared-pooler signal so a bare pooler URL with no
+  // compatibility hint is not silently downgraded:
+  //   - transaction mode: pgbouncer=true (typically on :6543)
+  //   - session mode: an explicit compatible sslmode=require (typically :5432)
+  return hasPgbouncer || hasCompatibleSslmode;
 }
 
 function removeSupabaseSharedPoolerTlsCompatibilityQueryParams(databaseUrl: string): string {
