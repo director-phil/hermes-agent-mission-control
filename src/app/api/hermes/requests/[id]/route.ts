@@ -1,6 +1,9 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 
+const MAX_TITLE_CHARS = 200;
+const MAX_PROMPT_CHARS = 12_000;
+
 export async function PATCH(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const b = await req.json().catch(() => ({}));
@@ -13,7 +16,15 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
   const data: Record<string, unknown> = { decidedAt: new Date() };
   if (action === "approve") data.status = "approved";
   else if (action === "reject") data.status = "rejected";
-  else if (action === "edit") { data.status = "approved"; if (b.prompt) data.prompt = b.prompt.toString(); if (b.title) data.title = b.title.toString().slice(0, 200); }
+  else if (action === "edit") {
+    const prompt = b.prompt == null ? null : b.prompt.toString();
+    const title = b.title == null ? null : b.title.toString();
+    if (prompt && prompt.length > MAX_PROMPT_CHARS) return NextResponse.json({ error: "prompt too large" }, { status: 413 });
+    if (title && title.length > MAX_TITLE_CHARS) return NextResponse.json({ error: "title too large" }, { status: 413 });
+    data.status = "approved";
+    if (prompt) data.prompt = prompt;
+    if (title) data.title = title;
+  }
   else return NextResponse.json({ error: "action must be approve|reject|edit" }, { status: 400 });
 
   const row = await prisma.agentRequest.update({ where: { id }, data });
