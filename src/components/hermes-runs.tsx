@@ -1,7 +1,17 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
-import { Activity, AlertTriangle, CheckCircle2, ChevronRight, Gauge } from "lucide-react";
+import { useCallback, useEffect, useRef, useState, type ComponentType } from "react";
+import {
+  Activity,
+  AlertTriangle,
+  CheckCircle2,
+  ChevronRight,
+  FlaskConical,
+  Gauge,
+  Layers3,
+  LineChart,
+  ListChecks,
+} from "lucide-react";
 import { Panel, SectionHeader, Pill, EmptyState, Eyebrow } from "@/components/ui/kit";
 
 // ── Types ─────────────────────────────────────────────────
@@ -30,6 +40,7 @@ interface Req {
 }
 
 type ObservabilityWindow = "24h" | "7d";
+type ValueState = "known" | "partial" | "unknown";
 type CostBasis =
   | "anthropic_claude_opus_4_6_estimate_cache_write_5m_assumed"
   | "local_zero"
@@ -96,6 +107,7 @@ interface SessionTrace {
   id: string;
   sessionId: string | null;
   traceId: string | null;
+  parentObservationIds: string[];
   startTime: string | null;
   endTime: string | null;
   durationMs: number | null;
@@ -111,12 +123,26 @@ interface SessionTrace {
   estimatedCost: number | null;
   effectiveCost: number;
   costBasis: CostBasis;
+  tokenState: ValueState;
+  costState: ValueState;
   estimatedCostRange?: CostRange;
   cost: number;
   toolCallCount: number;
   errorCount: number;
   status: "ok" | "error";
   latestTimestamp: string | null;
+}
+
+interface ObservabilityCompleteness {
+  sessionRows: number;
+  missingSessionIdRows: number;
+  missingTraceIdRows: number;
+  unknownTokenRows: number;
+  unknownCostRows: number;
+  partialCostRows: number;
+  parentEdges: number;
+  logicalRootCount: number;
+  includedObservations: number;
 }
 
 interface ToolUsage {
@@ -175,6 +201,7 @@ interface WasteFlag {
 interface Observability {
   source: SourceHealth;
   totals: ObservabilityTotals | null;
+  completeness: ObservabilityCompleteness | null;
   byModel: ModelUsage[];
   byProvider: ProviderUsage[];
   workflow: WorkflowSummary | null;
@@ -188,6 +215,104 @@ interface Observability {
   topLargeTraces: SessionTrace[];
   wasteFlags: WasteFlag[];
   recommendations: string[];
+}
+
+interface ResourceHealth {
+  status: "ok" | "unavailable" | "error";
+  message: string;
+  rows: number;
+  pages: number;
+  truncated: boolean;
+  checkedAt: string | null;
+}
+
+interface ScoreAggregate {
+  key: string;
+  name: string;
+  source: "API" | "ANNOTATION" | "EVAL" | "UNKNOWN";
+  dataType: "NUMERIC" | "BOOLEAN" | "CATEGORICAL" | "TEXT" | "UNKNOWN";
+  count: number;
+  targetCount: number;
+  latestTimestamp: string | null;
+  numeric: { avg: number; min: number; max: number } | null;
+  boolean: { trueCount: number; falseCount: number; trueRate: number | null } | null;
+  categorical: Array<{ value: string; count: number }>;
+  textCount: number;
+  langfusePath: string | null;
+}
+
+interface PromptRegistryEntry {
+  key: string;
+  name: string;
+  family: string | null;
+  type: string | null;
+  version: number | string | null;
+  hash: string | null;
+  labels: string[];
+  createdAt: string | null;
+  updatedAt: string | null;
+  usageCount: number | null;
+  linkedScoreNames: string[];
+  langfusePath: string | null;
+}
+
+interface EvaluatorStatus {
+  key: string;
+  name: string;
+  type: string | null;
+  status: "available" | "unavailable";
+  sampling: string | null;
+  scoreName: string | null;
+  latestTimestamp: string | null;
+}
+
+interface DatasetStatus {
+  key: string;
+  name: string;
+  itemCount: number | null;
+  latestTimestamp: string | null;
+  langfusePath: string | null;
+}
+
+interface ExperimentStatus {
+  key: string;
+  name: string;
+  datasetName: string | null;
+  status: string | null;
+  latestTimestamp: string | null;
+  langfusePath: string | null;
+}
+
+interface EvaluationControl {
+  source: {
+    status: "ok" | "unavailable" | "error";
+    window: ObservabilityWindow;
+    message: string;
+    checkedAt: string;
+  };
+  scores: {
+    health: ResourceHealth;
+    data: {
+      aggregates: ScoreAggregate[];
+      totalScores: number;
+      uniqueTargets: number;
+      traceTargets: number;
+      sessionTargets: number;
+      observationTargets: number;
+      datasetRunTargets: number;
+    };
+  };
+  prompts: {
+    health: ResourceHealth;
+    data: {
+      prompts: PromptRegistryEntry[];
+      families: number;
+      versions: number;
+    };
+  };
+  evaluators: { health: ResourceHealth; data: EvaluatorStatus[] };
+  datasets: { health: ResourceHealth; data: DatasetStatus[] };
+  experiments: { health: ResourceHealth; data: ExperimentStatus[] };
 }
 
 // ── Helpers ───────────────────────────────────────────────
@@ -222,11 +347,24 @@ function fmtTokens(n: number): string {
   if (n >= 1_000) return `${(n / 1_000).toFixed(n >= 10_000 ? 0 : 1)}K`;
   return n.toLocaleString("en-US");
 }
+
+function fmtKnownTokens(n: number, state: ValueState | undefined): string {
+  if (state === "unknown") return "Unknown";
+  const suffix = state === "partial" ? " +" : "";
+  return `${fmtTokens(n)}${suffix}`;
+}
+
 function fmtUsd(n: number): string {
   return `$${n.toLocaleString("en-US", {
     minimumFractionDigits: n < 100 ? 2 : 0,
     maximumFractionDigits: n < 100 ? 2 : 0,
   })}`;
+}
+
+function fmtKnownUsd(n: number, state: ValueState | undefined): string {
+  if (state === "unknown") return "Unknown";
+  const suffix = state === "partial" ? " +" : "";
+  return `${fmtUsd(n)}${suffix}`;
 }
 
 function fmtDurationMs(ms: number | null): string {
@@ -273,6 +411,24 @@ function shortId(id: string | null): string {
   if (!id) return "—";
   if (id.length <= 13) return id;
   return `${id.slice(0, 6)}…${id.slice(-4)}`;
+}
+
+function knownOrUnknown(value: string | null | undefined): string {
+  return value || "Unknown";
+}
+
+function resourceTone(status: ResourceHealth["status"] | undefined): Tone {
+  if (status === "ok") return "up";
+  if (status === "error") return "down";
+  return "warn";
+}
+
+function scoreValue(score: ScoreAggregate): string {
+  if (score.numeric) return `avg ${score.numeric.avg}`;
+  if (score.boolean) return `${Math.round((score.boolean.trueRate ?? 0) * 100)}% true`;
+  if (score.categorical[0]) return `${score.categorical[0].value} ×${score.categorical[0].count}`;
+  if (score.textCount) return `${score.textCount} text values hidden`;
+  return "No aggregate";
 }
 
 async function getJSON<T>(url: string): Promise<T | null> {
@@ -412,6 +568,7 @@ function MetricBlock({ label, value, sub }: { label: string; value: string; sub?
 
 function ObservabilityOverview({ data }: { data: Observability | null }) {
   const totals = data?.totals ?? null;
+  const completeness = data?.completeness ?? null;
   const byModel = data?.byModel ?? [];
   const max = byModel.reduce((mx, model) => Math.max(mx, model.totalTokens, model.effectiveCost), 0) || 1;
   const sourceWarning = data?.source.warning;
@@ -464,6 +621,30 @@ function ObservabilityOverview({ data }: { data: Observability | null }) {
           sub={totals?.latestTimestamp ? `latest ${timeAgo(totals.latestTimestamp)}` : undefined}
         />
       </div>
+      {completeness && (
+        <div className="mt-5 grid grid-cols-2 gap-3 border-t border-[var(--line)] pt-4 lg:grid-cols-4">
+          <MetricBlock
+            label="Missing session IDs"
+            value={`${completeness.missingSessionIdRows}/${completeness.sessionRows}`}
+            sub="opaque session grouping"
+          />
+          <MetricBlock
+            label="Unknown tokens"
+            value={`${completeness.unknownTokenRows}`}
+            sub="rows without token evidence"
+          />
+          <MetricBlock
+            label="Unknown cost"
+            value={`${completeness.unknownCostRows}`}
+            sub={completeness.partialCostRows ? `${completeness.partialCostRows} partial` : "cost evidence gaps"}
+          />
+          <MetricBlock
+            label="Logical roots"
+            value={`${completeness.logicalRootCount}`}
+            sub={`${completeness.parentEdges} parent edges`}
+          />
+        </div>
+      )}
       {totals?.estimatedCostRange && (
         <p className="mt-3 text-[11.5px] text-[var(--text-3)]">
           Estimated range {fmtUsd(totals.estimatedCostRange.low)}–{fmtUsd(totals.estimatedCostRange.high)}. {totals.estimatedCostRange.basis}
@@ -507,6 +688,40 @@ function ObservabilityOverview({ data }: { data: Observability | null }) {
           })}
         </div>
       )}
+    </Panel>
+  );
+}
+
+function ScoreCoveragePanel({
+  observability,
+  control,
+}: {
+  observability: Observability | null;
+  control: EvaluationControl | null;
+}) {
+  const scores = control?.scores.data;
+  const traces = observability?.totals?.uniqueTraces ?? 0;
+  const coverage = traces > 0 && scores ? Math.round((scores.traceTargets / traces) * 100) : null;
+  return (
+    <Panel className="p-5">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <Eyebrow>Score coverage</Eyebrow>
+          <h3 className="mt-1 text-[16px] font-semibold text-[var(--text)]">Evaluated evidence</h3>
+        </div>
+        <Pill tone={resourceTone(control?.scores.health.status)} className="!py-0.5 !text-[10px]">
+          {control?.scores.health.status ?? "loading"}
+        </Pill>
+      </div>
+      <div className="mt-5 grid grid-cols-2 gap-4">
+        <MetricBlock label="Scores" value={scores ? String(scores.totalScores) : "—"} />
+        <MetricBlock label="Targets" value={scores ? String(scores.uniqueTargets) : "—"} />
+        <MetricBlock label="Trace coverage" value={coverage == null ? "Unknown" : `${coverage}%`} />
+        <MetricBlock label="Session scores" value={scores ? String(scores.sessionTargets) : "—"} />
+      </div>
+      <p className="mt-4 text-[12px] leading-snug text-[var(--text-3)]">
+        Score comments and judge reasoning are intentionally hidden; only score metadata and aggregates are returned.
+      </p>
     </Panel>
   );
 }
@@ -708,6 +923,222 @@ function TraceExtremes({ expensive, large }: { expensive: SessionTrace[]; large:
   );
 }
 
+function PromptRegistry({ control, loaded }: { control: EvaluationControl | null; loaded: boolean }) {
+  const prompts = control?.prompts.data.prompts ?? [];
+  const health = control?.prompts.health;
+
+  if (!loaded) {
+    return (
+      <Panel className="p-2">
+        <div className="sk h-56 m-1 rounded-[10px]" />
+      </Panel>
+    );
+  }
+
+  if (health?.status !== "ok") {
+    return (
+      <Panel className="p-2">
+        <EmptyState
+          icon={<Layers3 className="w-6 h-6" />}
+          title="Prompt registry unavailable"
+          hint={health?.message ?? "Langfuse prompt metadata could not be read for this installation."}
+        />
+      </Panel>
+    );
+  }
+
+  if (prompts.length === 0) {
+    return (
+      <Panel className="p-2">
+        <EmptyState
+          icon={<Layers3 className="w-6 h-6" />}
+          title="No prompt registry entries"
+          hint="Mission Control has not ingested prompt family/version metadata yet, so prompt-level latency, cost, and score comparisons are not available."
+        />
+      </Panel>
+    );
+  }
+
+  return (
+    <Panel className="p-2 overflow-hidden">
+      <div className="hidden md:grid grid-cols-[1.3fr_0.7fr_0.8fr_1fr_0.8fr] gap-3 px-3.5 py-2 text-[10.5px] uppercase tracking-[0.14em] text-[var(--text-4)]">
+        <span>Prompt family/name</span>
+        <span>Version</span>
+        <span>Type</span>
+        <span>Labels</span>
+        <span className="text-right">Updated</span>
+      </div>
+      <div className="divide-y divide-[var(--line)]">
+        {prompts.map((prompt) => (
+          <div key={prompt.key} className="grid gap-3 px-3.5 py-3 md:grid-cols-[1.3fr_0.7fr_0.8fr_1fr_0.8fr] md:items-center">
+            <div className="min-w-0">
+              <p className="truncate text-[12.5px] font-medium text-[var(--text)]">{prompt.name}</p>
+              <p className="mt-0.5 truncate text-[10.5px] text-[var(--text-3)]">
+                {knownOrUnknown(prompt.family)}{prompt.hash ? ` · hash ${shortId(prompt.hash)}` : ""}
+              </p>
+            </div>
+            <p className="num text-[12px] text-[var(--text-2)]">{prompt.version ?? "Unknown"}</p>
+            <p className="text-[12px] text-[var(--text-2)]">{knownOrUnknown(prompt.type)}</p>
+            <div className="flex flex-wrap gap-1.5">
+              {prompt.labels.length ? prompt.labels.slice(0, 4).map((label) => (
+                <span key={label} className="rounded-full border border-[var(--line)] px-2 py-0.5 text-[10.5px] text-[var(--text-3)]">
+                  {label}
+                </span>
+              )) : <span className="text-[12px] text-[var(--text-3)]">Unknown</span>}
+            </div>
+            <div className="md:text-right">
+              <p className="num text-[12px] text-[var(--text-2)]">{timeAgo(prompt.updatedAt)}</p>
+              {prompt.linkedScoreNames.length > 0 && (
+                <p className="mt-0.5 truncate text-[10.5px] text-[var(--text-3)]">
+                  scores {prompt.linkedScoreNames.join(", ")}
+                </p>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+    </Panel>
+  );
+}
+
+function ScoresAndEvaluators({ control, loaded }: { control: EvaluationControl | null; loaded: boolean }) {
+  const scores = control?.scores.data.aggregates ?? [];
+  const evaluators = control?.evaluators.data ?? [];
+  const evaluatorHealth = control?.evaluators.health;
+
+  if (!loaded) {
+    return (
+      <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_360px]">
+        <Panel className="p-2"><div className="sk h-64 m-1 rounded-[10px]" /></Panel>
+        <Panel className="p-2"><div className="sk h-64 m-1 rounded-[10px]" /></Panel>
+      </div>
+    );
+  }
+
+  return (
+    <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
+      <Panel className="p-2 overflow-hidden">
+        {scores.length === 0 ? (
+          <EmptyState
+            icon={<LineChart className="w-6 h-6" />}
+            title="No score aggregates"
+            hint={control?.scores.health.message ?? "Scores API v3 returned no safe score metadata for this window."}
+          />
+        ) : (
+          <div className="divide-y divide-[var(--line)]">
+            {scores.map((score) => (
+              <div key={score.key} className="grid gap-3 px-3.5 py-3 md:grid-cols-[1fr_0.75fr_0.6fr_0.8fr] md:items-center">
+                <div className="min-w-0">
+                  <p className="truncate text-[12.5px] font-medium text-[var(--text)]">{score.name}</p>
+                  <p className="mt-0.5 text-[10.5px] text-[var(--text-3)]">
+                    {score.source} · {score.dataType} · latest {timeAgo(score.latestTimestamp)}
+                  </p>
+                </div>
+                <p className="text-[12px] text-[var(--text-2)]">{scoreValue(score)}</p>
+                <p className="num text-[12px] text-[var(--text-2)] md:text-right">{score.count} scores</p>
+                <p className="num text-[12px] text-[var(--text-2)] md:text-right">{score.targetCount} targets</p>
+              </div>
+            ))}
+          </div>
+        )}
+      </Panel>
+
+      <Panel className="p-5">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <Eyebrow>Evaluators</Eyebrow>
+            <h3 className="mt-1 text-[16px] font-semibold text-[var(--text)]">Rules &amp; judges</h3>
+          </div>
+          <Pill tone={resourceTone(evaluatorHealth?.status)} className="!py-0.5 !text-[10px]">
+            {evaluatorHealth?.status ?? "loading"}
+          </Pill>
+        </div>
+        {evaluatorHealth?.status !== "ok" ? (
+          <p className="mt-4 text-[12.5px] leading-snug text-[var(--text-3)]">
+            {evaluatorHealth?.message ?? "Evaluator API status has not loaded."} Deterministic metadata scores can be shown from Scores API; content-requiring judges need a separate approved evaluation profile.
+          </p>
+        ) : evaluators.length === 0 ? (
+          <p className="mt-4 text-[12.5px] leading-snug text-[var(--text-3)]">
+            No evaluator rules were returned. Mission Control will show evaluator sampling/status once Langfuse exposes it for this installation.
+          </p>
+        ) : (
+          <div className="mt-4 flex flex-col gap-2">
+            {evaluators.slice(0, 8).map((evaluator) => (
+              <div key={evaluator.key} className="rounded-[8px] border border-[var(--line)] bg-[var(--surface-2)] p-3">
+                <p className="truncate text-[12.5px] font-medium text-[var(--text)]">{evaluator.name}</p>
+                <p className="mt-1 text-[11px] text-[var(--text-3)]">
+                  {knownOrUnknown(evaluator.type)} · score {knownOrUnknown(evaluator.scoreName)} · sample {knownOrUnknown(evaluator.sampling)}
+                </p>
+              </div>
+            ))}
+          </div>
+        )}
+      </Panel>
+    </div>
+  );
+}
+
+function DatasetExperimentPanel({ control }: { control: EvaluationControl | null }) {
+  const datasets = control?.datasets.data ?? [];
+  const experiments = control?.experiments.data ?? [];
+  return (
+    <div className="grid gap-4 lg:grid-cols-2">
+      <Panel className="p-5">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <Eyebrow>Datasets</Eyebrow>
+            <h3 className="mt-1 text-[16px] font-semibold text-[var(--text)]">Synthetic fixtures</h3>
+          </div>
+          <Pill tone={resourceTone(control?.datasets.health.status)} className="!py-0.5 !text-[10px]">
+            {control?.datasets.health.status ?? "loading"}
+          </Pill>
+        </div>
+        {datasets.length === 0 ? (
+          <p className="mt-4 text-[12.5px] text-[var(--text-3)]">
+            {control?.datasets.health.message ?? "Dataset API status has not loaded."}
+          </p>
+        ) : (
+          <div className="mt-4 flex flex-col gap-2">
+            {datasets.slice(0, 6).map((dataset) => (
+              <div key={dataset.key} className="flex items-center justify-between gap-3 rounded-[8px] border border-[var(--line)] bg-[var(--surface-2)] p-3">
+                <span className="truncate text-[12.5px] text-[var(--text-2)]">{dataset.name}</span>
+                <span className="num text-[11px] text-[var(--text-3)]">{dataset.itemCount ?? "Unknown"} items</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </Panel>
+      <Panel className="p-5">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <Eyebrow>Experiments</Eyebrow>
+            <h3 className="mt-1 text-[16px] font-semibold text-[var(--text)]">Dataset runs</h3>
+          </div>
+          <Pill tone={resourceTone(control?.experiments.health.status)} className="!py-0.5 !text-[10px]">
+            {control?.experiments.health.status ?? "loading"}
+          </Pill>
+        </div>
+        {experiments.length === 0 ? (
+          <p className="mt-4 text-[12.5px] text-[var(--text-3)]">
+            {control?.experiments.health.message ?? "Experiment/dataset-run API status has not loaded."}
+          </p>
+        ) : (
+          <div className="mt-4 flex flex-col gap-2">
+            {experiments.slice(0, 6).map((experiment) => (
+              <div key={experiment.key} className="rounded-[8px] border border-[var(--line)] bg-[var(--surface-2)] p-3">
+                <p className="truncate text-[12.5px] text-[var(--text-2)]">{experiment.name}</p>
+                <p className="mt-1 text-[11px] text-[var(--text-3)]">
+                  {knownOrUnknown(experiment.datasetName)} · {knownOrUnknown(experiment.status)}
+                </p>
+              </div>
+            ))}
+          </div>
+        )}
+      </Panel>
+    </div>
+  );
+}
+
 function SessionTraceTable({ sessions, loaded }: { sessions: SessionTrace[]; loaded: boolean }) {
   if (!loaded) {
     return (
@@ -731,7 +1162,7 @@ function SessionTraceTable({ sessions, loaded }: { sessions: SessionTrace[]; loa
 
   return (
     <Panel className="p-2 overflow-hidden">
-      <div className="hidden md:grid grid-cols-[1.4fr_1fr_0.8fr_0.7fr_0.7fr_0.7fr_0.7fr] gap-3 px-3.5 py-2 text-[10.5px] uppercase tracking-[0.14em] text-[var(--text-4)]">
+      <div className="hidden md:grid grid-cols-[1.4fr_1fr_0.8fr_0.8fr_0.6fr_0.7fr_0.7fr] gap-3 px-3.5 py-2 text-[10.5px] uppercase tracking-[0.14em] text-[var(--text-4)]">
         <span>Session / trace</span>
         <span>Model</span>
         <span className="text-right">Tokens</span>
@@ -744,34 +1175,35 @@ function SessionTraceTable({ sessions, loaded }: { sessions: SessionTrace[]; loa
         {sessions.map((session) => (
           <div
             key={session.id}
-            className="grid gap-3 px-3.5 py-3 md:grid-cols-[1.4fr_1fr_0.8fr_0.7fr_0.7fr_0.7fr_0.7fr] md:items-center"
+            className="grid gap-3 px-3.5 py-3 md:grid-cols-[1.4fr_1fr_0.8fr_0.8fr_0.6fr_0.7fr_0.7fr] md:items-center"
           >
             <div className="min-w-0">
               <p className="num text-[12.5px] text-[var(--text)] truncate">
-                {session.sessionId ? shortId(session.sessionId) : shortId(session.traceId)}
+                {session.sessionId ? shortId(session.sessionId) : "Unknown session"}
               </p>
               <p className="num mt-0.5 text-[10.5px] text-[var(--text-3)] truncate">
-                trace {shortId(session.traceId)}
+                trace {session.traceId ? shortId(session.traceId) : "Unknown"}
+                {session.parentObservationIds.length > 0 ? ` · parent ${shortId(session.parentObservationIds[0])}` : ""}
               </p>
             </div>
             <div className="min-w-0">
               <p className="text-[12px] text-[var(--text-2)] truncate">
-                {session.models[0] ?? "unknown"}
+                {session.models[0] ?? "Unknown"}
               </p>
               <p className="mt-0.5 text-[10.5px] text-[var(--text-3)] truncate">
-                {[session.provider, session.platform].filter(Boolean).join(" · ") || "—"}
+                {[session.provider, session.platform].filter(Boolean).join(" · ") || "Unknown"}
               </p>
             </div>
             <div className="md:text-right">
-              <p className="num text-[12px] text-[var(--text)]">{fmtTokens(session.totalTokens)}</p>
+              <p className="num text-[12px] text-[var(--text)]">{fmtKnownTokens(session.totalTokens, session.tokenState)}</p>
               <p className="num mt-0.5 text-[10.5px] text-[var(--text-3)]">
-                {fmtTokens(session.inputTokens)} / {fmtTokens(session.outputTokens)}
+                {session.tokenState === "unknown" ? "input/output unknown" : `${fmtTokens(session.inputTokens)} / ${fmtTokens(session.outputTokens)}`}
               </p>
             </div>
             <div className="md:text-right">
-              <p className="num text-[12px] text-[var(--text)]">{fmtUsd(session.effectiveCost)}</p>
+              <p className="num text-[12px] text-[var(--text)]">{fmtKnownUsd(session.effectiveCost, session.costState)}</p>
               <p className="num mt-0.5 text-[10.5px] text-[var(--text-3)]">
-                rep {fmtUsd(session.reportedCost)}
+                {session.costState === "unknown" ? "basis unknown" : `rep ${fmtUsd(session.reportedCost)}`}
               </p>
             </div>
             <div className="num text-[12px] text-[var(--text-2)] md:text-right">
@@ -861,6 +1293,47 @@ const FILTERS: { key: Filter; label: string }[] = [
   { key: "failed", label: "failed" },
 ];
 
+type ObservabilityView = "overview" | "sessions" | "prompts" | "scores" | "optimization";
+const OBSERVABILITY_VIEWS: Array<{ key: ObservabilityView; label: string; icon: ComponentType<{ className?: string }> }> = [
+  { key: "overview", label: "Overview", icon: Gauge },
+  { key: "sessions", label: "Sessions", icon: ListChecks },
+  { key: "prompts", label: "Prompts", icon: Layers3 },
+  { key: "scores", label: "Scores", icon: LineChart },
+  { key: "optimization", label: "Optimization", icon: FlaskConical },
+];
+
+function ObservabilityTabs({
+  value,
+  onChange,
+}: {
+  value: ObservabilityView;
+  onChange: (value: ObservabilityView) => void;
+}) {
+  return (
+    <div className="flex max-w-full items-center gap-1 overflow-x-auto rounded-lg border border-[var(--line)] p-0.5">
+      {OBSERVABILITY_VIEWS.map((view) => {
+        const Icon = view.icon;
+        const active = value === view.key;
+        return (
+          <button
+            key={view.key}
+            type="button"
+            onClick={() => onChange(view.key)}
+            className={`inline-flex shrink-0 items-center gap-1.5 rounded-md px-2.5 py-1 text-[11px] font-semibold transition-colors ${
+              active
+                ? "bg-[var(--surface-2)] text-[var(--text)]"
+                : "text-[var(--text-3)] hover:text-[var(--text-2)]"
+            }`}
+          >
+            <Icon className="h-3.5 w-3.5" />
+            {view.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 function RunHistory({
   runs,
   loaded,
@@ -933,25 +1406,30 @@ function RunHistory({
 export function HermesRuns() {
   const [runs, setRuns] = useState<Req[]>([]);
   const [observability, setObservability] = useState<Observability | null>(null);
+  const [evaluationControl, setEvaluationControl] = useState<EvaluationControl | null>(null);
   const [window, setWindow] = useState<ObservabilityWindow>("24h");
+  const [view, setView] = useState<ObservabilityView>("overview");
   const [loaded, setLoaded] = useState(false);
   const reduce = usePrefersReducedMotion();
   const mounted = useRef(true);
 
   const load = useCallback(async () => {
-    const [reqs, obs] = await Promise.all([
+    const [reqs, obs, control] = await Promise.all([
       getJSON<{ requests: Req[]; pending: number }>("/api/hermes/requests?take=60"),
       getJSON<Observability>(`/api/hermes/observability?window=${window}`),
+      getJSON<EvaluationControl>(`/api/hermes/evaluation-control?window=${window}`),
     ]);
     if (!mounted.current) return;
     if (reqs) setRuns(reqs.requests ?? []);
     if (obs) setObservability(obs);
+    if (control) setEvaluationControl(control);
     setLoaded(true);
   }, [window]);
 
   const changeWindow = useCallback((nextWindow: ObservabilityWindow) => {
     setWindow(nextWindow);
     setObservability(null);
+    setEvaluationControl(null);
     setLoaded(false);
   }, []);
 
@@ -983,28 +1461,74 @@ export function HermesRuns() {
         </div>
       </div>
 
-      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
-        <ObservabilityOverview data={observability} />
-        <WasteFlags
-          flags={observability?.wasteFlags ?? []}
-          tools={observability?.tools.recent ?? []}
-        />
-      </div>
+      <ObservabilityTabs value={view} onChange={setView} />
 
-      <WorkflowObservability data={observability} />
+      {view === "overview" && (
+        <>
+          <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
+            <ObservabilityOverview data={observability} />
+            <ScoreCoveragePanel observability={observability} control={evaluationControl} />
+          </div>
+          <WorkflowObservability data={observability} />
+        </>
+      )}
 
-      <div>
-        <SectionHeader label="Trace extremes" title="Top expensive / large traces" />
-        <TraceExtremes
-          expensive={observability?.topExpensiveTraces ?? []}
-          large={observability?.topLargeTraces ?? []}
-        />
-      </div>
+      {view === "sessions" && (
+        <div>
+          <SectionHeader label="Langfuse sessions" title="Trace pressure" />
+          <SessionTraceTable sessions={observability?.sessions ?? []} loaded={loaded} />
+        </div>
+      )}
 
-      <div>
-        <SectionHeader label="Langfuse sessions" title="Trace pressure" />
-        <SessionTraceTable sessions={observability?.sessions ?? []} loaded={loaded} />
-      </div>
+      {view === "prompts" && (
+        <div>
+          <SectionHeader
+            label="Prompt management"
+            title="Prompt registry metadata"
+            action={
+              <Pill tone={resourceTone(evaluationControl?.prompts.health.status)}>
+                {evaluationControl?.prompts.health.rows ?? 0} rows
+              </Pill>
+            }
+          />
+          <PromptRegistry control={evaluationControl} loaded={loaded} />
+        </div>
+      )}
+
+      {view === "scores" && (
+        <div className="flex flex-col gap-4">
+          <SectionHeader
+            label="Scores & evaluators"
+            title="Evaluation metadata"
+            action={
+              <Pill tone={resourceTone(evaluationControl?.scores.health.status)}>
+                {evaluationControl?.scores.data.totalScores ?? 0} scores
+              </Pill>
+            }
+          />
+          <ScoresAndEvaluators control={evaluationControl} loaded={loaded} />
+          <DatasetExperimentPanel control={evaluationControl} />
+        </div>
+      )}
+
+      {view === "optimization" && (
+        <>
+          <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
+            <WorkflowObservability data={observability} />
+            <WasteFlags
+              flags={observability?.wasteFlags ?? []}
+              tools={observability?.tools.recent ?? []}
+            />
+          </div>
+          <div>
+            <SectionHeader label="Trace extremes" title="Top expensive / large traces" />
+            <TraceExtremes
+              expensive={observability?.topExpensiveTraces ?? []}
+              large={observability?.topLargeTraces ?? []}
+            />
+          </div>
+        </>
+      )}
 
       <div>
         <RunHistory runs={runs} loaded={loaded} reduce={reduce} />
