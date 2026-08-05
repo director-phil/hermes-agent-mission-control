@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { AlertTriangle, Bot, CheckCircle2, CircleDollarSign, Gauge, Radio, Wrench } from "lucide-react";
-import { EmptyState, Eyebrow, Panel, Pill, SectionHeader, Skeleton, rise } from "@/components/ui/kit";
+import { Button, EmptyState, Eyebrow, Panel, Pill, SectionHeader, Skeleton, rise } from "@/components/ui/kit";
 
 type GoalState = "ready" | "running" | "done" | "failed";
 
@@ -238,6 +238,12 @@ export default function Dashboard() {
               sub={`${fleet.onDemand} on-demand · ${fleet.local} local · ${fleet.cloud} cloud`}
               icon={<Bot className="h-4 w-4" />}
             />
+          </div>
+
+          <div className="mt-4 flex justify-end">
+            <Button href="/observability" size="sm">
+              View full observability
+            </Button>
           </div>
 
           <div className="mt-8 grid grid-cols-1 gap-5 xl:grid-cols-[minmax(0,1.1fr)_minmax(0,0.9fr)]">

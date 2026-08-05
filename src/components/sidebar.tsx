@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useState, useEffect } from "react";
 import {
+  Activity,
   Home,
   Twitter,
   Play,
@@ -47,6 +48,7 @@ const navGroups = [
   {
     name: "System",
     items: [
+      { href: "/observability", label: "Observability", icon: Activity },
       { href: "/agents", label: "Agents", icon: Bot },
       { href: "/memory-wiki", label: "Memory Wiki", icon: BookOpen },
       { href: "/ideas", label: "Ideas", icon: Lightbulb },
