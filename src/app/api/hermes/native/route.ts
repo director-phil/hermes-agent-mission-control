@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { readHermesNativeSnapshotForServer } from "@/lib/hermes-native-mirror";
+import { readHermesNativeSnapshotForServer } from "@/lib/hermes-native";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;

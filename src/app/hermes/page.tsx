@@ -1,23 +1,14 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
-  Send,
   RefreshCw,
-  Check,
-  X,
-  Pencil,
   Inbox,
-  Clock,
-  Zap,
   Activity as ActivityIcon,
-  Pause,
-  Play,
 } from "lucide-react";
 import {
   Panel,
   SectionHeader,
-  Button,
   Pill,
   EmptyState,
   Skeleton,
@@ -91,7 +82,7 @@ interface NativeGoal {
 
 interface NativeSnapshot {
   source: {
-    mode?: "local-native" | "bridge-mirror";
+    mode?: "local-native" | "remote-native-source";
     status: "ok" | "warning" | "error";
     message: string;
     warnings: string[];
@@ -183,7 +174,7 @@ function HealthChip({ health }: { health: Health | null }) {
         />
       </span>
       <span className="text-[12px] font-semibold">
-        {online ? "Online" : "Offline · bridge idle"}
+        {online ? "Online" : "Offline · native source unavailable"}
       </span>
       {health?.lastSeen && (
         <span className="num text-[10.5px] text-[var(--text-3)]">
@@ -191,242 +182,6 @@ function HealthChip({ health }: { health: Health | null }) {
         </span>
       )}
     </div>
-  );
-}
-
-// ── Dispatch bar ──────────────────────────────────────────
-function DispatchBar({ health, onDone }: { health: Health | null; onDone: () => void }) {
-  const [text, setText] = useState("");
-  const [side, setSide] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [toast, setToast] = useState<string | null>(null);
-  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const dispatchReady = health?.online === true;
-
-  const flash = (msg: string) => {
-    setToast(msg);
-    if (timer.current) clearTimeout(timer.current);
-    timer.current = setTimeout(() => setToast(null), 4000);
-  };
-  useEffect(() => () => { if (timer.current) clearTimeout(timer.current); }, []);
-
-  const submit = async () => {
-    const title = text.trim();
-    if (!title || busy || !dispatchReady) return;
-    setBusy(true);
-    try {
-      const r = await fetch("/api/hermes/dispatch", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ kind: "oneshot", title, sideEffecting: side }),
-      });
-      if (r.ok) {
-        setText("");
-        flash(
-          side
-            ? "Sent to approval inbox — awaiting your go-ahead."
-            : "Queued for Hermes."
-        );
-        onDone();
-      } else {
-        flash("Dispatch failed. Try again.");
-      }
-    } catch {
-      flash("Dispatch failed. Try again.");
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <Panel className="p-5">
-      <div className="flex flex-col sm:flex-row sm:items-center gap-3">
-        <input
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") { e.preventDefault(); submit(); }
-          }}
-          placeholder="Ask or tell Hermes to do something…"
-          disabled={!dispatchReady || busy}
-          className="flex-1 min-w-0 bg-transparent text-[14px] text-[var(--text)] placeholder:text-[var(--text-3)] px-3.5 py-2.5 rounded-[10px] border border-[var(--line)] focus:border-[color-mix(in_srgb,var(--accent)_45%,transparent)] outline-none transition-colors"
-        />
-        <div className="flex items-center gap-3 shrink-0">
-          <button
-            type="button"
-            onClick={() => setSide((s) => !s)}
-            aria-pressed={side}
-            className="flex items-center gap-2 select-none"
-          >
-            <span
-              className="relative inline-flex h-[18px] w-[32px] rounded-full transition-colors"
-              style={{
-                background: side
-                  ? "color-mix(in srgb, var(--warn) 55%, transparent)"
-                  : "var(--surface-2)",
-                border: "1px solid var(--line)",
-              }}
-            >
-              <span
-                className="absolute top-[1px] h-[14px] w-[14px] rounded-full bg-[var(--text)] transition-all"
-                style={{ left: side ? "15px" : "1px" }}
-              />
-            </span>
-            <span className="text-[12px] font-medium text-[var(--text-2)]">
-              side-effecting?
-            </span>
-          </button>
-          <Button variant="primary" onClick={submit} disabled={!dispatchReady || busy || !text.trim()}>
-            <Send className="w-3.5 h-3.5" />
-            Dispatch
-          </Button>
-        </div>
-      </div>
-      {toast && (
-        <p className="mt-3 text-[12.5px] text-[var(--text-2)] flex items-center gap-1.5">
-          <Check className="w-3.5 h-3.5" style={{ color: "var(--up)" }} />
-          {toast}
-        </p>
-      )}
-      {!dispatchReady && (
-        <p className="mt-3 text-[12px] text-[var(--warn)]">
-          Dispatch disabled until bridge heartbeat proves DB, Hermes CLI, and native snapshot freshness.
-        </p>
-      )}
-    </Panel>
-  );
-}
-
-// ── Approval inbox card ───────────────────────────────────
-function InboxCard({ req, onAction }: { req: Req; onAction: () => void }) {
-  const [busy, setBusy] = useState(false);
-  const [editing, setEditing] = useState(false);
-  const [draftTitle, setDraftTitle] = useState(req.title);
-  const [draftPrompt, setDraftPrompt] = useState(req.prompt ?? "");
-
-  const patch = async (body: Record<string, unknown>) => {
-    setBusy(true);
-    try {
-      await fetch(`/api/hermes/requests/${req.id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      onAction();
-    } catch {
-      /* leave card in place on failure */
-    } finally {
-      setBusy(false);
-      setEditing(false);
-    }
-  };
-
-  return (
-    <Panel className={`p-5 ${busy ? "opacity-50 pointer-events-none" : ""}`}>
-      <div className="flex items-start justify-between gap-3 mb-2.5">
-        <div className="flex items-center gap-2 flex-wrap">
-          <Pill tone="neutral">{req.kind}</Pill>
-          {req.sideEffecting && <Pill tone="warn">side-effecting</Pill>}
-        </div>
-        <span className="num text-[10.5px] text-[var(--text-3)] shrink-0 mt-1">
-          {timeAgo(req.createdAt)}
-        </span>
-      </div>
-
-      {editing ? (
-        <div className="space-y-2.5">
-          <input
-            value={draftTitle}
-            onChange={(e) => setDraftTitle(e.target.value)}
-            className="w-full bg-transparent text-[14px] font-medium text-[var(--text)] px-3 py-2 rounded-[8px] border border-[var(--line)] outline-none focus:border-[color-mix(in_srgb,var(--accent)_45%,transparent)]"
-          />
-          <textarea
-            value={draftPrompt}
-            onChange={(e) => setDraftPrompt(e.target.value)}
-            rows={3}
-            className="w-full bg-transparent text-[13px] text-[var(--text-2)] px-3 py-2 rounded-[8px] border border-[var(--line)] outline-none focus:border-[color-mix(in_srgb,var(--accent)_45%,transparent)] resize-y"
-          />
-        </div>
-      ) : (
-        <>
-          <h3 className="text-[15px] font-medium text-[var(--text)] leading-snug">
-            {req.title}
-          </h3>
-          {req.prompt && (
-            <p className="mt-1.5 text-[13px] text-[var(--text-2)] leading-snug line-clamp-3">
-              {req.prompt}
-            </p>
-          )}
-        </>
-      )}
-
-      <div className="flex items-center gap-2 mt-4">
-        {editing ? (
-          <>
-            <button
-              type="button"
-              onClick={() =>
-                patch({ action: "edit", title: draftTitle.trim(), prompt: draftPrompt })
-              }
-              className="inline-flex items-center gap-1.5 rounded-full px-3.5 py-1.5 text-[12px] font-semibold transition-colors"
-              style={{
-                color: "var(--accent)",
-                border: "1px solid color-mix(in srgb, var(--accent) 30%, transparent)",
-                background: "color-mix(in srgb, var(--accent) 10%, transparent)",
-              }}
-            >
-              <Check className="w-3.5 h-3.5" />
-              Save
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setEditing(false);
-                setDraftTitle(req.title);
-                setDraftPrompt(req.prompt ?? "");
-              }}
-              className="btn-ghost inline-flex items-center gap-1.5 px-3.5 py-1.5 text-[12px] font-medium"
-            >
-              Cancel
-            </button>
-          </>
-        ) : (
-          <>
-            <button
-              type="button"
-              onClick={() => patch({ action: "approve" })}
-              className="inline-flex items-center gap-1.5 rounded-full px-3.5 py-1.5 text-[12px] font-semibold transition-colors"
-              style={{
-                color: "var(--up)",
-                border: "1px solid color-mix(in srgb, var(--up) 30%, transparent)",
-                background: "color-mix(in srgb, var(--up) 10%, transparent)",
-              }}
-            >
-              <Check className="w-3.5 h-3.5" />
-              Approve
-            </button>
-            <button
-              type="button"
-              onClick={() => patch({ action: "reject" })}
-              className="inline-flex items-center gap-1.5 rounded-full px-3.5 py-1.5 text-[12px] font-medium transition-colors text-[var(--text-2)] hover:text-[var(--down)]"
-              style={{ border: "1px solid var(--line)" }}
-            >
-              <X className="w-3.5 h-3.5" />
-              Reject
-            </button>
-            <button
-              type="button"
-              onClick={() => setEditing(true)}
-              className="inline-flex items-center gap-1.5 rounded-full px-3.5 py-1.5 text-[12px] font-medium transition-colors text-[var(--text-2)] hover:text-[var(--text)]"
-              style={{ border: "1px solid var(--line)" }}
-            >
-              <Pencil className="w-3.5 h-3.5" />
-              Edit
-            </button>
-          </>
-        )}
-      </div>
-    </Panel>
   );
 }
 
@@ -472,7 +227,7 @@ function NativeGoalCard({ goal }: { goal: NativeGoal }) {
 function NativeWorkPanel({ snapshot }: { snapshot: NativeSnapshot | null }) {
   const live = snapshot?.goals.live ?? { ready: [], running: [], done: [], failed: [] };
   const operatorTasks = snapshot?.operatorTasks.tasks ?? [];
-  const sourceLabel = snapshot?.source.mode === "bridge-mirror" ? "bridge mirror" : "local native";
+  const sourceLabel = snapshot?.source.mode === "remote-native-source" ? "remote native source" : "local native";
   const sourceMessage = snapshot?.source.errors?.[0] ?? snapshot?.source.warnings[0] ?? null;
 
   return (
@@ -577,49 +332,9 @@ function NativeWorkPanel({ snapshot }: { snapshot: NativeSnapshot | null }) {
 type CronJob = {
   id: string; status: string; name: string; schedule: string;
   nextRun: string | null; lastRun: string | null; lastResult: string | null;
-  deliver: string | null; skills: string | null; script: string | null; mode: string | null;
+  deliver: string | null; skills: string | null; mode: string | null;
 };
-function CronPanel({ jobs, syncedAt, onDone }: { jobs: CronJob[]; syncedAt: string | null; onDone: () => void }) {
-  const [schedule, setSchedule] = useState("");
-  const [prompt, setPrompt] = useState("");
-  const [runName, setRunName] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [note, setNote] = useState<string | null>(null);
-
-  const post = async (body: Record<string, unknown>, ok: string) => {
-    setBusy(true);
-    try {
-      const r = await fetch("/api/hermes/crons", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      setNote(r.ok ? ok : "Request failed.");
-      if (r.ok) onDone();
-    } catch {
-      setNote("Request failed.");
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const create = () => {
-    if (!schedule.trim() || !prompt.trim()) return;
-    post(
-      { op: "create", schedule: schedule.trim(), prompt: prompt.trim() },
-      "Schedule sent to Hermes."
-    ).then(() => {
-      setSchedule("");
-      setPrompt("");
-    });
-  };
-  const runNow = () => {
-    if (!runName.trim()) return;
-    post({ op: "run", name: runName.trim() }, "Run-now sent to Hermes.").then(() =>
-      setRunName("")
-    );
-  };
-
+function CronPanel({ jobs, syncedAt }: { jobs: CronJob[]; syncedAt: string | null }) {
   return (
     <>
       <SectionHeader
@@ -631,8 +346,7 @@ function CronPanel({ jobs, syncedAt, onDone }: { jobs: CronJob[]; syncedAt: stri
           </span>
         }
       />
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        {/* Schedules */}
+      <div className="grid grid-cols-1 gap-4">
         <Panel className="p-5">
           <div className="flex items-center justify-between mb-3">
             <Eyebrow>schedules</Eyebrow>
@@ -661,20 +375,9 @@ function CronPanel({ jobs, syncedAt, onDone }: { jobs: CronJob[]; syncedAt: stri
                           {j.skills && <span>{j.skills}</span>}
                         </div>
                       </div>
-                      <div className="flex items-center gap-1 shrink-0">
-                        <button title="Run now" disabled={busy} onClick={() => post({ op: "run", id: j.id, name: j.name }, "Run-now sent.")} className="p-1.5 rounded-md text-[var(--text-3)] hover:text-[var(--accent)] hover:bg-[var(--surface-1)] transition-colors">
-                          <Zap className="w-3.5 h-3.5" />
-                        </button>
-                        {active ? (
-                          <button title="Pause" disabled={busy} onClick={() => post({ op: "pause", id: j.id, name: j.name }, "Pause sent.")} className="p-1.5 rounded-md text-[var(--text-3)] hover:text-[var(--warn)] hover:bg-[var(--surface-1)] transition-colors">
-                            <Pause className="w-3.5 h-3.5" />
-                          </button>
-                        ) : (
-                          <button title="Resume" disabled={busy} onClick={() => post({ op: "resume", id: j.id, name: j.name }, "Resume sent.")} className="p-1.5 rounded-md text-[var(--text-3)] hover:text-[var(--up)] hover:bg-[var(--surface-1)] transition-colors">
-                            <Play className="w-3.5 h-3.5" />
-                          </button>
-                        )}
-                      </div>
+                      <Pill tone={active ? "up" : "neutral"} className="shrink-0 !py-0.5 !text-[10px]">
+                        {j.status}
+                      </Pill>
                     </div>
                   </div>
                 );
@@ -683,64 +386,6 @@ function CronPanel({ jobs, syncedAt, onDone }: { jobs: CronJob[]; syncedAt: stri
           )}
         </Panel>
 
-        {/* Controls */}
-        <Panel className="p-5">
-          <div className="space-y-4">
-            <div>
-              <Eyebrow className="!mb-2 block">New schedule</Eyebrow>
-              <div className="space-y-2.5">
-                <input
-                  value={schedule}
-                  onChange={(e) => setSchedule(e.target.value)}
-                  placeholder="Schedule (e.g. 0 9 * * 1)"
-                  className="w-full bg-transparent num text-[13px] text-[var(--text)] placeholder:text-[var(--text-3)] px-3 py-2 rounded-[8px] border border-[var(--line)] outline-none focus:border-[color-mix(in_srgb,var(--accent)_45%,transparent)]"
-                />
-                <textarea
-                  value={prompt}
-                  onChange={(e) => setPrompt(e.target.value)}
-                  rows={2}
-                  placeholder="Prompt — what should Hermes do on this cadence?"
-                  className="w-full bg-transparent text-[13px] text-[var(--text-2)] placeholder:text-[var(--text-3)] px-3 py-2 rounded-[8px] border border-[var(--line)] outline-none focus:border-[color-mix(in_srgb,var(--accent)_45%,transparent)] resize-y"
-                />
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={create}
-                  disabled={busy || !schedule.trim() || !prompt.trim()}
-                >
-                  <Clock className="w-3.5 h-3.5" />
-                  Create schedule
-                </Button>
-              </div>
-            </div>
-
-            <div className="rule" />
-
-            <div>
-              <Eyebrow className="!mb-2 block">Run now</Eyebrow>
-              <div className="flex items-center gap-2.5">
-                <input
-                  value={runName}
-                  onChange={(e) => setRunName(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); runNow(); } }}
-                  placeholder="Job name"
-                  className="flex-1 min-w-0 bg-transparent text-[13px] text-[var(--text)] placeholder:text-[var(--text-3)] px-3 py-2 rounded-[8px] border border-[var(--line)] outline-none focus:border-[color-mix(in_srgb,var(--accent)_45%,transparent)]"
-                />
-                <Button variant="ghost" size="sm" onClick={runNow} disabled={busy || !runName.trim()}>
-                  <Zap className="w-3.5 h-3.5" />
-                  Run now
-                </Button>
-              </div>
-            </div>
-
-            {note && (
-              <p className="text-[12px] text-[var(--text-2)] flex items-center gap-1.5">
-                <Check className="w-3.5 h-3.5" style={{ color: "var(--up)" }} />
-                {note}
-              </p>
-            )}
-          </div>
-        </Panel>
       </div>
     </>
   );
@@ -874,11 +519,6 @@ export default function HermesPage() {
           </div>
         </div>
 
-        {/* Dispatch */}
-        <div className="hq-rise">
-          <DispatchBar health={health} onDone={load} />
-        </div>
-
         {/* Dispatches — what you've sent Hermes + live status/results */}
         <section className="mt-12">
           <HermesDispatches />
@@ -902,20 +542,14 @@ export default function HermesPage() {
               <Skeleton className="h-40" />
               <Skeleton className="h-40" />
             </div>
-          ) : inbox.length === 0 ? (
+          ) : (
             <Panel className="p-2">
               <EmptyState
                 icon={<Inbox className="w-6 h-6" />}
-                title="Nothing awaiting approval."
-                hint="Side-effecting dispatches land here for a one-tap approve."
+                title={inbox.length === 0 ? "Nothing awaiting approval." : "Approvals are read-only."}
+                hint="Browser approvals and dispatch mutations are disabled on this Mission Control surface."
               />
             </Panel>
-          ) : (
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-              {inbox.map((req) => (
-                <InboxCard key={req.id} req={req} onAction={load} />
-              ))}
-            </div>
           )}
         </section>
 
@@ -946,7 +580,7 @@ export default function HermesPage() {
               </div>
             </>
           ) : (
-            <CronPanel jobs={jobs} syncedAt={cronSync} onDone={load} />
+            <CronPanel jobs={jobs} syncedAt={cronSync} />
           )}
         </section>
 
