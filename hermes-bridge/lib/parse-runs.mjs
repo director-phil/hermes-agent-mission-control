@@ -316,7 +316,7 @@ function ensureScribeAttempt(byAttempt, attempt) {
 }
 
 function scribeText(value, max, secrets = []) {
-  const text = redactText(value, secrets).replace(/[\u0000-\u001f\u007f]/g, "").trim();
+  const text = scrubTextPaths(redactText(value, secrets)).replace(/[\u0000-\u001f\u007f]/g, "").trim();
   return text ? text.slice(0, max) : null;
 }
 
@@ -562,5 +562,21 @@ export function toDisplayPath(value) {
     }
     return stripped;
   }
+  // Never emit an absolute filesystem path (leaks host directory structure).
+  // Unmatched absolute/UNC/drive paths collapse to their basename.
+  if (/^(\/|[A-Za-z]:\/|\/\/)/.test(normalized)) {
+    const parts = normalized.split("/").filter(Boolean);
+    return parts.length ? parts[parts.length - 1] : "";
+  }
   return value;
+}
+
+// Scrub absolute path tokens embedded in free-text prose (scribe bullets),
+// replacing each with its repo-relative / basename display form.
+export function scrubTextPaths(text) {
+  if (typeof text !== "string" || !text) return text;
+  return text.replace(/(?:[A-Za-z]:)?(?:\/[^\s"'`)*\]]+)+/g, (match) => {
+    if (!/^(?:\/|[A-Za-z]:\/)/.test(match)) return match;
+    return toDisplayPath(match) || match.split("/").filter(Boolean).pop() || match;
+  });
 }

@@ -5,7 +5,7 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { parseRunTrace, toDisplayPath } from "../hermes-bridge/lib/parse-runs.mjs";
+import { parseRunTrace, toDisplayPath, scrubTextPaths } from "../hermes-bridge/lib/parse-runs.mjs";
 import {
   buildNativeSnapshotRequest,
   buildMirrorEnvelope,
@@ -276,4 +276,22 @@ test("run trace parser bounds oversized lines and redacts scribe previews and di
   } finally {
     await fs.rm(root, { recursive: true, force: true });
   }
+});
+
+test("toDisplayPath never emits an absolute path outside recognized roots", () => {
+  assert.equal(toDisplayPath("/etc/passwd"), "passwd");
+  assert.equal(toDisplayPath("/var/secret/keys/id_rsa"), "id_rsa");
+  assert.equal(toDisplayPath("C:/Users/phil/secret.txt"), "secret.txt");
+  for (const p of ["/etc/shadow", "/root/.ssh/config", "/tmp/x/y/z.log"]) {
+    assert.equal(/^(\/|[A-Za-z]:\/)/.test(toDisplayPath(p)), false);
+  }
+});
+
+test("scrubTextPaths collapses absolute paths embedded in prose", () => {
+  const prose = "Failed reading /home/phillip_downs/secret/config.env and /etc/shadow during repair";
+  const scrubbed = scrubTextPaths(prose);
+  assert.equal(scrubbed.includes("/home/phillip_downs"), false);
+  assert.equal(scrubbed.includes("/etc/shadow"), false);
+  assert.match(scrubbed, /config\.env/);
+  assert.match(scrubbed, /shadow/);
 });
