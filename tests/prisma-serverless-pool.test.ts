@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { Client, Pool } from "pg";
 import {
   createPrismaPgPoolConfig,
   getPrismaClient,
@@ -9,11 +11,19 @@ import {
   PRISMA_PG_CONNECTION_TIMEOUT_MILLIS,
   PRISMA_PG_IDLE_TIMEOUT_MILLIS,
   PRISMA_PG_POOL_MAX,
+  usesSupabaseSharedPoolerTlsCompatibility,
 } from "../src/lib/prisma";
 
 const secretUsername = "pool_user";
 const secretPassword = "super-secret-password";
 const originalDatabaseUrl = process.env.DATABASE_URL;
+
+type PgClientWithConnectionParameters = Client & {
+  connectionParameters: {
+    host: string;
+    ssl: unknown;
+  };
+};
 
 const prismaGlobals = globalThis as typeof globalThis & {
   prisma?: { $disconnect: () => Promise<void> };
@@ -27,6 +37,7 @@ const prismaGlobals = globalThis as typeof globalThis & {
       connectionTimeoutMillis?: number;
       idleTimeoutMillis?: number | null;
       max?: number;
+      ssl?: unknown;
     };
   };
 };
@@ -120,6 +131,130 @@ test("does not print or log database credentials while normalizing", () => {
   assert.equal(output.includes(secretPassword), false);
 });
 
+test("detects only Supabase shared-pooler URLs that need TLS compatibility mode", () => {
+  const allowedHost =
+    `postgresql://${secretUsername}:${secretPassword}@aws-0-us-west-1.pooler.supabase.com:6543/postgres?pgbouncer=true`;
+  const nestedAllowedHost =
+    `postgresql://${secretUsername}:${secretPassword}@db.aws-0-us-west-1.pooler.supabase.com:6543/postgres?PgBouncer=TRUE`;
+
+  assert.equal(
+    usesSupabaseSharedPoolerTlsCompatibility(normalizePrismaDatabaseUrl(allowedHost) ?? ""),
+    true,
+  );
+  assert.equal(
+    usesSupabaseSharedPoolerTlsCompatibility(normalizePrismaDatabaseUrl(nestedAllowedHost) ?? ""),
+    true,
+  );
+  assert.equal(
+    usesSupabaseSharedPoolerTlsCompatibility(
+      `postgresql://${secretUsername}:${secretPassword}@pooler.supabase.com:6543/postgres?pgbouncer=true`,
+    ),
+    false,
+  );
+  assert.equal(
+    usesSupabaseSharedPoolerTlsCompatibility(
+      `postgresql://${secretUsername}:${secretPassword}@aws-0-us-west-1.pooler.supabase.com.evil.test:6543/postgres?pgbouncer=true`,
+    ),
+    false,
+  );
+  assert.equal(
+    usesSupabaseSharedPoolerTlsCompatibility(
+      `postgresql://${secretUsername}:${secretPassword}@aws-0-us-west-1-pooler.supabase.com:6543/postgres?pgbouncer=true`,
+    ),
+    false,
+  );
+  assert.equal(
+    usesSupabaseSharedPoolerTlsCompatibility(
+      `postgresql://${secretUsername}:${secretPassword}@aws-0-us-west-1.pooler.supabase.com:5432/postgres?pgbouncer=true`,
+    ),
+    false,
+  );
+  assert.equal(
+    usesSupabaseSharedPoolerTlsCompatibility(
+      `postgresql://${secretUsername}:${secretPassword}@aws-0-us-west-1.pooler.supabase.com:6543/postgres`,
+    ),
+    false,
+  );
+  assert.equal(
+    usesSupabaseSharedPoolerTlsCompatibility(
+      `postgresql://${secretUsername}:${secretPassword}@aws-0-us-west-1.pooler.supabase.com:6543/postgres?pgbouncer=false`,
+    ),
+    false,
+  );
+  assert.equal(
+    usesSupabaseSharedPoolerTlsCompatibility(
+      `postgresql://${secretUsername}:${secretPassword}@db.example.com:6543/postgres?pgbouncer=true`,
+    ),
+    false,
+  );
+  assert.equal(
+    usesSupabaseSharedPoolerTlsCompatibility(
+      `postgresql://${secretUsername}:${secretPassword}@aws-0-us-west-1.pooler.supabase.com:6543/postgres?pgbouncer=true&host=db.example.com`,
+    ),
+    false,
+  );
+  assert.equal(
+    usesSupabaseSharedPoolerTlsCompatibility(
+      `postgresql://${secretUsername}:${secretPassword}@aws-0-us-west-1.pooler.supabase.com:6543/postgres?pgbouncer=true&sslmode=verify-full`,
+    ),
+    false,
+  );
+  assert.equal(
+    usesSupabaseSharedPoolerTlsCompatibility(
+      `postgresql://${secretUsername}:***@aws-0-us-west-1.pooler.supabase.com:6543/postgres?pgbouncer=true&sslrootcert=/tmp/operator-ca.pem`,
+    ),
+    false,
+  );
+  // Regression: a `port` query param can override the authority :6543 port
+  // after the scope check in pg-connection-string. Must NOT be treated as the
+  // shared pooler (would disable cert verification on an off-pooler endpoint).
+  assert.equal(
+    usesSupabaseSharedPoolerTlsCompatibility(
+      `postgresql://${secretUsername}:***@aws-0-us-west-1.pooler.supabase.com:6543/postgres?pgbouncer=true&port=5432`,
+    ),
+    false,
+  );
+  assert.equal(
+    createPrismaPgPoolConfig(
+      `postgresql://${secretUsername}:***@aws-0-us-west-1.pooler.supabase.com:6543/postgres?pgbouncer=true&port=5432`,
+    ).ssl,
+    undefined,
+  );
+});
+
+test("Supabase pooler TLS compatibility detection does not log URL details", () => {
+  const databaseUrl =
+    `postgresql://${secretUsername}:${secretPassword}@aws-0-us-west-1.pooler.supabase.com:6543/postgres?pgbouncer=true`;
+  const messages: string[] = [];
+  const originalConsole = {
+    error: console.error,
+    info: console.info,
+    log: console.log,
+    warn: console.warn,
+  };
+
+  console.error = (...args: unknown[]) => messages.push(args.map(String).join(" "));
+  console.info = (...args: unknown[]) => messages.push(args.map(String).join(" "));
+  console.log = (...args: unknown[]) => messages.push(args.map(String).join(" "));
+  console.warn = (...args: unknown[]) => messages.push(args.map(String).join(" "));
+
+  try {
+    usesSupabaseSharedPoolerTlsCompatibility(databaseUrl);
+    createPrismaPgPoolConfig(databaseUrl);
+  } finally {
+    console.error = originalConsole.error;
+    console.info = originalConsole.info;
+    console.log = originalConsole.log;
+    console.warn = originalConsole.warn;
+  }
+
+  const output = messages.join("\n");
+  assert.equal(output.includes(secretUsername), false);
+  assert.equal(output.includes(secretPassword), false);
+  assert.equal(output.includes("aws-0-us-west-1.pooler.supabase.com"), false);
+  assert.equal(output.includes("postgresql://"), false);
+});
+
 test("pg pool config is bounded for serverless and does not depend on connection_limit", () => {
   const databaseUrl = `postgresql://${secretUsername}:${secretPassword}@db.example.com:6543/postgres?pgbouncer=true&connection_limit=7`;
 
@@ -133,6 +268,114 @@ test("pg pool config is bounded for serverless and does not depend on connection
   assert.equal(config.idleTimeoutMillis, 3_000);
   assert.equal(config.connectionTimeoutMillis, 2_000);
   assert.equal(config.allowExitOnIdle, true);
+  assert.equal("ssl" in config, false);
+});
+
+test("pg pool config sets TLS compatibility only for Supabase shared-pooler URLs", () => {
+  const allowedUrl =
+    `postgresql://${secretUsername}:${secretPassword}@aws-0-us-west-1.pooler.supabase.com:6543/postgres?pgbouncer=true&connection_limit=1`;
+  const rejectedUrls = [
+    `postgresql://${secretUsername}:${secretPassword}@aws-0-us-west-1.pooler.supabase.com.evil.test:6543/postgres?pgbouncer=true`,
+    `postgresql://${secretUsername}:${secretPassword}@aws-0-us-west-1.pooler.supabase.com:5432/postgres?pgbouncer=true`,
+    `postgresql://${secretUsername}:${secretPassword}@aws-0-us-west-1.pooler.supabase.com:6543/postgres`,
+    `postgresql://${secretUsername}:${secretPassword}@aws-0-us-west-1.pooler.supabase.com:6543/postgres?pgbouncer=false`,
+    `postgresql://${secretUsername}:${secretPassword}@db.example.com:6543/postgres?pgbouncer=true`,
+  ];
+
+  assert.deepEqual(createPrismaPgPoolConfig(allowedUrl).ssl, { rejectUnauthorized: false });
+
+  for (const rejectedUrl of rejectedUrls) {
+    assert.equal("ssl" in createPrismaPgPoolConfig(rejectedUrl), false);
+  }
+});
+
+test("pg pool compatibility sanitizes URL SSL overrides before pg parses clients", async () => {
+  const databaseUrl =
+    `postgresql://${secretUsername}:${secretPassword}@aws-0-us-west-1.pooler.supabase.com:6543/postgres` +
+    `?pgbouncer=true&connection_limit=1&schema=public&sslmode=require&uselibpqcompat=true&ssl=0`;
+
+  const config = createPrismaPgPoolConfig(databaseUrl);
+  const sanitized = new URL(config.connectionString ?? "");
+
+  assert.deepEqual(config.ssl, { rejectUnauthorized: false });
+  assert.equal(sanitized.searchParams.get("pgbouncer"), "true");
+  assert.equal(sanitized.searchParams.get("connection_limit"), "1");
+  assert.equal(sanitized.searchParams.get("schema"), "public");
+  assert.equal(sanitized.searchParams.has("sslmode"), false);
+  assert.equal(sanitized.searchParams.has("uselibpqcompat"), false);
+  assert.equal(sanitized.searchParams.has("ssl"), false);
+
+  const pool = new Pool(config);
+  try {
+    const client = new Client(pool.options) as PgClientWithConnectionParameters;
+
+    assert.deepEqual(pool.options.ssl, { rejectUnauthorized: false });
+    assert.equal(pool.options.connectionString, config.connectionString);
+    assert.deepEqual(client.connectionParameters.ssl, { rejectUnauthorized: false });
+    assert.equal(client.connectionParameters.host, "aws-0-us-west-1.pooler.supabase.com");
+  } finally {
+    await pool.end();
+  }
+});
+
+test("pg pool compatibility rejects query host spoofing and leaves pg host override visible", async () => {
+  const databaseUrl =
+    `postgresql://${secretUsername}:${secretPassword}@aws-0-us-west-1.pooler.supabase.com:6543/postgres` +
+    `?pgbouncer=true&connection_limit=1&host=db.example.com&sslmode=verify-full`;
+  const config = createPrismaPgPoolConfig(databaseUrl);
+
+  assert.equal("ssl" in config, false);
+  assert.equal(config.connectionString, databaseUrl);
+
+  const pool = new Pool(config);
+  try {
+    const client = new Client(pool.options) as PgClientWithConnectionParameters;
+
+    assert.equal(pool.options.ssl, undefined);
+    assert.equal(client.connectionParameters.host, "db.example.com");
+    assert.deepEqual(client.connectionParameters.ssl, {});
+  } finally {
+    await pool.end();
+  }
+});
+
+test("pg pool config preserves explicit verify-full rootcert operator verification", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "prisma-pg-rootcert-"));
+  const rootCertPath = path.join(tempDir, "root-ca.pem");
+  await fs.writeFile(rootCertPath, "operator root certificate\n", "utf8");
+
+  try {
+    const url = new URL(
+      `postgresql://${secretUsername}:${secretPassword}@aws-0-us-west-1.pooler.supabase.com:6543/postgres`,
+    );
+    url.searchParams.set("pgbouncer", "true");
+    url.searchParams.set("connection_limit", "1");
+    url.searchParams.set("sslmode", "verify-full");
+    url.searchParams.set("sslrootcert", rootCertPath);
+    url.searchParams.set("uselibpqcompat", "true");
+
+    const databaseUrl = url.toString();
+    const config = createPrismaPgPoolConfig(databaseUrl);
+
+    assert.equal("ssl" in config, false);
+    assert.equal(config.connectionString, databaseUrl);
+
+    const pool = new Pool(config);
+    try {
+      const client = new Client(pool.options) as PgClientWithConnectionParameters;
+      const ssl = client.connectionParameters.ssl;
+
+      assert.equal(pool.options.ssl, undefined);
+      assert.equal(typeof ssl, "object");
+      assert.ok(ssl);
+      assert.equal((ssl as { ca?: string }).ca, "operator root certificate\n");
+      assert.equal("rejectUnauthorized" in (ssl as Record<string, unknown>), false);
+    } finally {
+      await pool.end();
+    }
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
 });
 
 test("reuses one global pg Pool and one global PrismaClient when DATABASE_URL exists", async () => {
