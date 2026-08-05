@@ -777,7 +777,7 @@ function CorrelationAccounting({
           value={fmtPct(coverage?.percentage ?? null)}
           sub={
             coverage
-              ? `${coverage.withOperationId}/${coverage.eligibleObservations} observations`
+              ? `${coverage.fullyCorrelatedObservations}/${coverage.eligibleObservations} fully correlated`
               : undefined
           }
         />
@@ -786,7 +786,7 @@ function CorrelationAccounting({
           value={coverage ? String(coverage.operationCount) : "—"}
           sub={
             coverage
-              ? `${coverage.fullyCorrelatedOperations} fully correlated`
+              ? `${coverage.withOperationId}/${coverage.eligibleObservations} with operation ID · ${coverage.fullyCorrelatedOperations} complete ops`
               : undefined
           }
         />

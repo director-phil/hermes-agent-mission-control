@@ -759,6 +759,171 @@ test("does not collapse distinct no-id tool observations during dedupe", async (
   assert.equal(operation?.toolCalls, 2);
 });
 
+test("dedupes duplicate same-id observations across global aggregates while preserving raw rows", async () => {
+  setLangfuseEnv();
+  const page = {
+    data: [
+      {
+        id: "dup-gen",
+        traceId: "trace-counted",
+        sessionId: "session-counted",
+        startTime: "2026-08-05T11:50:00.000Z",
+        endTime: "2026-08-05T11:50:01.000Z",
+        type: "GENERATION",
+        providedModelName: "gpt-5",
+        usageDetails: {
+          input: 100,
+          output: 20,
+          total: 120,
+          cache_read_input_tokens: 5,
+          cache_creation_input_tokens: 2,
+        },
+        totalCost: "0.02",
+        metadata: {
+          operation_id: "op-dedupe",
+          goal_id: "goal-p1a",
+          run_id: "run-001",
+          stage: "execute",
+          provider: "openai",
+          platform: "codex",
+        },
+      },
+      {
+        id: "dup-gen",
+        traceId: "trace-duplicate",
+        sessionId: "session-duplicate",
+        startTime: "2026-08-05T11:59:00.000Z",
+        endTime: "2026-08-05T11:59:59.000Z",
+        type: "GENERATION",
+        level: "ERROR",
+        providedModelName: "claude-opus-4-6",
+        usageDetails: {
+          input: 1_000_000,
+          output: 500_000,
+          total: 1_500_000,
+          cache_read_input_tokens: 300_000,
+          cache_creation_input_tokens: 200_000,
+        },
+        totalCost: "99",
+        metadata: {
+          operation_id: "op-dedupe-duplicate",
+          goal_id: "goal-duplicate",
+          run_id: "run-duplicate",
+          stage: "duplicate",
+          provider: "anthropic",
+          platform: "server",
+        },
+      },
+      {
+        id: "dup-tool",
+        parentObservationId: "dup-gen",
+        traceId: "trace-counted",
+        sessionId: "session-counted",
+        startTime: "2026-08-05T11:50:02.000Z",
+        endTime: "2026-08-05T11:50:03.000Z",
+        type: "TOOL",
+        name: "web.run",
+        metadata: {
+          operation_id: "op-dedupe",
+          goal_id: "goal-p1a",
+          run_id: "run-001",
+          stage: "execute",
+          tool_name: "web.run",
+          tool_call_id: "tool-1",
+        },
+      },
+      {
+        id: "dup-tool",
+        parentObservationId: "dup-gen",
+        traceId: "trace-duplicate",
+        sessionId: "session-duplicate",
+        startTime: "2026-08-05T12:00:00.000Z",
+        endTime: "2026-08-05T12:00:30.000Z",
+        type: "TOOL",
+        name: "apply_patch",
+        level: "ERROR",
+        metadata: {
+          operation_id: "op-dedupe-duplicate",
+          goal_id: "goal-duplicate",
+          run_id: "run-duplicate",
+          stage: "duplicate",
+          tool_name: "apply_patch",
+          tool_call_id: "tool-duplicate",
+          tool_call_count: 9,
+        },
+      },
+    ],
+  };
+  const fetchImpl: typeof fetch = async () =>
+    new Response(JSON.stringify(page), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+
+  const result = await collectHermesObservability("24h", {
+    now: NOW,
+    fetchImpl,
+  });
+
+  assert.equal(result.source.rows, 4);
+  assert.equal(result.source.filteredRows, 0);
+  assert.equal(result.source.includedRows, 4);
+  assert.equal(result.correlationCoverage.totalObservations, 4);
+  assert.equal(result.correlationCoverage.eligibleObservations, 2);
+  assert.equal(result.correlationCoverage.withOperationId, 2);
+  assert.equal(result.correlationCoverage.fullyCorrelatedObservations, 2);
+  assert.equal(result.correlationCoverage.percentage, 1);
+
+  assert.equal(result.totals?.inputTokens, 100);
+  assert.equal(result.totals?.outputTokens, 20);
+  assert.equal(result.totals?.totalTokens, 120);
+  assert.equal(result.totals?.cacheReadTokens, 5);
+  assert.equal(result.totals?.cacheWriteTokens, 2);
+  assert.equal(result.totals?.reportedCost, 0.02);
+  assert.equal(result.totals?.effectiveCost, 0.02);
+  assert.equal(result.totals?.generationCalls, 1);
+  assert.equal(result.totals?.toolCalls, 1);
+  assert.equal(result.totals?.errors, 0);
+  assert.equal(result.totals?.uniqueTraces, 1);
+  assert.equal(result.totals?.uniqueSessions, 1);
+  assert.equal(result.totals?.latestTimestamp, "2026-08-05T11:50:03.000Z");
+
+  assert.deepEqual(result.byModel.map((model) => model.model), ["gpt-5"]);
+  assert.equal(result.byModel[0]?.calls, 1);
+  assert.deepEqual(result.byProvider.map((provider) => provider.provider), ["openai"]);
+  assert.equal(result.byProvider[0]?.calls, 1);
+  assert.deepEqual(result.sessions.map((session) => session.traceId), ["trace-counted"]);
+  assert.equal(result.sessions[0]?.totalTokens, 120);
+  assert.equal(result.sessions[0]?.toolCallCount, 1);
+  assert.equal(result.sessions[0]?.status, "ok");
+  assert.deepEqual(result.tools.recent.map((tool) => `${tool.name}:${tool.count}`), ["web.run:1"]);
+  assert.deepEqual(result.tools.repeated, []);
+
+  assert.deepEqual(result.workflow?.observationTypes, { GENERATION: 1, TOOL: 1 });
+  assert.equal(result.workflow?.parentEdges, 1);
+  assert.equal(result.workflow?.rootNodes, 1);
+  assert.equal(result.workflow?.modelGenerations, 1);
+  assert.equal(result.workflow?.toolCalls, 1);
+  assert.equal(result.workflow?.errorNodes, 0);
+
+  assert.equal(result.operations.length, 1);
+  assert.equal(result.operations[0]?.operationId, "op-dedupe");
+  assert.equal(result.operations[0]?.observations, 2);
+  assert.equal(result.operations[0]?.calls, 2);
+  assert.equal(result.operations[0]?.generationCalls, 1);
+  assert.equal(result.operations[0]?.toolCalls, 1);
+  assert.equal(result.operations[0]?.totalTokens, 120);
+  assert.equal(result.operations[0]?.effectiveCost, 0.02);
+  assert.equal(result.accounting.operationCount, 1);
+  assert.equal(result.accounting.effectiveCost, 0.02);
+
+  assert.deepEqual(result.topLargeTraces.map((trace) => trace.traceId), ["trace-counted"]);
+  assert.deepEqual(result.topExpensiveTraces.map((trace) => trace.traceId), ["trace-counted"]);
+  assert.equal(result.wasteFlags.find((flag) => flag.kind === "largest_token_session")?.value, 120);
+  assert.equal(JSON.stringify(result).includes("trace-duplicate"), false);
+  assert.equal(JSON.stringify(result).includes("apply_patch"), false);
+});
+
 test("keeps operation calls distinct from observations for span and event rows", async () => {
   setLangfuseEnv();
   const page = {

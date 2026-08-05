@@ -590,7 +590,8 @@ function aggregateObservations(
   const tools = new Map<string, ToolAggregate>();
   const observationTypes = new Map<string, number>();
   const observationIds = new Set<string>();
-  const countedCorrelationObservationKeys = new Set<string>();
+  const countedObservationKeys = new Set<string>();
+  const countedObservations: Observation[] = [];
   const childIds = new Set<string>();
   let latencyCount = 0;
   let latencyTotalMs = 0;
@@ -640,23 +641,26 @@ function aggregateObservations(
     const correlation = extractCorrelationIds(obs.metadata);
     const observationKey = observationDeduplicationKey(obs, type, correlation.operationId);
 
-    if (!countedCorrelationObservationKeys.has(observationKey)) {
-      countedCorrelationObservationKeys.add(observationKey);
-      eligibleCorrelationObservations += 1;
-      if (correlation.operationId) withOperationId += 1;
-      if (correlation.goalId) withGoalId += 1;
-      if (correlation.runId) withRunId += 1;
-      if (correlation.stageId) withStageId += 1;
-      if (correlation.invalid) invalidIdentifierObservations += 1;
-      if (
-        correlation.operationId &&
-        correlation.goalId &&
-        correlation.runId &&
-        correlation.stageId &&
-        !correlation.invalid
-      ) {
-        fullyCorrelatedObservations += 1;
-      }
+    if (countedObservationKeys.has(observationKey)) {
+      continue;
+    }
+    countedObservationKeys.add(observationKey);
+    countedObservations.push(obs);
+
+    eligibleCorrelationObservations += 1;
+    if (correlation.operationId) withOperationId += 1;
+    if (correlation.goalId) withGoalId += 1;
+    if (correlation.runId) withRunId += 1;
+    if (correlation.stageId) withStageId += 1;
+    if (correlation.invalid) invalidIdentifierObservations += 1;
+    if (
+      correlation.operationId &&
+      correlation.goalId &&
+      correlation.runId &&
+      correlation.stageId &&
+      !correlation.invalid
+    ) {
+      fullyCorrelatedObservations += 1;
     }
 
     if (type) observationTypes.set(type, (observationTypes.get(type) ?? 0) + 1);
@@ -794,22 +798,20 @@ function aggregateObservations(
       addOptional(operation.providers, provider);
       addOptional(operation.platforms, platform);
 
-      if (!operation.countedObservationKeys.has(observationKey)) {
-        operation.countedObservationKeys.add(observationKey);
-        operation.observations += 1;
-        if (type === "GENERATION" || model) operation.calls += 1;
-        if (type === "GENERATION") operation.generationCalls += 1;
-        operation.inputTokens += usage.inputTokens;
-        operation.outputTokens += usage.outputTokens;
-        operation.totalTokens += usage.totalTokens;
-        operation.cacheReadTokens += usage.cacheReadTokens;
-        operation.cacheWriteTokens += usage.cacheWriteTokens;
-        mergeOperationCostFields(operation, costFields);
-        if (isError) operation.errors += 1;
-        if (startMs != null) operation.startMs = Math.min(operation.startMs ?? startMs, startMs);
-        if (endMs != null) operation.endMs = Math.max(operation.endMs ?? endMs, endMs);
-        if (rowLatestMs != null) operation.latestMs = Math.max(operation.latestMs ?? rowLatestMs, rowLatestMs);
-      }
+      operation.countedObservationKeys.add(observationKey);
+      operation.observations += 1;
+      if (type === "GENERATION" || model) operation.calls += 1;
+      if (type === "GENERATION") operation.generationCalls += 1;
+      operation.inputTokens += usage.inputTokens;
+      operation.outputTokens += usage.outputTokens;
+      operation.totalTokens += usage.totalTokens;
+      operation.cacheReadTokens += usage.cacheReadTokens;
+      operation.cacheWriteTokens += usage.cacheWriteTokens;
+      mergeOperationCostFields(operation, costFields);
+      if (isError) operation.errors += 1;
+      if (startMs != null) operation.startMs = Math.min(operation.startMs ?? startMs, startMs);
+      if (endMs != null) operation.endMs = Math.max(operation.endMs ?? endMs, endMs);
+      if (rowLatestMs != null) operation.latestMs = Math.max(operation.latestMs ?? rowLatestMs, rowLatestMs);
 
       if (tool) {
         const toolKey = safeCorrelationId(obs.metadata.tool_call_id) ?? observationKey;
@@ -851,15 +853,14 @@ function aggregateObservations(
     .filter((tool) => tool.count > 1)
     .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name))
     .slice(0, 8);
-  const includedObservations = pageResult.observations.filter((obs) => !isSyntheticObservation(obs));
   const topExpensiveTraces = [...sessionRows].sort((a, b) => b.effectiveCost - a.effectiveCost).slice(0, 8);
   const topLargeTraces = [...sessionRows].sort((a, b) => b.totalTokens - a.totalTokens).slice(0, 8);
   const workflow: WorkflowSummary = {
     langGraphDetected,
     message: langGraphDetected ? "LangGraph trace metadata detected" : "LangGraph traces not detected",
     observationTypes: Object.fromEntries([...observationTypes.entries()].sort((a, b) => a[0].localeCompare(b[0]))),
-    parentEdges: includedObservations.filter((obs) => obs.parentObservationId).length,
-    rootNodes: includedObservations.filter((obs) => obs.id && !childIds.has(obs.id)).length,
+    parentEdges: countedObservations.filter((obs) => obs.parentObservationId).length,
+    rootNodes: countedObservations.filter((obs) => obs.id && !childIds.has(obs.id)).length,
     modelGenerations: totals.generationCalls,
     toolCalls: totals.toolCalls,
     errorNodes: totals.errors,
