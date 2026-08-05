@@ -201,9 +201,24 @@ test("detects only Supabase shared-pooler URLs that need TLS compatibility mode"
   );
   assert.equal(
     usesSupabaseSharedPoolerTlsCompatibility(
-      `postgresql://${secretUsername}:${secretPassword}@aws-0-us-west-1.pooler.supabase.com:6543/postgres?pgbouncer=true&sslrootcert=/tmp/operator-ca.pem`,
+      `postgresql://${secretUsername}:***@aws-0-us-west-1.pooler.supabase.com:6543/postgres?pgbouncer=true&sslrootcert=/tmp/operator-ca.pem`,
     ),
     false,
+  );
+  // Regression: a `port` query param can override the authority :6543 port
+  // after the scope check in pg-connection-string. Must NOT be treated as the
+  // shared pooler (would disable cert verification on an off-pooler endpoint).
+  assert.equal(
+    usesSupabaseSharedPoolerTlsCompatibility(
+      `postgresql://${secretUsername}:***@aws-0-us-west-1.pooler.supabase.com:6543/postgres?pgbouncer=true&port=5432`,
+    ),
+    false,
+  );
+  assert.equal(
+    createPrismaPgPoolConfig(
+      `postgresql://${secretUsername}:***@aws-0-us-west-1.pooler.supabase.com:6543/postgres?pgbouncer=true&port=5432`,
+    ).ssl,
+    undefined,
   );
 });
 

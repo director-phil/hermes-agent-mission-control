@@ -73,6 +73,13 @@ export function usesSupabaseSharedPoolerTlsCompatibility(databaseUrl: string): b
       return false;
     }
 
+    // pg-connection-string lets a `port` query param override the authority
+    // port AFTER this scope check, which could move the connection off the
+    // shared pooler (:6543) while still disabling cert verification. Reject it.
+    if (normalizedKey === "port") {
+      return false;
+    }
+
     if (PG_OPERATOR_TLS_MATERIAL_PARAMS.has(normalizedKey)) {
       return false;
     }
