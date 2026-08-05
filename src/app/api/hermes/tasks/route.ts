@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { readHermesNativeSnapshotForServer } from "@/lib/hermes-native";
+import { readHermesNativeSnapshotForServer } from "@/lib/hermes-native-mirror";
 
 export async function GET() {
   const snapshot = await readHermesNativeSnapshotForServer();

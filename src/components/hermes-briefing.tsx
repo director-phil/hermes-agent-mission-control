@@ -2,11 +2,11 @@
 
 /* ───────────────────────────────────────────────────────────
    Hermy HQ · Chief-of-Staff brief
-   Renders Hermes' daily brief (GET /api/hermes/briefing) and live
-   read-only status.
+   Renders Hermes' daily brief (GET /api/hermes/briefing), a live
+   "needs you" chip, and a Generate-now button (POST → bridge runs it).
    ─────────────────────────────────────────────────────────── */
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Sunrise, RefreshCw, ArrowUpRight } from "lucide-react";
 import { Panel, Eyebrow, Button } from "@/components/ui/kit";
 
@@ -40,10 +40,10 @@ export function HermesBriefing() {
   const [data, setData] = useState<Briefing | null>(null);
   const [pending, setPending] = useState(0);
   const [loaded, setLoaded] = useState(false);
-  const [refreshing, setRefreshing] = useState(false);
+  const [generating, setGenerating] = useState(false);
+  const genAt = useRef<string | null>(null);
 
   const load = useCallback(async () => {
-    setRefreshing(true);
     try {
       const [b, r] = await Promise.all([
         fetch("/api/hermes/briefing").then((x) => (x.ok ? x.json() : null)),
@@ -51,23 +51,25 @@ export function HermesBriefing() {
       ]);
       if (b) {
         setData(b);
+        // stop the "generating" spinner once a fresh brief lands
+        if (generating && b.generatedAt && b.generatedAt !== genAt.current) setGenerating(false);
       }
       if (r) setPending(r.pending ?? 0);
     } catch { /* ignore */ }
     setLoaded(true);
-    setRefreshing(false);
-  }, []);
+  }, [generating]);
 
   useEffect(() => {
-    const firstLoad = setTimeout(() => {
-      void load();
-    }, 0);
-    const iv = setInterval(load, 20000);
-    return () => {
-      clearTimeout(firstLoad);
-      clearInterval(iv);
-    };
-  }, [load]);
+    load();
+    const iv = setInterval(load, generating ? 6000 : 20000);
+    return () => clearInterval(iv);
+  }, [load, generating]);
+
+  const generate = async () => {
+    genAt.current = data?.generatedAt ?? null;
+    setGenerating(true);
+    try { await fetch("/api/hermes/briefing", { method: "POST" }); } catch { /* ignore */ }
+  };
 
   const empty = !data || !data.generatedAt || !data.summary;
 
@@ -88,9 +90,9 @@ export function HermesBriefing() {
               {pending} need{pending === 1 ? "s" : ""} you <ArrowUpRight className="w-3 h-3" />
             </a>
           )}
-          <Button variant="ghost" size="sm" onClick={load} disabled={refreshing}>
-            <RefreshCw className={`w-3.5 h-3.5 ${refreshing ? "animate-spin" : ""}`} />
-            Refresh
+          <Button variant="ghost" size="sm" onClick={generate} disabled={generating}>
+            <RefreshCw className={`w-3.5 h-3.5 ${generating ? "animate-spin" : ""}`} />
+            {generating ? "Generating…" : "Generate"}
           </Button>
         </div>
       </div>
@@ -98,11 +100,11 @@ export function HermesBriefing() {
       {empty ? (
         <div className="py-6 text-center">
           <p className="text-[14px] text-[var(--text-2)]">
-            {loaded ? "No brief yet." : "Loading…"}
+            {generating ? "Hermes is writing your brief… (~1 min)" : loaded ? "No brief yet." : "Loading…"}
           </p>
-          {loaded && (
+          {!generating && loaded && (
             <p className="mt-1 text-[12.5px] text-[var(--text-3)]">
-              Briefing generation is disabled on this read-only Mission Control surface.
+              It auto-generates each morning — or hit Generate to get one now.
             </p>
           )}
         </div>
