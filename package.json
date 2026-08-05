@@ -14,6 +14,7 @@
     "db:seed": "npx tsx prisma/seed.ts"
   },
   "dependencies": {
+    "@prisma/adapter-pg": "6.19.2",
     "@prisma/client": "^6.19.2",
     "@types/better-sqlite3": "^7.6.13",
     "@types/formidable": "^3.4.6",
