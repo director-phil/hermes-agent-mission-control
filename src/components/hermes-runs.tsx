@@ -3,6 +3,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Activity, AlertTriangle, CheckCircle2, ChevronRight, Gauge, Link2 } from "lucide-react";
 import { Panel, SectionHeader, Pill, EmptyState, Eyebrow } from "@/components/ui/kit";
+import type {
+  AccountingSummary,
+  CorrelationCoverage,
+  CorrelationStatus,
+  OperationAggregate as OperationUsage,
+} from "@/lib/langfuse-observability";
 
 // ── Types ─────────────────────────────────────────────────
 type RunStatus =
@@ -153,67 +159,6 @@ interface ProviderUsage {
   costBasis: CostBasis;
   estimatedCostRange?: CostRange;
   cost: number;
-}
-
-type CorrelationStatus = "observed" | "partial" | "missing" | "invalid";
-
-interface CorrelationCoverage {
-  status: CorrelationStatus;
-  totalObservations: number;
-  eligibleObservations: number;
-  withOperationId: number;
-  withGoalId: number;
-  withRunId: number;
-  withStageId: number;
-  invalidIdentifierObservations: number;
-  operationCount: number;
-  fullyCorrelatedOperations: number;
-  percentage: number | null;
-}
-
-interface OperationUsage {
-  operationId: string;
-  goalId: string | null;
-  runId: string | null;
-  stageId: string | null;
-  traceIds: string[];
-  sessionIds: string[];
-  models: string[];
-  providers: string[];
-  platforms: string[];
-  calls: number;
-  generationCalls: number;
-  observations: number;
-  inputTokens: number;
-  outputTokens: number;
-  totalTokens: number;
-  cacheReadTokens: number;
-  cacheWriteTokens: number;
-  reportedCost: number;
-  estimatedCost: number | null;
-  effectiveCost: number;
-  costBasis: CostBasis;
-  estimatedCostRange?: CostRange;
-  toolCalls: number;
-  errors: number;
-  startTime: string | null;
-  endTime: string | null;
-  durationMs: number | null;
-  latestTimestamp: string | null;
-  status: "ok" | "error";
-}
-
-interface AccountingSummary {
-  operationCount: number;
-  rowCap: number;
-  returnedOperations: number;
-  truncatedOperations: boolean;
-  reportedCost: number;
-  estimatedCost: number | null;
-  effectiveCost: number;
-  costBasis: CostBasis;
-  reconciliation: CorrelationStatus;
-  warnings: string[];
 }
 
 interface AmplificationMetrics {
@@ -932,8 +877,11 @@ function CorrelationAccounting({
                     rep {fmtUsd(operation.reportedCost)}
                   </p>
                 </div>
-                <div className="num text-[12px] text-[var(--text-2)] md:text-right">
-                  {operation.toolCalls}
+                <div className="num flex items-center justify-between gap-3 text-[12px] text-[var(--text-2)] md:block md:text-right">
+                  <span className="md:hidden text-[10.5px] uppercase tracking-[0.14em] text-[var(--text-4)]">
+                    Tools
+                  </span>
+                  <span>{operation.toolCalls}</span>
                 </div>
                 <div className="flex md:justify-end">
                   <Pill tone={operation.status === "ok" ? "up" : "down"} className="!py-0.5 !text-[10px]">

@@ -466,14 +466,14 @@ test("derives bounded privacy-safe correlation and operation accounting", async 
 
   const coder = result.operations.find((operation) => operation.operationId === "op-coder");
   assert.equal(coder?.observations, 3);
-  assert.equal(coder?.calls, 3);
+  assert.equal(coder?.calls, 2);
   assert.equal(coder?.generationCalls, 1);
   assert.equal(coder?.toolCalls, 1);
   assert.equal(coder?.totalTokens, 2500);
   assert.equal(coder?.reportedCost, 8);
   assert.equal(coder?.estimatedCost, 0);
   assert.equal(coder?.effectiveCost, 0);
-  assert.equal(coder?.costBasis, "local_zero");
+  assert.equal(coder?.costBasis, "mixed");
 
   const reviewer = result.operations.find((operation) => operation.operationId === "op-reviewer");
   assert.equal(reviewer?.effectiveCost, 0.5);
@@ -489,6 +489,7 @@ test("derives bounded privacy-safe correlation and operation accounting", async 
   assert.equal(result.accounting.costBasis, "mixed");
   assert.equal(result.accounting.reconciliation, "partial");
   assert.equal(result.accounting.warnings.some((warning) => warning.includes("part")), true);
+  assert.equal(result.accounting.warnings.some((warning) => warning.includes("invalid")), true);
 
   assert.equal(result.byProvider.some((provider) => provider.provider === "anthropic"), true);
   const serialized = JSON.stringify(result);
@@ -499,6 +500,70 @@ test("derives bounded privacy-safe correlation and operation accounting", async 
   assert.equal(serialized.includes("raw tool result must not leak"), false);
   assert.equal(serialized.includes("invalid row content must not leak"), false);
   assert.equal(serialized.includes("x".repeat(120)), false);
+});
+
+test("retains first valid alias while marking any malformed alias invalid", async () => {
+  setLangfuseEnv();
+  const page = {
+    data: [
+      {
+        id: "alias-invalid-first",
+        traceId: "trace-alias-a",
+        sessionId: "session-alias-a",
+        startTime: "2026-08-05T11:50:00.000Z",
+        type: "GENERATION",
+        providedModelName: "gpt-5",
+        usageDetails: { input: 10, output: 2, total: 12 },
+        totalCost: "0.01",
+        metadata: {
+          operation_id: "bad operation",
+          operationId: "op-alias-a",
+          goal_id: "goal-alias",
+          run_id: "run-alias",
+          stage: "execute",
+          provider: "openai",
+        },
+      },
+      {
+        id: "alias-invalid-second",
+        traceId: "trace-alias-b",
+        sessionId: "session-alias-b",
+        startTime: "2026-08-05T11:51:00.000Z",
+        type: "GENERATION",
+        providedModelName: "gpt-5",
+        usageDetails: { input: 20, output: 3, total: 23 },
+        totalCost: "0.02",
+        metadata: {
+          operationId: "not reached by alias order",
+          operation_id: "op-alias-b",
+          goal_id: "goal-alias",
+          run_id: "run-alias",
+          stage: "execute",
+          provider: "openai",
+        },
+      },
+    ],
+  };
+  const fetchImpl: typeof fetch = async () =>
+    new Response(JSON.stringify(page), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+
+  const result = await collectHermesObservability("24h", {
+    now: NOW,
+    fetchImpl,
+  });
+
+  assert.deepEqual(
+    result.operations.map((operation) => operation.operationId).sort(),
+    ["op-alias-a", "op-alias-b"],
+  );
+  assert.equal(result.correlationCoverage.status, "partial");
+  assert.equal(result.correlationCoverage.withOperationId, 2);
+  assert.equal(result.correlationCoverage.invalidIdentifierObservations, 2);
+  assert.equal(result.correlationCoverage.fullyCorrelatedObservations, 0);
+  assert.equal(result.accounting.warnings.some((warning) => warning.includes("invalid")), true);
 });
 
 test("does not fabricate operations when correlation metadata is absent", async () => {
@@ -694,6 +759,94 @@ test("does not collapse distinct no-id tool observations during dedupe", async (
   assert.equal(operation?.toolCalls, 2);
 });
 
+test("keeps operation calls distinct from observations for span and event rows", async () => {
+  setLangfuseEnv();
+  const page = {
+    data: [
+      {
+        id: "calls-gen",
+        traceId: "trace-calls",
+        sessionId: "session-calls",
+        startTime: "2026-08-05T11:50:00.000Z",
+        type: "GENERATION",
+        providedModelName: "gpt-5",
+        usageDetails: { input: 100, output: 10, total: 110 },
+        totalCost: "0.01",
+        metadata: {
+          operation_id: "op-calls",
+          goal_id: "goal-p1a",
+          run_id: "run-001",
+          stage: "execute",
+          provider: "openai",
+        },
+      },
+      {
+        id: "calls-span-tool",
+        traceId: "trace-calls",
+        sessionId: "session-calls",
+        startTime: "2026-08-05T11:50:01.000Z",
+        type: "SPAN",
+        name: "agent tool",
+        metadata: {
+          operation_id: "op-calls",
+          tool_name: "browser.search",
+          tool_call_id: "tool-span",
+        },
+      },
+      {
+        id: "calls-event-tool",
+        traceId: "trace-calls",
+        sessionId: "session-calls",
+        startTime: "2026-08-05T11:50:02.000Z",
+        type: "EVENT",
+        name: "tool:memory.lookup",
+        metadata: {
+          operation_id: "op-calls",
+          tool_call_count: "2",
+        },
+      },
+      {
+        id: "calls-span-no-tool",
+        traceId: "trace-calls",
+        sessionId: "session-calls",
+        startTime: "2026-08-05T11:50:03.000Z",
+        type: "SPAN",
+        name: "agent bookkeeping",
+        metadata: {
+          operation_id: "op-calls",
+        },
+      },
+      {
+        id: "calls-event-no-tool",
+        traceId: "trace-calls",
+        sessionId: "session-calls",
+        startTime: "2026-08-05T11:50:04.000Z",
+        type: "EVENT",
+        name: "checkpoint",
+        metadata: {
+          operation_id: "op-calls",
+        },
+      },
+    ],
+  };
+  const fetchImpl: typeof fetch = async () =>
+    new Response(JSON.stringify(page), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+
+  const result = await collectHermesObservability("24h", {
+    now: NOW,
+    fetchImpl,
+  });
+
+  const operation = result.operations.find((row) => row.operationId === "op-calls");
+  assert.equal(operation?.observations, 5);
+  assert.equal(operation?.generationCalls, 1);
+  assert.equal(operation?.toolCalls, 3);
+  assert.equal(operation?.calls, 4);
+});
+
 test("reports operation-only tool observations as partial row-level correlation", async () => {
   setLangfuseEnv();
   const page = {
@@ -814,6 +967,119 @@ test("caps operation rows and nested identifiers deterministically", async () =>
   assert.equal(result.operations[0].operationId, "op-44");
   assert.equal(result.operations[39].operationId, "op-05");
   assert.equal(result.operations.every((operation) => operation.traceIds.length <= 6), true);
+});
+
+test("caps nested operation trace and session identifiers to deterministic six", async () => {
+  setLangfuseEnv();
+  const data = Array.from({ length: 8 }, (_, index) => ({
+    id: `nested-gen-${index}`,
+    traceId: `trace-nested-${String(7 - index).padStart(2, "0")}`,
+    sessionId: `session-nested-${String(7 - index).padStart(2, "0")}`,
+    startTime: `2026-08-05T11:5${index}:00.000Z`,
+    type: "GENERATION",
+    providedModelName: "gpt-5",
+    usageDetails: { input: 1, output: 1, total: 2 },
+    totalCost: "0.01",
+    metadata: {
+      operation_id: "op-nested-cap",
+      goal_id: "goal-cap",
+      run_id: "run-cap",
+      stage: "stage-cap",
+      provider: "openai",
+    },
+  }));
+  const page = { data };
+  const fetchImpl: typeof fetch = async () =>
+    new Response(JSON.stringify(page), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+
+  const result = await collectHermesObservability("24h", {
+    now: NOW,
+    fetchImpl,
+  });
+
+  assert.equal(result.operations.length, 1);
+  assert.deepEqual(result.operations[0].traceIds, [
+    "trace-nested-00",
+    "trace-nested-01",
+    "trace-nested-02",
+    "trace-nested-03",
+    "trace-nested-04",
+    "trace-nested-05",
+  ]);
+  assert.deepEqual(result.operations[0].sessionIds, [
+    "session-nested-00",
+    "session-nested-01",
+    "session-nested-02",
+    "session-nested-03",
+    "session-nested-04",
+    "session-nested-05",
+  ]);
+});
+
+test("keeps zero-cost null-estimate rows in operation cost-basis reconciliation", async () => {
+  setLangfuseEnv();
+  const page = {
+    data: [
+      {
+        id: "zero-cloud",
+        traceId: "trace-zero-cloud",
+        sessionId: "session-zero-cloud",
+        startTime: "2026-08-05T11:50:00.000Z",
+        type: "GENERATION",
+        providedModelName: "claude-future",
+        usageDetails: { input: 0, output: 0, total: 0 },
+        totalCost: "0",
+        metadata: {
+          operation_id: "op-zero-cloud",
+          goal_id: "goal-zero",
+          run_id: "run-zero",
+          stage: "execute",
+          provider: "anthropic",
+        },
+      },
+      {
+        id: "zero-local",
+        traceId: "trace-zero-local",
+        sessionId: "session-zero-local",
+        startTime: "2026-08-05T11:51:00.000Z",
+        type: "GENERATION",
+        providedModelName: "qwen3-coder",
+        usageDetails: { input: 0, output: 0, total: 0 },
+        totalCost: "0",
+        metadata: {
+          operation_id: "op-zero-local",
+          goal_id: "goal-zero",
+          run_id: "run-zero",
+          stage: "execute",
+          provider: "custom",
+        },
+      },
+    ],
+  };
+  const fetchImpl: typeof fetch = async () =>
+    new Response(JSON.stringify(page), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+
+  const result = await collectHermesObservability("24h", {
+    now: NOW,
+    fetchImpl,
+  });
+
+  const cloud = result.operations.find((operation) => operation.operationId === "op-zero-cloud");
+  const local = result.operations.find((operation) => operation.operationId === "op-zero-local");
+  assert.equal(cloud?.estimatedCost, null);
+  assert.equal(cloud?.costBasis, "reported_only_unknown_cloud");
+  assert.equal(local?.estimatedCost, 0);
+  assert.equal(local?.costBasis, "local_zero");
+  assert.equal(result.accounting.reportedCost, 0);
+  assert.equal(result.accounting.estimatedCost, 0);
+  assert.equal(result.accounting.effectiveCost, 0);
+  assert.equal(result.accounting.costBasis, "mixed");
 });
 
 test("separates reported, estimated, and effective costs without guessing unknown pricing", async () => {

@@ -18,7 +18,7 @@ const MAX_OPERATION_NESTED_IDS = 6;
 const MAX_OBSERVATION_DEDUPE_KEY_PART_LENGTH = 120;
 
 type HealthStatus = "ok" | "warning" | "error";
-type CorrelationStatus = "observed" | "partial" | "missing" | "invalid";
+export type CorrelationStatus = "observed" | "partial" | "missing" | "invalid";
 
 export type CostBasis =
   | "anthropic_claude_opus_4_6_estimate_cache_write_5m_assumed"
@@ -797,7 +797,7 @@ function aggregateObservations(
       if (!operation.countedObservationKeys.has(observationKey)) {
         operation.countedObservationKeys.add(observationKey);
         operation.observations += 1;
-        operation.calls += 1;
+        if (type === "GENERATION" || model) operation.calls += 1;
         if (type === "GENERATION") operation.generationCalls += 1;
         operation.inputTokens += usage.inputTokens;
         operation.outputTokens += usage.outputTokens;
@@ -816,6 +816,7 @@ function aggregateObservations(
         if (!operation.countedToolKeys.has(toolKey)) {
           operation.countedToolKeys.add(toolKey);
           operation.toolCalls += tool.count;
+          operation.calls += tool.count;
         }
       }
     }
@@ -1021,13 +1022,17 @@ function extractCorrelationIds(metadata: Record<string, unknown>): CorrelationId
 
 function firstCorrelationId(metadata: Record<string, unknown>, keys: string[]) {
   let invalid = false;
+  let firstValid: string | null = null;
   for (const key of keys) {
     if (!Object.prototype.hasOwnProperty.call(metadata, key)) continue;
     const value = safeCorrelationId(metadata[key]);
-    if (value) return { value, invalid };
-    invalid = true;
+    if (value) {
+      firstValid ??= value;
+    } else {
+      invalid = true;
+    }
   }
-  return { value: null, invalid };
+  return { value: firstValid, invalid };
 }
 
 function safeCorrelationId(value: unknown) {
@@ -1163,9 +1168,7 @@ function mergeSessionCostFields(target: SessionWork, cost: CostFields) {
 function mergeOperationCostFields(target: OperationWork, cost: CostFields) {
   target.reportedCost += cost.reportedCost;
   target.effectiveCost += cost.effectiveCost;
-  if (cost.reportedCost > 0 || cost.effectiveCost > 0 || cost.estimatedCost != null) {
-    target.costBases.add(cost.costBasis);
-  }
+  target.costBases.add(cost.costBasis);
   if (cost.estimatedCost != null) {
     target.estimatedCost += cost.estimatedCost;
     target.hasEstimatedCost = true;
@@ -1465,6 +1468,9 @@ function buildAccountingSummary(
   }
   if (coverage.status === "partial") {
     warnings.push("Only part of the Langfuse window carries allowlisted operation, goal, run, and stage identifiers.");
+  }
+  if (coverage.status !== "invalid" && coverage.invalidIdentifierObservations > 0) {
+    warnings.push("Allowlisted correlation fields were present but invalid; non-scalar or oversized identifiers were ignored.");
   }
   if (operations.length > MAX_OPERATION_ROWS) {
     warnings.push(`Operation rows capped at ${MAX_OPERATION_ROWS}; counts still use the full bounded fetch window.`);
