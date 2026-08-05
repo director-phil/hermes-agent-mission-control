@@ -1,5 +1,6 @@
 "use client";
 
+import type { CSSProperties } from "react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Activity,
@@ -14,6 +15,18 @@ import {
   Repeat2,
   Wrench,
 } from "lucide-react";
+import {
+  Area,
+  AreaChart,
+  CartesianGrid,
+  Legend,
+  Line,
+  LineChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
 import { Button, Delta, EmptyState, Eyebrow, Panel, Pill, SectionHeader, Skeleton, rise } from "@/components/ui/kit";
 import type {
   AccountingSummary,
@@ -28,6 +41,8 @@ import type {
   ProviderAggregate,
   SessionTraceAggregate,
   SourceHealth,
+  TimeSeries,
+  TimeSeriesBucket,
   ToolAggregate,
   WasteFlag,
 } from "@/lib/langfuse-observability";
@@ -256,6 +271,199 @@ function MetricTiles({ totals }: { totals: ObservabilityTotals | null }) {
         secondary={totals ? `${totals.generationCalls + totals.toolCalls} observed calls` : undefined}
         icon={<Activity className="h-4 w-4" />}
       />
+    </div>
+  );
+}
+
+const chartTooltipStyle: CSSProperties = {
+  background: "var(--surface-2)",
+  border: "1px solid var(--line)",
+  borderRadius: 8,
+  color: "var(--text)",
+  boxShadow: "0 18px 60px rgba(0,0,0,0.35)",
+};
+
+const chartLabelStyle: CSSProperties = {
+  color: "var(--text)",
+  fontSize: 11,
+  fontWeight: 700,
+};
+
+function TrendTooltip({
+  active,
+  label,
+  payload,
+  formatter,
+  totalLabel,
+  totalValue,
+}: {
+  active?: boolean;
+  label?: string | number;
+  payload?: Array<{ color?: string; name?: string; value?: number | string; payload?: TimeSeriesBucket }>;
+  formatter: (value: number) => string;
+  totalLabel: string;
+  totalValue: (bucket: TimeSeriesBucket) => number;
+}) {
+  if (!active || !payload?.length) return null;
+  const bucket = payload[0]?.payload;
+
+  return (
+    <div className="rounded-[8px] border border-[var(--line)] bg-[var(--surface-2)] px-3 py-2 shadow-2xl">
+      <p className="mb-2 text-[11px] font-semibold text-[var(--text)]">{label}</p>
+      <div className="space-y-1.5">
+        {bucket && (
+          <div className="flex min-w-[150px] items-center justify-between gap-4 text-[11px]">
+            <span className="text-[var(--text-3)]">{totalLabel}</span>
+            <span className="num text-[var(--text)]">{formatter(totalValue(bucket))}</span>
+          </div>
+        )}
+        {payload.map((entry) => {
+          const value = typeof entry.value === "number" ? entry.value : Number(entry.value ?? 0);
+          return (
+            <div key={entry.name} className="flex min-w-[150px] items-center justify-between gap-4 text-[11px]">
+              <span className="flex items-center gap-2 text-[var(--text-3)]">
+                <span className="h-2 w-2 rounded-full" style={{ background: entry.color ?? "var(--accent)" }} />
+                {entry.name}
+              </span>
+              <span className="num text-[var(--text)]">{formatter(Number.isFinite(value) ? value : 0)}</span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function TokenBurnChart({ buckets }: { buckets: TimeSeriesBucket[] }) {
+  return (
+    <ResponsiveContainer width="100%" height={260}>
+      <AreaChart data={buckets} margin={{ top: 12, right: 8, left: 0, bottom: 0 }}>
+        <CartesianGrid stroke="var(--line)" strokeDasharray="3 3" vertical={false} />
+        <XAxis
+          dataKey="label"
+          tick={{ fill: "var(--text-3)", fontSize: 11 }}
+          tickLine={false}
+          axisLine={{ stroke: "var(--line)" }}
+          minTickGap={18}
+        />
+        <YAxis
+          tick={{ fill: "var(--text-3)", fontSize: 11 }}
+          tickLine={false}
+          axisLine={false}
+          tickFormatter={fmtTokens}
+          width={46}
+        />
+        <Tooltip
+          content={<TrendTooltip formatter={fmtTokens} totalLabel="Total" totalValue={(bucket) => bucket.totalTokens} />}
+          contentStyle={chartTooltipStyle}
+          labelStyle={chartLabelStyle}
+        />
+        <Legend wrapperStyle={{ color: "var(--text-3)", fontSize: 11, paddingTop: 8 }} />
+        <Area
+          type="monotone"
+          dataKey="localTokens"
+          name="Local"
+          stackId="tokens"
+          stroke="var(--up)"
+          fill="var(--up)"
+          fillOpacity={0.34}
+          strokeWidth={2}
+          isAnimationActive={false}
+        />
+        <Area
+          type="monotone"
+          dataKey="cloudTokens"
+          name="Cloud"
+          stackId="tokens"
+          stroke="var(--warn)"
+          fill="var(--warn)"
+          fillOpacity={0.28}
+          strokeWidth={2}
+          isAnimationActive={false}
+        />
+      </AreaChart>
+    </ResponsiveContainer>
+  );
+}
+
+function CostTrendChart({ buckets }: { buckets: TimeSeriesBucket[] }) {
+  return (
+    <ResponsiveContainer width="100%" height={260}>
+      <LineChart data={buckets} margin={{ top: 12, right: 8, left: 0, bottom: 0 }}>
+        <CartesianGrid stroke="var(--line)" strokeDasharray="3 3" vertical={false} />
+        <XAxis
+          dataKey="label"
+          tick={{ fill: "var(--text-3)", fontSize: 11 }}
+          tickLine={false}
+          axisLine={{ stroke: "var(--line)" }}
+          minTickGap={18}
+        />
+        <YAxis
+          tick={{ fill: "var(--text-3)", fontSize: 11 }}
+          tickLine={false}
+          axisLine={false}
+          tickFormatter={fmtUsd}
+          width={58}
+        />
+        <Tooltip
+          content={<TrendTooltip formatter={fmtUsd} totalLabel="Effective" totalValue={(bucket) => bucket.effectiveCost} />}
+          contentStyle={chartTooltipStyle}
+          labelStyle={chartLabelStyle}
+        />
+        <Legend wrapperStyle={{ color: "var(--text-3)", fontSize: 11, paddingTop: 8 }} />
+        <Line
+          type="monotone"
+          dataKey="effectiveCost"
+          name="Effective cost"
+          stroke="var(--accent)"
+          strokeWidth={2.5}
+          dot={false}
+          activeDot={{ r: 4 }}
+          isAnimationActive={false}
+        />
+        <Line
+          type="monotone"
+          dataKey="cloudCost"
+          name="Cloud cost"
+          stroke="var(--warn)"
+          strokeWidth={2}
+          strokeOpacity={0.72}
+          dot={false}
+          activeDot={{ r: 4 }}
+          isAnimationActive={false}
+        />
+      </LineChart>
+    </ResponsiveContainer>
+  );
+}
+
+function TrendCharts({ timeSeries }: { timeSeries: TimeSeries | null | undefined }) {
+  const buckets = timeSeries?.buckets ?? [];
+  const hasActivity = buckets.length > 0 && buckets.some((bucket) => bucket.totalTokens > 0);
+
+  return (
+    <div className="mt-8 grid grid-cols-1 gap-5 xl:grid-cols-2">
+      <Panel className="min-w-0 p-5">
+        <SectionHeader label="TRENDS" title="Token burn over time" />
+        {!hasActivity ? (
+          <EmptyState icon={<Gauge className="h-6 w-6" />} title="No activity in this window" hint="No token-bearing observations were returned for this window." />
+        ) : (
+          <div className="min-w-0 overflow-hidden">
+            <TokenBurnChart buckets={buckets} />
+          </div>
+        )}
+      </Panel>
+
+      <Panel className="min-w-0 p-5">
+        <SectionHeader label="TRENDS" title="Cost over time" />
+        {!hasActivity ? (
+          <EmptyState icon={<CircleDollarSign className="h-6 w-6" />} title="No activity in this window" hint="No token-bearing observations were returned for this window." />
+        ) : (
+          <div className="min-w-0 overflow-hidden">
+            <CostTrendChart buckets={buckets} />
+          </div>
+        )}
+      </Panel>
     </div>
   );
 }
@@ -729,6 +937,7 @@ export default function ObservabilityPage() {
       ) : (
         <>
           <MetricTiles totals={data.totals} />
+          <TrendCharts timeSeries={data.timeSeries} />
           <ModelsTable models={data.byModel ?? []} />
           <ProviderSplit providers={data.byProvider ?? []} />
           <AmplificationPanel amplification={data.amplification ?? null} />

@@ -242,6 +242,29 @@ export interface AmplificationMetrics {
   deterministicFlags: string[];
 }
 
+export interface TimeSeriesBucket {
+  bucketStart: string;
+  label: string;
+  totalTokens: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  effectiveCost: number;
+  localTokens: number;
+  cloudTokens: number;
+  localCost: number;
+  cloudCost: number;
+  generationCalls: number;
+  toolCalls: number;
+}
+
+export interface TimeSeries {
+  window: ObservabilityWindow;
+  bucketMs: number;
+  buckets: TimeSeriesBucket[];
+}
+
 export interface WasteFlag {
   kind: "largest_token_session" | "repeated_tool" | "high_input_output_ratio";
   severity: "warn" | "down";
@@ -258,6 +281,7 @@ export interface HermesObservability {
   completeness: ObservabilityCompleteness | null;
   byModel: ModelAggregate[];
   byProvider: ProviderAggregate[];
+  timeSeries: TimeSeries;
   correlationCoverage: CorrelationCoverage;
   operations: OperationAggregate[];
   accounting: AccountingSummary;
@@ -954,6 +978,7 @@ function aggregateObservations(
       .map(roundCostAggregate)
       .sort((a, b) => b.effectiveCost - a.effectiveCost || b.totalTokens - a.totalTokens)
       .slice(0, 12),
+    timeSeries: buildTimeSeries(countedObservations, range, window),
     correlationCoverage,
     operations: operationRows,
     accounting,
@@ -978,6 +1003,100 @@ function aggregateObservations(
       byModel: Array.from(models.values()).map(roundCostAggregate),
     }),
   };
+}
+
+function buildTimeSeries(
+  observations: Observation[],
+  range: { fromStartTime: string; toStartTime: string },
+  window: ObservabilityWindow,
+): TimeSeries {
+  const bucketMs = window === "24h" ? 3_600_000 : 86_400_000;
+  try {
+    const bucketCount = window === "24h" ? 24 : 7;
+    const fromMs = parseDateMs(range.fromStartTime);
+    if (fromMs == null) return { window, bucketMs, buckets: [] };
+
+    const buckets = Array.from({ length: bucketCount }, (_, index): TimeSeriesBucket => {
+      const bucketStartMs = fromMs + index * bucketMs;
+      const bucketStart = new Date(bucketStartMs);
+      return {
+        bucketStart: bucketStart.toISOString(),
+        label: formatTimeSeriesLabel(bucketStart, window),
+        totalTokens: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        effectiveCost: 0,
+        localTokens: 0,
+        cloudTokens: 0,
+        localCost: 0,
+        cloudCost: 0,
+        generationCalls: 0,
+        toolCalls: 0,
+      };
+    });
+
+    for (const obs of observations) {
+      const startMs = parseDateMs(obs.startTime);
+      if (startMs == null) continue;
+      const index = Math.max(0, Math.min(bucketCount - 1, Math.floor((startMs - fromMs) / bucketMs)));
+      const bucket = buckets[index];
+      const type = obs.type?.toUpperCase() ?? "";
+      const usage = extractUsage(obs.usageDetails);
+      const model = safeText(obs.providedModelName ?? obs.model);
+      const provider = safeText(obs.metadata.provider);
+      const costFields = computeObservationCost({
+        reportedCost: obs.totalCost,
+        usage,
+        model,
+        provider,
+        metadata: obs.metadata,
+      });
+      const providerKey = provider ?? "unknown";
+      const modelClass = provider || model ? inferModelClass(providerKey, model) : "unknown";
+      const tool = classifyToolObservation(obs, type);
+
+      bucket.inputTokens += usage.inputTokens;
+      bucket.outputTokens += usage.outputTokens;
+      bucket.totalTokens += usage.totalTokens;
+      bucket.cacheReadTokens += usage.cacheReadTokens;
+      bucket.cacheWriteTokens += usage.cacheWriteTokens;
+      bucket.effectiveCost += costFields.effectiveCost;
+      if (modelClass === "local") {
+        bucket.localTokens += usage.totalTokens;
+        bucket.localCost += costFields.effectiveCost;
+      } else if (modelClass === "cloud") {
+        bucket.cloudTokens += usage.totalTokens;
+        bucket.cloudCost += costFields.effectiveCost;
+      }
+      if (type === "GENERATION") bucket.generationCalls += 1;
+      if (tool) bucket.toolCalls += tool.count;
+    }
+
+    for (const bucket of buckets) {
+      bucket.totalTokens = Math.round(bucket.totalTokens);
+      bucket.inputTokens = Math.round(bucket.inputTokens);
+      bucket.outputTokens = Math.round(bucket.outputTokens);
+      bucket.cacheReadTokens = Math.round(bucket.cacheReadTokens);
+      bucket.cacheWriteTokens = Math.round(bucket.cacheWriteTokens);
+      bucket.localTokens = Math.round(bucket.localTokens);
+      bucket.cloudTokens = Math.round(bucket.cloudTokens);
+      bucket.effectiveCost = roundMoney(bucket.effectiveCost);
+      bucket.localCost = roundMoney(bucket.localCost);
+      bucket.cloudCost = roundMoney(bucket.cloudCost);
+    }
+
+    return { window, bucketMs, buckets };
+  } catch {
+    return { window, bucketMs, buckets: [] };
+  }
+}
+
+function formatTimeSeriesLabel(date: Date, window: ObservabilityWindow) {
+  if (window === "24h") return `${date.toISOString().slice(11, 13)}:00`;
+  const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  return `${months[date.getUTCMonth()]} ${date.getUTCDate()}`;
 }
 
 function extractUsage(usageDetails: Record<string, unknown>) {
@@ -1782,6 +1901,7 @@ function failurePayload(
     completeness: null,
     byModel: [],
     byProvider: [],
+    timeSeries: { window, bucketMs: window === "24h" ? 3_600_000 : 86_400_000, buckets: [] },
     correlationCoverage: emptyCorrelationCoverage(),
     operations: [],
     accounting: emptyAccountingSummary(),
