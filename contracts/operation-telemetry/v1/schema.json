@@ -59,6 +59,12 @@
           "type": "object",
           "additionalProperties": false,
           "required": ["basis", "amount_usd"],
+          "allOf": [
+            {
+              "if": { "required": ["basis"], "properties": { "basis": { "const": "none" } } },
+              "then": { "properties": { "amount_usd": { "const": 0 } } }
+            }
+          ],
           "properties": {
             "basis": { "enum": ["none", "reported", "estimated"] },
             "amount_usd": { "type": "number", "minimum": 0 }
@@ -135,6 +141,12 @@
           "type": "object",
           "additionalProperties": false,
           "required": ["basis", "amount_usd"],
+          "allOf": [
+            {
+              "if": { "required": ["basis"], "properties": { "basis": { "const": "none" } } },
+              "then": { "properties": { "amount_usd": { "const": 0 } } }
+            }
+          ],
           "properties": {
             "basis": { "enum": ["none", "reported", "estimated"] },
             "amount_usd": { "type": "number", "minimum": 0 }
@@ -161,7 +173,16 @@
             "failure_class": { "enum": ["none", "blocked", "cancelled", "provider_error", "schema_error", "network_outage", "tool_error"] }
           }
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": ["operation_type"],
+            "properties": { "operation_type": { "const": "tool" } }
+          },
+          "then": { "required": ["tool"] }
+        }
+      ]
     },
     {
       "type": "object",
@@ -186,6 +207,97 @@
         "cost",
         "privacy",
         "export"
+      ],
+      "allOf": [
+        {
+          "oneOf": [
+            {
+              "required": ["status", "export"],
+              "properties": {
+                "status": { "const": "local_only" },
+                "export": {
+                  "required": ["state", "upstream_recorded"],
+                  "properties": {
+                    "state": { "const": "local_only" },
+                    "upstream_recorded": { "const": false }
+                  }
+                }
+              }
+            },
+            {
+              "required": ["status", "export"],
+              "properties": {
+                "status": { "const": "dual_written" },
+                "export": {
+                  "required": ["state", "upstream_recorded"],
+                  "properties": {
+                    "state": { "const": "dual_written" },
+                    "upstream_recorded": { "const": true }
+                  }
+                }
+              }
+            },
+            {
+              "required": ["status", "retry_of", "export"],
+              "properties": {
+                "status": { "const": "replayed" },
+                "export": {
+                  "required": ["state", "upstream_recorded", "replay_count"],
+                  "properties": {
+                    "state": { "const": "replayed" },
+                    "upstream_recorded": { "const": true },
+                    "replay_count": { "type": "integer", "minimum": 1 }
+                  }
+                }
+              }
+            },
+            {
+              "required": ["status", "export"],
+              "properties": {
+                "status": { "const": "duplicate" },
+                "export": {
+                  "required": ["state", "upstream_recorded", "duplicate_of_idempotency_key"],
+                  "properties": {
+                    "state": { "const": "duplicate" },
+                    "upstream_recorded": { "const": false }
+                  }
+                }
+              }
+            },
+            {
+              "required": ["status", "export"],
+              "properties": {
+                "status": { "const": "partial_upload" },
+                "export": {
+                  "required": ["state", "upstream_recorded"],
+                  "properties": {
+                    "state": { "const": "partial_upload" },
+                    "upstream_recorded": { "const": true }
+                  }
+                }
+              }
+            },
+            {
+              "required": ["status", "export"],
+              "properties": {
+                "status": { "const": "schema_mismatch" },
+                "export": {
+                  "required": ["state", "upstream_recorded", "mismatch_schema_version"],
+                  "properties": {
+                    "state": { "const": "schema_mismatch" },
+                    "upstream_recorded": { "const": false },
+                    "mismatch_schema_version": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 128,
+                      "not": { "const": "mc.operation.v1" }
+                    }
+                  }
+                }
+              }
+            }
+          ]
+        }
       ],
       "properties": {
         "schema_version": { "const": "mc.operation.v1" },
@@ -223,6 +335,12 @@
           "type": "object",
           "additionalProperties": false,
           "required": ["basis", "amount_usd"],
+          "allOf": [
+            {
+              "if": { "required": ["basis"], "properties": { "basis": { "const": "none" } } },
+              "then": { "properties": { "amount_usd": { "const": 0 } } }
+            }
+          ],
           "properties": {
             "basis": { "enum": ["none", "reported", "estimated"] },
             "amount_usd": { "type": "number", "minimum": 0 }

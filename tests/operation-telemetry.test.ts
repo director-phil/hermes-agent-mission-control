@@ -63,6 +63,13 @@ async function readFixtures(prefix: "valid-" | "invalid-"): Promise<FixtureFile[
   );
 }
 
+function assertRejectedByBoth(schema: unknown, record: unknown, label: string) {
+  const schemaResult = validateOperationTelemetryJsonSchema(schema, record);
+  const tsResult = validateOperationTelemetryRecord(record);
+  assert.equal(schemaResult.ok, false, `${label} schema must fail`);
+  assert.equal(tsResult.ok, false, `${label} ts must fail`);
+}
+
 test("valid golden operation telemetry fixtures pass in stable normalized form", async () => {
   const schema = await readSchema();
   const fixtures = await readFixtures("valid-");
@@ -202,6 +209,62 @@ test("optional tool metadata may be absent but present numeric fields remain req
     true,
     "missing optional tool numeric field path",
   );
+});
+
+test("schema and TypeScript reject reviewed contract parity regressions", async () => {
+  const schema = await readSchema();
+  const validFixtures = await readFixtures("valid-");
+  const blockedTool = validFixtures.find((item) => item.fixture === "blocked-tool");
+  const plannerSuccess = validFixtures.find((item) => item.fixture === "planner-success");
+  const duplicate = validFixtures.find((item) => item.fixture === "duplicate");
+  const replayed = validFixtures.find((item) => item.fixture === "replayed");
+  const schemaMismatch = validFixtures.find((item) => item.fixture === "schema-mismatch");
+  assert.ok(blockedTool);
+  assert.ok(plannerSuccess);
+  assert.ok(duplicate);
+  assert.ok(replayed);
+  assert.ok(schemaMismatch);
+
+  const missingTool = cloneRecord(blockedTool.records[0]);
+  delete missingTool.tool;
+  assertRejectedByBoth(schema, missingTool, "terminal tool without metadata");
+
+  const disagreedExport = cloneRecord(plannerSuccess.records[2]);
+  const disagreedExportState = cloneRecord(disagreedExport.export);
+  disagreedExportState.state = "local_only";
+  disagreedExport.export = disagreedExportState;
+  assertRejectedByBoth(schema, disagreedExport, "export status and state disagreement");
+
+  const duplicateWithoutLinkage = cloneRecord(duplicate.records[2]);
+  const duplicateExport = cloneRecord(duplicateWithoutLinkage.export);
+  delete duplicateExport.duplicate_of_idempotency_key;
+  duplicateWithoutLinkage.export = duplicateExport;
+  assertRejectedByBoth(schema, duplicateWithoutLinkage, "duplicate without dedupe linkage");
+
+  const replayWithoutPriorOperation = cloneRecord(replayed.records[0]);
+  delete replayWithoutPriorOperation.retry_of;
+  assertRejectedByBoth(schema, replayWithoutPriorOperation, "replay without prior operation linkage");
+
+  const mismatchWithoutVersion = cloneRecord(schemaMismatch.records[0]);
+  const mismatchExport = cloneRecord(mismatchWithoutVersion.export);
+  delete mismatchExport.mismatch_schema_version;
+  mismatchWithoutVersion.export = mismatchExport;
+  assertRejectedByBoth(schema, mismatchWithoutVersion, "schema mismatch without mismatch version");
+
+  const endedBeforeStarted = cloneRecord(plannerSuccess.records[1]);
+  endedBeforeStarted.ended_at = "2026-08-04T23:59:59.000Z";
+  endedBeforeStarted.duration_ms = 0;
+  assertRejectedByBoth(schema, endedBeforeStarted, "ended before started");
+
+  const inconsistentDuration = cloneRecord(plannerSuccess.records[1]);
+  inconsistentDuration.duration_ms = 2002;
+  assertRejectedByBoth(schema, inconsistentDuration, "duration outside timestamp tolerance");
+
+  const futureDated = cloneRecord(plannerSuccess.records[1]);
+  futureDated.started_at = "2099-01-01T00:00:00.000Z";
+  futureDated.ended_at = "2099-01-01T00:00:01.000Z";
+  futureDated.duration_ms = 1000;
+  assertRejectedByBoth(schema, futureDated, "future-dated terminal timestamps");
 });
 
 test("idempotency and duplicate semantics are stable", async () => {

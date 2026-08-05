@@ -1,9 +1,17 @@
 import type { OperationValidationIssue } from "./index";
 
 const MAX_SCHEMA_ERRORS = 16;
+const TIMESTAMP_DURATION_TOLERANCE_MS = 1;
+const FUTURE_TIMESTAMP_TOLERANCE_MS = 60_000;
 
 type JsonSchema = {
   oneOf?: JsonSchema[];
+  anyOf?: JsonSchema[];
+  allOf?: JsonSchema[];
+  not?: JsonSchema;
+  if?: JsonSchema;
+  then?: JsonSchema;
+  else?: JsonSchema;
   type?: string;
   const?: unknown;
   enum?: unknown[];
@@ -56,7 +64,36 @@ function validateSchemaNode(schema: JsonSchema, value: unknown, path: string, er
     if (passing.length !== 1) {
       add(errors, "schema_one_of", path, "record does not match exactly one schema branch");
     }
-    return;
+  }
+  if (schema.anyOf) {
+    const passing = schema.anyOf.some((branch) => {
+      const branchErrors: OperationValidationIssue[] = [];
+      validateSchemaNode(branch, value, path, branchErrors);
+      return branchErrors.length === 0;
+    });
+    if (!passing) {
+      add(errors, "schema_any_of", path, "record does not match an allowed schema branch");
+    }
+  }
+  if (schema.allOf) {
+    for (const branch of schema.allOf) {
+      validateSchemaNode(branch, value, path, errors);
+    }
+  }
+  if (schema.not) {
+    const notErrors: OperationValidationIssue[] = [];
+    validateSchemaNode(schema.not, value, path, notErrors);
+    if (notErrors.length === 0) {
+      add(errors, "schema_not", path, "field matches a forbidden schema branch");
+    }
+  }
+  if (schema.if) {
+    const ifErrors: OperationValidationIssue[] = [];
+    validateSchemaNode(schema.if, value, path, ifErrors);
+    const branch = ifErrors.length === 0 ? schema.then : schema.else;
+    if (branch) {
+      validateSchemaNode(branch, value, path, errors);
+    }
   }
 
   validateType(schema, value, path, errors);
@@ -86,7 +123,13 @@ function validateSchemaNode(schema: JsonSchema, value: unknown, path: string, er
   if (typeof value === "number" && schema.minimum !== undefined && value < schema.minimum) {
     add(errors, "schema_invalid_minimum", path, "field is below schema minimum");
   }
-  if (schema.type === "object" && isRecord(value)) {
+  if (
+    (schema.type === "object" ||
+      schema.properties ||
+      schema.required ||
+      schema.additionalProperties !== undefined) &&
+    isRecord(value)
+  ) {
     const properties = schema.properties ?? {};
     if (schema.required) {
       for (const key of schema.required) {
@@ -108,6 +151,97 @@ function validateSchemaNode(schema: JsonSchema, value: unknown, path: string, er
   }
 }
 
+function readPath(record: Record<string, unknown>, path: string): unknown {
+  return path.split("/").filter(Boolean).reduce<unknown>((value, key) => {
+    if (!isRecord(value)) {
+      return undefined;
+    }
+    return value[key];
+  }, record);
+}
+
+function validateOperationTelemetryContract(value: unknown, errors: OperationValidationIssue[]) {
+  if (!isRecord(value)) {
+    return;
+  }
+  const usage = readPath(value, "/usage");
+  if (isRecord(usage)) {
+    const inputTokens = usage.input_tokens;
+    const outputTokens = usage.output_tokens;
+    const totalTokens = usage.total_tokens;
+    if (
+      typeof inputTokens === "number" &&
+      typeof outputTokens === "number" &&
+      typeof totalTokens === "number" &&
+      totalTokens !== inputTokens + outputTokens
+    ) {
+      add(errors, "schema_invalid_token_total", "/usage/total_tokens", "field does not match token counters");
+    }
+  }
+  const cost = readPath(value, "/cost");
+  if (isRecord(cost) && cost.basis === "none" && cost.amount_usd !== 0) {
+    add(errors, "schema_invalid_cost_amount", "/cost/amount_usd", "field does not match cost basis");
+  }
+  if (typeof value.started_at === "string" && typeof value.ended_at === "string" && typeof value.duration_ms === "number") {
+    const startedMs = Date.parse(value.started_at);
+    const endedMs = Date.parse(value.ended_at);
+    if (Number.isFinite(startedMs) && Number.isFinite(endedMs)) {
+      const latestAllowedMs = Date.now() + FUTURE_TIMESTAMP_TOLERANCE_MS;
+      if (startedMs > latestAllowedMs) {
+        add(errors, "schema_invalid_future_timestamp", "/started_at", "field must not be future dated");
+      }
+      if (endedMs > latestAllowedMs) {
+        add(errors, "schema_invalid_future_timestamp", "/ended_at", "field must not be future dated");
+      }
+      if (endedMs < startedMs) {
+        add(errors, "schema_invalid_time_range", "/ended_at", "field does not match time range");
+      } else if (Math.abs(value.duration_ms - (endedMs - startedMs)) > TIMESTAMP_DURATION_TOLERANCE_MS) {
+        add(errors, "schema_invalid_duration", "/duration_ms", "field does not match timestamp difference");
+      }
+    }
+  } else if (typeof value.started_at === "string") {
+    const startedMs = Date.parse(value.started_at);
+    if (Number.isFinite(startedMs) && startedMs > Date.now() + FUTURE_TIMESTAMP_TOLERANCE_MS) {
+      add(errors, "schema_invalid_future_timestamp", "/started_at", "field must not be future dated");
+    }
+  }
+  if (value.record_kind !== "export_state") {
+    return;
+  }
+  const exportMetadata = value.export;
+  if (!isRecord(exportMetadata) || typeof value.status !== "string" || typeof exportMetadata.state !== "string") {
+    return;
+  }
+  if (value.status !== exportMetadata.state) {
+    add(errors, "schema_invalid_const", "/export/state", "field does not match required schema value");
+  }
+  const expectedUpstreamRecorded =
+    exportMetadata.state === "dual_written" ||
+    exportMetadata.state === "replayed" ||
+    exportMetadata.state === "partial_upload";
+  if (exportMetadata.upstream_recorded !== expectedUpstreamRecorded) {
+    add(errors, "schema_invalid_const", "/export/upstream_recorded", "field does not match required schema value");
+  }
+  if (exportMetadata.state === "duplicate" && typeof exportMetadata.duplicate_of_idempotency_key !== "string") {
+    add(errors, "schema_missing_required", "/export/duplicate_of_idempotency_key", "required field is missing");
+  }
+  if (exportMetadata.state === "replayed") {
+    if (typeof value.retry_of !== "string") {
+      add(errors, "schema_missing_required", "/retry_of", "required field is missing");
+    }
+    if (typeof exportMetadata.replay_count === "number" && exportMetadata.replay_count < 1) {
+      add(errors, "schema_invalid_minimum", "/export/replay_count", "field is below schema minimum");
+    }
+  }
+  if (exportMetadata.state === "schema_mismatch") {
+    if (typeof exportMetadata.mismatch_schema_version !== "string") {
+      add(errors, "schema_missing_required", "/export/mismatch_schema_version", "required field is missing");
+    } else if (exportMetadata.mismatch_schema_version === "mc.operation.v1") {
+      add(errors, "schema_invalid_const", "/export/mismatch_schema_version", "field matches forbidden schema value");
+    }
+  }
+}
+
 export function validateOperationTelemetryJsonSchema(schema: unknown, value: unknown): SchemaValidationResult {
   if (!isRecord(schema)) {
     return {
@@ -117,5 +251,6 @@ export function validateOperationTelemetryJsonSchema(schema: unknown, value: unk
   }
   const errors: OperationValidationIssue[] = [];
   validateSchemaNode(schema as JsonSchema, value, "/", errors);
+  validateOperationTelemetryContract(value, errors);
   return errors.length === 0 ? { ok: true } : { ok: false, errors };
 }

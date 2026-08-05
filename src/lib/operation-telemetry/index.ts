@@ -85,6 +85,8 @@ const TOOL_FAILURE_CLASSES = [
 ] as const;
 const USAGE_KEYS = ["input_tokens", "output_tokens", "total_tokens", "cache_read_tokens", "cache_write_tokens"] as const;
 const TOOL_NUMERIC_KEYS = ["argument_bytes", "result_bytes"] as const;
+const TIMESTAMP_DURATION_TOLERANCE_MS = 1;
+const FUTURE_TIMESTAMP_TOLERANCE_MS = 60_000;
 
 const COMMON_KEYS = [
   "schema_version",
@@ -162,11 +164,30 @@ export type OperationToolMetadata = {
   failure_class: (typeof TOOL_FAILURE_CLASSES)[number];
 };
 
-export type OperationExportMetadata = {
+type OperationExportMetadataBase = {
   state: OperationExportStatus;
   local_recorded: boolean;
   upstream_recorded: boolean;
   replay_count: number;
+};
+
+export type OperationExportMetadata =
+  | (OperationExportMetadataBase & { state: "local_only"; upstream_recorded: false })
+  | (OperationExportMetadataBase & { state: "dual_written"; upstream_recorded: true })
+  | (OperationExportMetadataBase & { state: "replayed"; upstream_recorded: true; replay_count: number })
+  | (OperationExportMetadataBase & {
+      state: "duplicate";
+      upstream_recorded: false;
+      duplicate_of_idempotency_key: string;
+    })
+  | (OperationExportMetadataBase & { state: "partial_upload"; upstream_recorded: true })
+  | (OperationExportMetadataBase & {
+      state: "schema_mismatch";
+      upstream_recorded: false;
+      mismatch_schema_version: string;
+    });
+
+type ParsedExportMetadata = OperationExportMetadataBase & {
   duplicate_of_idempotency_key?: string;
   mismatch_schema_version?: string;
 };
@@ -199,11 +220,25 @@ export type OperationStartRecord = OperationRecordBase & {
   status: "started";
 };
 
-export type OperationTerminalRecord = OperationRecordBase & {
+type OperationTerminalRecordBase = OperationRecordBase & {
   record_kind: "operation_terminal";
   status: OperationTerminalStatus;
   ended_at: string;
   duration_ms: number;
+};
+
+export type OperationTerminalRecord =
+  | (OperationTerminalRecordBase & {
+      operation_type: "tool";
+      tool: OperationToolMetadata;
+    })
+  | (OperationTerminalRecordBase & {
+      operation_type: Exclude<OperationType, "tool">;
+      tool?: OperationToolMetadata;
+    });
+
+export type OperationTerminalToolRecord = OperationTerminalRecordBase & {
+  operation_type: "tool";
   tool?: OperationToolMetadata;
 };
 
@@ -398,6 +433,10 @@ function requireTimestamp(record: MutableRecord, key: string, collector: IssueCo
     collector.add("invalid_timestamp", `/${key}`, "field must be a canonical UTC timestamp");
     return undefined;
   }
+  if (parsed > Date.now() + FUTURE_TIMESTAMP_TOLERANCE_MS) {
+    collector.add("invalid_future_timestamp", `/${key}`, "field must not be future dated");
+    return undefined;
+  }
   return value;
 }
 
@@ -427,6 +466,10 @@ function requireUsage(value: unknown, collector: IssueCollector): OperationUsage
   if (!hasRequiredNumbers(usage, USAGE_KEYS)) {
     return undefined;
   }
+  if (usage.total_tokens !== usage.input_tokens + usage.output_tokens) {
+    collector.add("invalid_token_total", "/usage/total_tokens", "field must equal input and output token counters");
+    return undefined;
+  }
   return usage;
 }
 
@@ -439,6 +482,10 @@ function requireCost(value: unknown, collector: IssueCollector): OperationCost |
   const basis = requireEnum(value, "basis", collector, COST_BASIS, { path: "/cost/basis" });
   const amountUsd = requireNonNegativeNumber(value, "amount_usd", collector, "/cost/amount_usd");
   if (!basis || amountUsd === undefined) {
+    return undefined;
+  }
+  if (basis === "none" && amountUsd !== 0) {
+    collector.add("invalid_cost_amount", "/cost/amount_usd", "field must match cost basis");
     return undefined;
   }
   return { basis, amount_usd: amountUsd };
@@ -494,7 +541,38 @@ function optionalTool(value: unknown, collector: IssueCollector): OperationToolM
   };
 }
 
-function requireExport(value: unknown, collector: IssueCollector): OperationExportMetadata | undefined {
+function expectedUpstreamRecordedForExport(state: OperationExportStatus): boolean {
+  return state === "dual_written" || state === "replayed" || state === "partial_upload";
+}
+
+function normalizeExportMetadata(parsed: ParsedExportMetadata): OperationExportMetadata | undefined {
+  switch (parsed.state) {
+    case "duplicate":
+      if (!parsed.duplicate_of_idempotency_key) {
+        return undefined;
+      }
+      return { ...parsed, state: "duplicate", upstream_recorded: false, duplicate_of_idempotency_key: parsed.duplicate_of_idempotency_key };
+    case "schema_mismatch":
+      if (!parsed.mismatch_schema_version) {
+        return undefined;
+      }
+      return { ...parsed, state: "schema_mismatch", upstream_recorded: false, mismatch_schema_version: parsed.mismatch_schema_version };
+    case "replayed":
+      return { ...parsed, state: "replayed", upstream_recorded: true };
+    case "dual_written":
+      return { ...parsed, state: "dual_written", upstream_recorded: true };
+    case "partial_upload":
+      return { ...parsed, state: "partial_upload", upstream_recorded: true };
+    case "local_only":
+      return { ...parsed, state: "local_only", upstream_recorded: false };
+  }
+}
+
+function requireExport(
+  value: unknown,
+  collector: IssueCollector,
+  retryOf: string | undefined,
+): OperationExportMetadata | undefined {
   if (!isPlainRecord(value)) {
     collector.add("invalid_object", "/export", "field must be an object");
     return undefined;
@@ -534,19 +612,56 @@ function requireExport(value: unknown, collector: IssueCollector): OperationExpo
   if (!state || localRecorded === undefined || upstreamRecorded === undefined || replayCount === undefined) {
     return undefined;
   }
-  const normalized: OperationExportMetadata = {
+  const expectedUpstreamRecorded = expectedUpstreamRecordedForExport(state);
+  if (upstreamRecorded !== expectedUpstreamRecorded) {
+    collector.add("invalid_const", "/export/upstream_recorded", "field does not match required value");
+  }
+  if (state === "duplicate" && !duplicateOf) {
+    collector.add("missing_required_field", "/export/duplicate_of_idempotency_key", "required field is missing");
+  }
+  if (state === "replayed") {
+    if (!retryOf) {
+      collector.add("missing_required_field", "/retry_of", "required field is missing");
+    }
+    if (replayCount < 1) {
+      collector.add("invalid_replay_count", "/export/replay_count", "field must match export state");
+    }
+  }
+  if (state === "schema_mismatch") {
+    if (!mismatchSchemaVersion) {
+      collector.add("missing_required_field", "/export/mismatch_schema_version", "required field is missing");
+    } else if (mismatchSchemaVersion === OPERATION_TELEMETRY_SCHEMA_VERSION) {
+      collector.add("invalid_schema_version", "/export/mismatch_schema_version", "field must differ from current schema version");
+    }
+  }
+  if (collector.issues.length > 0) {
+    return undefined;
+  }
+  const parsed: ParsedExportMetadata = {
     state,
     local_recorded: localRecorded,
     upstream_recorded: upstreamRecorded,
     replay_count: replayCount,
   };
   if (duplicateOf) {
-    normalized.duplicate_of_idempotency_key = duplicateOf;
+    parsed.duplicate_of_idempotency_key = duplicateOf;
   }
   if (mismatchSchemaVersion) {
-    normalized.mismatch_schema_version = mismatchSchemaVersion;
+    parsed.mismatch_schema_version = mismatchSchemaVersion;
   }
-  return normalized;
+  return normalizeExportMetadata(parsed);
+}
+
+function validateTiming(startedAt: string, endedAt: string, durationMs: number, collector: IssueCollector) {
+  const startedMs = Date.parse(startedAt);
+  const endedMs = Date.parse(endedAt);
+  if (endedMs < startedMs) {
+    collector.add("invalid_time_range", "/ended_at", "field must be on or after start time");
+    return;
+  }
+  if (Math.abs(durationMs - (endedMs - startedMs)) > TIMESTAMP_DURATION_TOLERANCE_MS) {
+    collector.add("invalid_duration", "/duration_ms", "field must match timestamp difference");
+  }
 }
 
 function requiredKeysForKind(kind: OperationRecordKind | undefined): string[] {
@@ -696,6 +811,9 @@ export function validateOperationTelemetryRecord(input: unknown): OperationValid
 
   const endedAt = requireTimestamp(input, "ended_at", collector);
   const durationMs = requireNonNegativeInteger(input, "duration_ms", collector);
+  if (base.started_at && endedAt && durationMs !== undefined) {
+    validateTiming(base.started_at, endedAt, durationMs, collector);
+  }
 
   if (kind === "operation_terminal") {
     const status = requireEnum(input, "status", collector, TERMINAL_STATUSES);
@@ -706,7 +824,7 @@ export function validateOperationTelemetryRecord(input: unknown): OperationValid
     if (!status || !endedAt || durationMs === undefined || collector.issues.length > 0) {
       return { ok: false, errors: collector.issues };
     }
-    const normalized: OperationTerminalRecord = {
+    const normalized: OperationTerminalRecordBase & { tool?: OperationToolMetadata } = {
       ...base,
       record_kind: kind,
       status,
@@ -716,11 +834,11 @@ export function validateOperationTelemetryRecord(input: unknown): OperationValid
     if (tool) {
       normalized.tool = tool;
     }
-    return { ok: true, value: normalized };
+    return { ok: true, value: normalized as OperationTerminalRecord };
   }
 
   const status = requireEnum(input, "status", collector, EXPORT_STATUSES);
-  const exportMetadata = requireExport(input.export, collector);
+  const exportMetadata = requireExport(input.export, collector, base.retry_of);
   if (
     !status ||
     !endedAt ||
