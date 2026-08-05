@@ -359,7 +359,30 @@
         "export": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["state", "local_recorded", "upstream_recorded", "replay_count"],
+          "required": ["state", "local_recorded", "upstream_recorded"],
+          "allOf": [
+            {
+              "if": { "required": ["state"], "properties": { "state": { "const": "replayed" } } },
+              "then": {
+                "required": ["replay_count"],
+                "properties": { "replay_count": { "type": "integer", "minimum": 1 } }
+              },
+              "else": { "properties": { "replay_count": { "const": 0 } } }
+            },
+            {
+              "if": { "required": ["state"], "properties": { "state": { "const": "duplicate" } } },
+              "then": { "required": ["duplicate_of_idempotency_key"] },
+              "else": { "not": { "required": ["duplicate_of_idempotency_key"] } }
+            },
+            {
+              "if": { "required": ["state"], "properties": { "state": { "const": "schema_mismatch" } } },
+              "then": {
+                "required": ["mismatch_schema_version"],
+                "properties": { "mismatch_schema_version": { "not": { "const": "mc.operation.v1" } } }
+              },
+              "else": { "not": { "required": ["mismatch_schema_version"] } }
+            }
+          ],
           "properties": {
             "state": { "enum": ["local_only", "dual_written", "replayed", "duplicate", "partial_upload", "schema_mismatch"] },
             "local_recorded": { "type": "boolean" },

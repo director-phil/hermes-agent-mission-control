@@ -224,6 +224,25 @@ test("schema and TypeScript reject reviewed contract parity regressions", async 
   assert.ok(duplicate);
   assert.ok(replayed);
   assert.ok(schemaMismatch);
+  const validExportStates = new Set<string>();
+  for (const fixture of validFixtures) {
+    for (const record of fixture.records) {
+      if (cloneRecord(record).record_kind !== "export_state") {
+        continue;
+      }
+      const schemaResult = validateOperationTelemetryJsonSchema(schema, record);
+      const tsResult = validateOperationTelemetryRecord(record);
+      assert.equal(schemaResult.ok, true, `${fixture.file} valid export state schema`);
+      assert.equal(tsResult.ok, true, `${fixture.file} valid export state ts`);
+      if (tsResult.ok) {
+        validExportStates.add(tsResult.value.status);
+      }
+    }
+  }
+  assert.deepEqual(
+    [...validExportStates].sort(),
+    ["dual_written", "duplicate", "local_only", "partial_upload", "replayed", "schema_mismatch"],
+  );
 
   const missingTool = cloneRecord(blockedTool.records[0]);
   delete missingTool.tool;
@@ -241,6 +260,19 @@ test("schema and TypeScript reject reviewed contract parity regressions", async 
   duplicateWithoutLinkage.export = duplicateExport;
   assertRejectedByBoth(schema, duplicateWithoutLinkage, "duplicate without dedupe linkage");
 
+  const replayCountOnDualWritten = cloneRecord(plannerSuccess.records[2]);
+  const replayCountOnDualWrittenExport = cloneRecord(replayCountOnDualWritten.export);
+  replayCountOnDualWrittenExport.replay_count = 1;
+  replayCountOnDualWritten.export = replayCountOnDualWrittenExport;
+  assertRejectedByBoth(schema, replayCountOnDualWritten, "non-replayed export with replay count");
+
+  const duplicateLinkageOnDualWritten = cloneRecord(plannerSuccess.records[2]);
+  const duplicateLinkageOnDualWrittenExport = cloneRecord(duplicateLinkageOnDualWritten.export);
+  duplicateLinkageOnDualWrittenExport.duplicate_of_idempotency_key =
+    "sha256:9999999999999999999999999999999999999999999999999999999999999999";
+  duplicateLinkageOnDualWritten.export = duplicateLinkageOnDualWrittenExport;
+  assertRejectedByBoth(schema, duplicateLinkageOnDualWritten, "non-duplicate export with dedupe linkage");
+
   const replayWithoutPriorOperation = cloneRecord(replayed.records[0]);
   delete replayWithoutPriorOperation.retry_of;
   assertRejectedByBoth(schema, replayWithoutPriorOperation, "replay without prior operation linkage");
@@ -250,6 +282,19 @@ test("schema and TypeScript reject reviewed contract parity regressions", async 
   delete mismatchExport.mismatch_schema_version;
   mismatchWithoutVersion.export = mismatchExport;
   assertRejectedByBoth(schema, mismatchWithoutVersion, "schema mismatch without mismatch version");
+
+  const mismatchLinkageOnDualWritten = cloneRecord(plannerSuccess.records[2]);
+  const mismatchLinkageOnDualWrittenExport = cloneRecord(mismatchLinkageOnDualWritten.export);
+  mismatchLinkageOnDualWrittenExport.mismatch_schema_version = "mc.operation.v0";
+  mismatchLinkageOnDualWritten.export = mismatchLinkageOnDualWrittenExport;
+  assertRejectedByBoth(schema, mismatchLinkageOnDualWritten, "non-schema-mismatch export with mismatch version");
+
+  const replayCountAbsentOnDualWritten = cloneRecord(plannerSuccess.records[2]);
+  const replayCountAbsentOnDualWrittenExport = cloneRecord(replayCountAbsentOnDualWritten.export);
+  delete replayCountAbsentOnDualWrittenExport.replay_count;
+  replayCountAbsentOnDualWritten.export = replayCountAbsentOnDualWrittenExport;
+  assert.equal(validateOperationTelemetryJsonSchema(schema, replayCountAbsentOnDualWritten).ok, true);
+  assert.equal(validateOperationTelemetryRecord(replayCountAbsentOnDualWritten).ok, true);
 
   const endedBeforeStarted = cloneRecord(plannerSuccess.records[1]);
   endedBeforeStarted.ended_at = "2026-08-04T23:59:59.000Z";

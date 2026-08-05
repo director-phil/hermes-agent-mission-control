@@ -402,6 +402,18 @@ function requireNonNegativeInteger(
   return value;
 }
 
+function optionalNonNegativeInteger(
+  record: MutableRecord,
+  key: string,
+  collector: IssueCollector,
+  path = `/${key}`,
+): number | undefined {
+  if (!(key in record)) {
+    return undefined;
+  }
+  return requireNonNegativeInteger(record, key, collector, path);
+}
+
 function requireNonNegativeNumber(
   record: MutableRecord,
   key: string,
@@ -599,7 +611,7 @@ function requireExport(
   if (upstreamRecorded === undefined) {
     collector.add("invalid_boolean", "/export/upstream_recorded", "field must be a boolean");
   }
-  const replayCount = requireNonNegativeInteger(value, "replay_count", collector, "/export/replay_count");
+  const replayCount = optionalNonNegativeInteger(value, "replay_count", collector, "/export/replay_count");
   const duplicateOf = optionalString(value, "duplicate_of_idempotency_key", collector, {
     path: "/export/duplicate_of_idempotency_key",
     pattern: HASH_PATTERN,
@@ -609,23 +621,31 @@ function requireExport(
     path: "/export/mismatch_schema_version",
     maxLength: MAX_STRING_LENGTH,
   });
-  if (!state || localRecorded === undefined || upstreamRecorded === undefined || replayCount === undefined) {
+  if (!state || localRecorded === undefined || upstreamRecorded === undefined) {
     return undefined;
   }
   const expectedUpstreamRecorded = expectedUpstreamRecordedForExport(state);
   if (upstreamRecorded !== expectedUpstreamRecorded) {
     collector.add("invalid_const", "/export/upstream_recorded", "field does not match required value");
   }
-  if (state === "duplicate" && !duplicateOf) {
-    collector.add("missing_required_field", "/export/duplicate_of_idempotency_key", "required field is missing");
+  if (state === "duplicate") {
+    if (!duplicateOf) {
+      collector.add("missing_required_field", "/export/duplicate_of_idempotency_key", "required field is missing");
+    }
+  } else if (duplicateOf) {
+    collector.add("invalid_export_state_field", "/export/duplicate_of_idempotency_key", "field must match export state");
   }
   if (state === "replayed") {
     if (!retryOf) {
       collector.add("missing_required_field", "/retry_of", "required field is missing");
     }
-    if (replayCount < 1) {
+    if (replayCount === undefined) {
+      collector.add("missing_required_field", "/export/replay_count", "required field is missing");
+    } else if (replayCount < 1) {
       collector.add("invalid_replay_count", "/export/replay_count", "field must match export state");
     }
+  } else if (replayCount !== undefined && replayCount !== 0) {
+    collector.add("invalid_replay_count", "/export/replay_count", "field must match export state");
   }
   if (state === "schema_mismatch") {
     if (!mismatchSchemaVersion) {
@@ -633,6 +653,8 @@ function requireExport(
     } else if (mismatchSchemaVersion === OPERATION_TELEMETRY_SCHEMA_VERSION) {
       collector.add("invalid_schema_version", "/export/mismatch_schema_version", "field must differ from current schema version");
     }
+  } else if (mismatchSchemaVersion) {
+    collector.add("invalid_export_state_field", "/export/mismatch_schema_version", "field must match export state");
   }
   if (collector.issues.length > 0) {
     return undefined;
@@ -641,7 +663,7 @@ function requireExport(
     state,
     local_recorded: localRecorded,
     upstream_recorded: upstreamRecorded,
-    replay_count: replayCount,
+    replay_count: replayCount ?? 0,
   };
   if (duplicateOf) {
     parsed.duplicate_of_idempotency_key = duplicateOf;

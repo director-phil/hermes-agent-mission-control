@@ -224,14 +224,20 @@ function validateOperationTelemetryContract(value: unknown, errors: OperationVal
   }
   if (exportMetadata.state === "duplicate" && typeof exportMetadata.duplicate_of_idempotency_key !== "string") {
     add(errors, "schema_missing_required", "/export/duplicate_of_idempotency_key", "required field is missing");
+  } else if (exportMetadata.state !== "duplicate" && "duplicate_of_idempotency_key" in exportMetadata) {
+    add(errors, "schema_invalid_state_field", "/export/duplicate_of_idempotency_key", "field does not match export state");
   }
   if (exportMetadata.state === "replayed") {
     if (typeof value.retry_of !== "string") {
       add(errors, "schema_missing_required", "/retry_of", "required field is missing");
     }
-    if (typeof exportMetadata.replay_count === "number" && exportMetadata.replay_count < 1) {
+    if (typeof exportMetadata.replay_count !== "number") {
+      add(errors, "schema_missing_required", "/export/replay_count", "required field is missing");
+    } else if (exportMetadata.replay_count < 1) {
       add(errors, "schema_invalid_minimum", "/export/replay_count", "field is below schema minimum");
     }
+  } else if (typeof exportMetadata.replay_count === "number" && exportMetadata.replay_count !== 0) {
+    add(errors, "schema_invalid_state_field", "/export/replay_count", "field does not match export state");
   }
   if (exportMetadata.state === "schema_mismatch") {
     if (typeof exportMetadata.mismatch_schema_version !== "string") {
@@ -239,6 +245,8 @@ function validateOperationTelemetryContract(value: unknown, errors: OperationVal
     } else if (exportMetadata.mismatch_schema_version === "mc.operation.v1") {
       add(errors, "schema_invalid_const", "/export/mismatch_schema_version", "field matches forbidden schema value");
     }
+  } else if ("mismatch_schema_version" in exportMetadata) {
+    add(errors, "schema_invalid_state_field", "/export/mismatch_schema_version", "field does not match export state");
   }
 }
 
