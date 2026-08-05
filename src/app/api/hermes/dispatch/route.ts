@@ -1,12 +1,16 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { readHermesBridgeHealth } from "@/lib/hermes-native-mirror";
+import { requireInternalApiSecret } from "@/lib/internal-api-auth";
 
 const MAX_TITLE_CHARS = 200;
 const MAX_PROMPT_CHARS = 12_000;
 const ALLOWED_KINDS = new Set(["oneshot", "chat"]);
 
 export async function POST(req: Request) {
+  const unauthorized = requireInternalApiSecret(req);
+  if (unauthorized) return unauthorized;
+
   const health = await readHermesBridgeHealth();
   if (!health.online) {
     return NextResponse.json({

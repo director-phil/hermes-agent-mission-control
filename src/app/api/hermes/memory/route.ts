@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { requireInternalApiSecret } from "@/lib/internal-api-auth";
 import { prisma } from "@/lib/prisma";
 
 // GET ?q=&type=&status= → list/search wiki entries (mirrored by the bridge)
@@ -23,7 +24,10 @@ export async function GET(req: Request) {
   return NextResponse.json({ entries, typeCounts, total: all.length, lastSync });
 }
 
-export async function POST() {
+export async function POST(req: Request) {
+  const unauthorized = requireInternalApiSecret(req);
+  if (unauthorized) return unauthorized;
+
   return NextResponse.json(
     { error: "Wiki memory writes are not supported in this Mission Control release." },
     { status: 410 },
