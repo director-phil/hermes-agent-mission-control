@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { requireInternalApiSecret } from "@/lib/internal-api-auth";
 import { prisma } from "@/lib/prisma";
 
 export type CronJob = {
@@ -61,6 +62,9 @@ export async function GET() {
 
 // POST { op: "create"|"pause"|"resume"|"run"|"remove"|"edit", ... } → queue a cron mutation for the bridge
 export async function POST(req: Request) {
+  const unauthorized = requireInternalApiSecret(req);
+  if (unauthorized) return unauthorized;
+
   const b = await req.json().catch(() => ({}));
   const op = (b.op || "").toString();
   if (!["create", "pause", "resume", "run", "remove", "edit"].includes(op))

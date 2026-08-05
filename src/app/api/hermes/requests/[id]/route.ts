@@ -1,10 +1,14 @@
 import { NextResponse } from "next/server";
+import { requireInternalApiSecret } from "@/lib/internal-api-auth";
 import { prisma } from "@/lib/prisma";
 
 const MAX_TITLE_CHARS = 200;
 const MAX_PROMPT_CHARS = 12_000;
 
 export async function PATCH(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const unauthorized = requireInternalApiSecret(req);
+  if (unauthorized) return unauthorized;
+
   const { id } = await params;
   const b = await req.json().catch(() => ({}));
   const action = (b.action || "").toString(); // approve | reject | edit
