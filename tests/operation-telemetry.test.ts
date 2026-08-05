@@ -12,8 +12,8 @@ import {
   recordsHaveSameIdempotency,
   validateOperationTelemetryRecord,
   type OperationTelemetryRecord,
-} from "../src/lib/operation-telemetry";
-import { validateOperationTelemetryJsonSchema } from "../src/lib/operation-telemetry/schema-validator";
+} from "../src/lib/operation-telemetry/index.ts";
+import { validateOperationTelemetryJsonSchema } from "../src/lib/operation-telemetry/schema-validator.ts";
 
 const ROOT = process.cwd();
 const FIXTURES_DIR = path.join(ROOT, "contracts/operation-telemetry/v1/fixtures");

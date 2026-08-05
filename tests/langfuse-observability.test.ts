@@ -4,7 +4,7 @@ import {
   collectHermesObservability,
   LANGFUSE_OBSERVATION_FIELDS,
   parseObservabilityWindow,
-} from "../src/lib/langfuse-observability";
+} from "../src/lib/langfuse-observability.ts";
 
 const NOW = new Date("2026-08-05T12:00:00.000Z");
 

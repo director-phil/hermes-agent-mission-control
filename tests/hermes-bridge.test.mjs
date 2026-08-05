@@ -5,6 +5,7 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { parseRunTrace, toDisplayPath, scrubTextPaths } from "../hermes-bridge/lib/parse-runs.mjs";
 import {
   buildNativeSnapshotRequest,
   buildMirrorEnvelope,
@@ -222,4 +223,85 @@ test("unsupported requests have no environment opt-in path", () => {
   assert.equal(unsupportedRequestFailures({ unsupportedRequests: true }).length, 2);
   assert.equal(kinds.includes("briefing.generate"), false);
   assert.equal(kinds.includes("memory.write"), false);
+});
+
+test("run trace parser bounds oversized lines and redacts scribe previews and display paths", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "hermes-runs-"));
+  try {
+    const goalDir = path.join(root, "sample-goal");
+    await fs.mkdir(goalDir, { recursive: true });
+    const secret = "bridge-secret-value-0123456789";
+    const repoPath = path.join(os.homedir(), "Documents", "GitHub", "client-project", "src", "app-file.ts");
+    const chatDevPath = path.join(os.homedir(), "ChatDev", "runs", "sample-goal", "attempt-1-events.jsonl");
+    const event = {
+      data: {
+        event_type: "TOOL_CALL",
+        node_id: "agent-one",
+        timestamp: "2026-08-06T00:00:00.000Z",
+        details: {
+          tool_name: "read_repo_file",
+          tool_args: { path: repoPath },
+        },
+      },
+    };
+    const giantLine = `${JSON.stringify({ data: { event_type: "MODEL_CALL", node_id: "ignored", details: { model: "x".repeat(210 * 1024) } } })}\n`;
+    await fs.writeFile(path.join(goalDir, "attempt-1-events.jsonl"), `${giantLine}${JSON.stringify(event)}\n`, "utf8");
+    await fs.writeFile(path.join(goalDir, "scribe.md"), [
+      "## Attempt 1",
+      "### Learned",
+      `- first ${secret} ${"a".repeat(220)}`,
+      "- second",
+      "- third",
+      "- fourth",
+      "- fifth",
+      "- sixth",
+      "- seventh",
+      "### Inferred",
+      "- inferred value",
+      "",
+    ].join("\n"), "utf8");
+
+    const graph = await parseRunTrace(goalDir, { secrets: [secret] });
+    const serialized = JSON.stringify(graph);
+
+    assert.equal(serialized.includes(secret), false);
+    assert.equal(graph.counts.events, 1);
+    assert.equal(graph.files[0].path, "src/app-file.ts");
+    assert.equal(graph.touches[0].path, "src/app-file.ts");
+    assert.equal(graph.learnings[0].learnedCount, 7);
+    assert.equal(graph.learnings[0].inferredCount, 1);
+    assert.equal(graph.learnings[0].learned.length + graph.learnings[0].inferred.length, 6);
+    assert.ok(graph.learnings[0].learned[0].length <= 160);
+    assert.equal(toDisplayPath(chatDevPath), "runs/sample-goal/attempt-1-events.jsonl");
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("toDisplayPath never emits an absolute path outside recognized roots", () => {
+  assert.equal(toDisplayPath("/etc/passwd"), "passwd");
+  assert.equal(toDisplayPath("/var/secret/keys/id_rsa"), "id_rsa");
+  assert.equal(toDisplayPath("C:/Users/phil/secret.txt"), "secret.txt");
+  const home = process.env.HOME || "";
+  // Embedded double-slash must not survive prefix stripping as an absolute path.
+  for (const p of [
+    "/etc/shadow", "/root/.ssh/config", "/tmp/x/y/z.log",
+    `${home}/Documents/GitHub/repo//tmp/secret.txt`,
+    `${home}/ChatDev//tmp/secret.txt`,
+  ]) {
+    assert.equal(/^(\/|[A-Za-z]:\/|\/\/)/.test(toDisplayPath(p)), false, `leaked: ${p}`);
+  }
+});
+
+test("scrubTextPaths collapses absolute paths but leaves URLs intact", () => {
+  const prose = "Failed reading /home/phillip_downs/secret/config.env and /etc/shadow during repair";
+  const scrubbed = scrubTextPaths(prose);
+  assert.equal(scrubbed.includes("/home/phillip_downs"), false);
+  assert.equal(scrubbed.includes("/etc/shadow"), false);
+  assert.match(scrubbed, /config\.env/);
+  assert.match(scrubbed, /shadow/);
+  // URLs must not be corrupted by the path scrubber.
+  const withUrl = scrubTextPaths("see https://example.com/a/b and error at /home/phil/x/y.log");
+  assert.ok(withUrl.includes("https://example.com/a/b"), "url corrupted");
+  assert.equal(withUrl.includes("/home/phil"), false);
 });

@@ -1,7 +1,7 @@
 import {
   parseObservabilityWindow,
   type ObservabilityWindow,
-} from "./langfuse-observability";
+} from "./langfuse-observability.ts";
 
 const WINDOW_MS: Record<ObservabilityWindow, number> = {
   "24h": 24 * 60 * 60 * 1000,

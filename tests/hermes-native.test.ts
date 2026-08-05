@@ -3,8 +3,8 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { readHermesNativeSnapshot } from "../src/lib/hermes-native";
-import { isHermesBridgeMirrorStale } from "../src/lib/hermes-native-mirror";
+import { readHermesNativeSnapshot } from "../src/lib/hermes-native.ts";
+import { isHermesBridgeMirrorStale } from "../src/lib/hermes-native-mirror.ts";
 
 async function makeRoots() {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "hermes-native-"));
