@@ -245,6 +245,1008 @@ test("collects paginated Langfuse observations into safe aggregates", async () =
   assert.equal(JSON.stringify(result).includes("must not be returned"), false);
 });
 
+test("derives bounded privacy-safe correlation and operation accounting", async () => {
+  setLangfuseEnv();
+  const page = {
+    data: [
+      {
+        id: "planner-gen",
+        traceId: "trace-shared",
+        sessionId: "session-shared",
+        startTime: "2026-08-05T11:40:00.000Z",
+        endTime: "2026-08-05T11:40:01.000Z",
+        type: "GENERATION",
+        providedModelName: "claude-opus-4-6",
+        usageDetails: {
+          input: 1_000_000,
+          output: 100_000,
+          total: 1_100_000,
+          cache_read_input_tokens: 2_000_000,
+          cache_creation_input_tokens: 3_000_000,
+        },
+        totalCost: "0.02",
+        metadata: {
+          operation_id: "op-planner",
+          goal_id: "goal-p1a",
+          run_id: "run-001",
+          stage: "planner",
+          provider: "anthropic",
+          platform: "mission-control",
+          prompt: "raw planner prompt must not leak",
+        },
+      },
+      {
+        id: "coder-gen",
+        traceId: "trace-shared",
+        sessionId: "session-shared",
+        startTime: "2026-08-05T11:41:00.000Z",
+        endTime: "2026-08-05T11:41:02.000Z",
+        type: "GENERATION",
+        providedModelName: "qwen3-coder",
+        usageDetails: {
+          input: 2000,
+          output: 500,
+          total: 2500,
+        },
+        totalCost: "8",
+        metadata: {
+          operationId: "op-coder",
+          goalId: "goal-p1a",
+          runId: "run-001",
+          stageId: "coder",
+          provider: "custom",
+          platform: "codex",
+          response: "raw coder response must not leak",
+        },
+      },
+      {
+        id: "coder-gen",
+        traceId: "trace-shared",
+        sessionId: "session-shared",
+        startTime: "2026-08-05T11:41:00.000Z",
+        endTime: "2026-08-05T11:41:02.000Z",
+        type: "GENERATION",
+        providedModelName: "qwen3-coder",
+        usageDetails: {
+          input: 2000,
+          output: 500,
+          total: 2500,
+        },
+        totalCost: "8",
+        metadata: {
+          operationId: "op-coder",
+          goalId: "goal-p1a",
+          runId: "run-001",
+          stageId: "coder",
+          provider: "custom",
+          tool_args: "duplicate content must not leak",
+        },
+      },
+      {
+        id: "coder-tool-1",
+        traceId: "trace-shared",
+        sessionId: "session-shared",
+        startTime: "2026-08-05T11:41:03.000Z",
+        endTime: "2026-08-05T11:41:04.000Z",
+        type: "TOOL",
+        name: "apply_patch",
+        metadata: {
+          operation_id: "op-coder",
+          goal_id: "goal-p1a",
+          run_id: "run-001",
+          stage: "coder",
+          tool_call_id: "tool-call-1",
+          tool_name: "apply_patch",
+          secret: "HERMES_SECRET_SHOULD_NOT_LEAK",
+        },
+      },
+      {
+        id: "coder-tool-2",
+        traceId: "trace-shared",
+        sessionId: "session-shared",
+        startTime: "2026-08-05T11:41:05.000Z",
+        endTime: "2026-08-05T11:41:06.000Z",
+        type: "TOOL",
+        name: "apply_patch",
+        metadata: {
+          operation_id: "op-coder",
+          goal_id: "goal-p1a",
+          run_id: "run-001",
+          stage: "coder",
+          tool_call_id: "tool-call-1",
+          tool_name: "apply_patch",
+          tool_result: "raw tool result must not leak",
+        },
+      },
+      {
+        id: "reviewer-gen",
+        traceId: "trace-shared",
+        sessionId: "session-shared",
+        startTime: "2026-08-05T11:42:00.000Z",
+        endTime: "2026-08-05T11:42:01.000Z",
+        type: "GENERATION",
+        providedModelName: "claude-future",
+        usageDetails: {
+          input: 1000,
+          output: 100,
+          total: 1100,
+        },
+        totalCost: "0.5",
+        metadata: {
+          operation: "op-reviewer",
+          goal: "goal-p1a",
+          run: "run-001",
+          phase: "reviewer",
+          provider: "anthropic",
+          platform: "server",
+        },
+      },
+      {
+        id: "legacy-gen",
+        traceId: "trace-legacy",
+        sessionId: "session-legacy",
+        startTime: "2026-08-05T11:43:00.000Z",
+        type: "GENERATION",
+        providedModelName: "gpt-5",
+        usageDetails: {
+          input: 50,
+          output: 5,
+          total: 55,
+        },
+        totalCost: "0.01",
+        metadata: {
+          provider: "openai",
+          platform: "legacy",
+        },
+      },
+      {
+        id: "invalid-gen",
+        traceId: "trace-invalid",
+        startTime: "2026-08-05T11:44:00.000Z",
+        type: "GENERATION",
+        providedModelName: "gpt-5",
+        usageDetails: {
+          input: 10,
+          output: 1,
+          total: 11,
+        },
+        totalCost: "0.01",
+        metadata: {
+          operation_id: "x".repeat(120),
+          goal_id: { nested: "not allowed" },
+          run_id: "run with spaces",
+          stage: ["review"],
+          provider: "openai",
+          args: "invalid row content must not leak",
+        },
+      },
+    ],
+  };
+  const fetchImpl: typeof fetch = async () =>
+    new Response(JSON.stringify(page), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+
+  const result = await collectHermesObservability("24h", {
+    now: NOW,
+    fetchImpl,
+  });
+
+  assert.equal(result.correlationCoverage.status, "partial");
+  assert.equal(result.correlationCoverage.totalObservations, 8);
+  assert.equal(result.correlationCoverage.eligibleObservations, 7);
+  assert.equal(result.correlationCoverage.withOperationId, 5);
+  assert.equal(result.correlationCoverage.withGoalId, 5);
+  assert.equal(result.correlationCoverage.withRunId, 5);
+  assert.equal(result.correlationCoverage.withStageId, 5);
+  assert.equal(result.correlationCoverage.invalidIdentifierObservations, 1);
+  assert.equal(result.correlationCoverage.fullyCorrelatedObservations, 5);
+  assert.equal(result.correlationCoverage.operationCount, 3);
+  assert.equal(result.correlationCoverage.fullyCorrelatedOperations, 3);
+  assert.equal(result.correlationCoverage.percentage, 0.71);
+  assert.equal(result.source.rows, 8);
+  assert.equal(result.source.includedRows, 8);
+
+  assert.deepEqual(
+    result.operations.map((operation) => operation.operationId),
+    ["op-reviewer", "op-coder", "op-planner"],
+  );
+
+  const planner = result.operations.find((operation) => operation.operationId === "op-planner");
+  assert.equal(planner?.goalId, "goal-p1a");
+  assert.equal(planner?.runId, "run-001");
+  assert.equal(planner?.stageId, "planner");
+  assert.deepEqual(planner?.providers, ["anthropic"]);
+  assert.deepEqual(planner?.platforms, ["mission-control"]);
+  assert.equal(planner?.reportedCost, 0.02);
+  assert.equal(planner?.estimatedCost, 27.25);
+  assert.equal(planner?.effectiveCost, 27.25);
+  assert.equal(planner?.costBasis, "anthropic_claude_opus_4_6_estimate_cache_write_5m_assumed");
+
+  const coder = result.operations.find((operation) => operation.operationId === "op-coder");
+  assert.equal(coder?.observations, 3);
+  assert.equal(coder?.calls, 2);
+  assert.equal(coder?.generationCalls, 1);
+  assert.equal(coder?.toolCalls, 1);
+  assert.equal(coder?.totalTokens, 2500);
+  assert.equal(coder?.reportedCost, 8);
+  assert.equal(coder?.estimatedCost, 0);
+  assert.equal(coder?.effectiveCost, 0);
+  assert.equal(coder?.costBasis, "mixed");
+
+  const reviewer = result.operations.find((operation) => operation.operationId === "op-reviewer");
+  assert.equal(reviewer?.effectiveCost, 0.5);
+  assert.equal(reviewer?.estimatedCost, null);
+  assert.equal(reviewer?.costBasis, "reported_only_unknown_cloud");
+
+  assert.equal(result.accounting.operationCount, 3);
+  assert.equal(result.accounting.returnedOperations, 3);
+  assert.equal(result.accounting.truncatedOperations, false);
+  assert.equal(result.accounting.reportedCost, 8.52);
+  assert.equal(result.accounting.estimatedCost, 27.25);
+  assert.equal(result.accounting.effectiveCost, 27.75);
+  assert.equal(result.accounting.costBasis, "mixed");
+  assert.equal(result.accounting.reconciliation, "partial");
+  assert.equal(result.accounting.warnings.some((warning) => warning.includes("part")), true);
+  assert.equal(result.accounting.warnings.some((warning) => warning.includes("invalid")), true);
+
+  assert.equal(result.byProvider.some((provider) => provider.provider === "anthropic"), true);
+  const serialized = JSON.stringify(result);
+  assert.equal(serialized.includes("raw planner prompt must not leak"), false);
+  assert.equal(serialized.includes("raw coder response must not leak"), false);
+  assert.equal(serialized.includes("duplicate content must not leak"), false);
+  assert.equal(serialized.includes("HERMES_SECRET_SHOULD_NOT_LEAK"), false);
+  assert.equal(serialized.includes("raw tool result must not leak"), false);
+  assert.equal(serialized.includes("invalid row content must not leak"), false);
+  assert.equal(serialized.includes("x".repeat(120)), false);
+});
+
+test("retains first valid alias while marking any malformed alias invalid", async () => {
+  setLangfuseEnv();
+  const page = {
+    data: [
+      {
+        id: "alias-invalid-first",
+        traceId: "trace-alias-a",
+        sessionId: "session-alias-a",
+        startTime: "2026-08-05T11:50:00.000Z",
+        type: "GENERATION",
+        providedModelName: "gpt-5",
+        usageDetails: { input: 10, output: 2, total: 12 },
+        totalCost: "0.01",
+        metadata: {
+          operation_id: "bad operation",
+          operationId: "op-alias-a",
+          goal_id: "goal-alias",
+          run_id: "run-alias",
+          stage: "execute",
+          provider: "openai",
+        },
+      },
+      {
+        id: "alias-invalid-second",
+        traceId: "trace-alias-b",
+        sessionId: "session-alias-b",
+        startTime: "2026-08-05T11:51:00.000Z",
+        type: "GENERATION",
+        providedModelName: "gpt-5",
+        usageDetails: { input: 20, output: 3, total: 23 },
+        totalCost: "0.02",
+        metadata: {
+          operationId: "not reached by alias order",
+          operation_id: "op-alias-b",
+          goal_id: "goal-alias",
+          run_id: "run-alias",
+          stage: "execute",
+          provider: "openai",
+        },
+      },
+    ],
+  };
+  const fetchImpl: typeof fetch = async () =>
+    new Response(JSON.stringify(page), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+
+  const result = await collectHermesObservability("24h", {
+    now: NOW,
+    fetchImpl,
+  });
+
+  assert.deepEqual(
+    result.operations.map((operation) => operation.operationId).sort(),
+    ["op-alias-a", "op-alias-b"],
+  );
+  assert.equal(result.correlationCoverage.status, "partial");
+  assert.equal(result.correlationCoverage.withOperationId, 2);
+  assert.equal(result.correlationCoverage.invalidIdentifierObservations, 2);
+  assert.equal(result.correlationCoverage.fullyCorrelatedObservations, 0);
+  assert.equal(result.accounting.warnings.some((warning) => warning.includes("invalid")), true);
+});
+
+test("does not fabricate operations when correlation metadata is absent", async () => {
+  setLangfuseEnv();
+  const page = {
+    data: [
+      {
+        id: "legacy-only",
+        traceId: "trace-only",
+        sessionId: "session-only",
+        startTime: "2026-08-05T11:50:00.000Z",
+        type: "GENERATION",
+        providedModelName: "gpt-5",
+        usageDetails: { input: 10, output: 5, total: 15 },
+        totalCost: "0.01",
+        metadata: {
+          provider: "openai",
+          prompt: "absent metadata content must not leak",
+        },
+      },
+    ],
+  };
+  const fetchImpl: typeof fetch = async () =>
+    new Response(JSON.stringify(page), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+
+  const result = await collectHermesObservability("24h", {
+    now: NOW,
+    fetchImpl,
+  });
+
+  assert.equal(result.correlationCoverage.status, "missing");
+  assert.equal(result.correlationCoverage.eligibleObservations, 1);
+  assert.equal(result.correlationCoverage.withOperationId, 0);
+  assert.equal(result.correlationCoverage.operationCount, 0);
+  assert.deepEqual(result.operations, []);
+  assert.equal(result.accounting.reconciliation, "missing");
+  assert.equal(result.accounting.warnings.some((warning) => warning.includes("not fabricated")), true);
+  assert.equal(JSON.stringify(result).includes("absent metadata content must not leak"), false);
+});
+
+test("deduplicates duplicate partial correlation rows before coverage status and percentage", async () => {
+  setLangfuseEnv();
+  const page = {
+    data: [
+      {
+        id: "complete-gen",
+        traceId: "trace-complete",
+        sessionId: "session-complete",
+        startTime: "2026-08-05T11:50:00.000Z",
+        endTime: "2026-08-05T11:50:01.000Z",
+        type: "GENERATION",
+        providedModelName: "gpt-5",
+        usageDetails: { input: 20, output: 5, total: 25 },
+        totalCost: "0.01",
+        metadata: {
+          operation_id: "op-complete",
+          goal_id: "goal-p1a",
+          run_id: "run-001",
+          stage: "execute",
+          provider: "openai",
+        },
+      },
+      {
+        id: "partial-duplicate",
+        traceId: "trace-partial",
+        sessionId: "session-partial",
+        startTime: "2026-08-05T11:50:02.000Z",
+        endTime: "2026-08-05T11:50:03.000Z",
+        type: "TOOL",
+        name: "web.run",
+        metadata: {
+          operation_id: "op-partial",
+          tool_name: "web.run",
+        },
+      },
+      {
+        id: "partial-duplicate",
+        traceId: "trace-partial",
+        sessionId: "session-partial",
+        startTime: "2026-08-05T11:50:02.000Z",
+        endTime: "2026-08-05T11:50:03.000Z",
+        type: "TOOL",
+        name: "web.run",
+        metadata: {
+          operation_id: "op-partial",
+          tool_name: "web.run",
+        },
+      },
+    ],
+  };
+  const fetchImpl: typeof fetch = async () =>
+    new Response(JSON.stringify(page), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+
+  const result = await collectHermesObservability("24h", {
+    now: NOW,
+    fetchImpl,
+  });
+
+  assert.equal(result.source.rows, 3);
+  assert.equal(result.source.includedRows, 3);
+  assert.equal(result.correlationCoverage.status, "partial");
+  assert.equal(result.correlationCoverage.totalObservations, 3);
+  assert.equal(result.correlationCoverage.eligibleObservations, 2);
+  assert.equal(result.correlationCoverage.withOperationId, 2);
+  assert.equal(result.correlationCoverage.withGoalId, 1);
+  assert.equal(result.correlationCoverage.withRunId, 1);
+  assert.equal(result.correlationCoverage.withStageId, 1);
+  assert.equal(result.correlationCoverage.fullyCorrelatedObservations, 1);
+  assert.equal(result.correlationCoverage.percentage, 0.5);
+
+  const partial = result.operations.find((operation) => operation.operationId === "op-partial");
+  assert.equal(partial?.observations, 1);
+  assert.equal(partial?.toolCalls, 1);
+});
+
+test("does not collapse distinct no-id tool observations during dedupe", async () => {
+  setLangfuseEnv();
+  const page = {
+    data: [
+      {
+        id: "agent-gen-no-id-tools",
+        traceId: "trace-no-id-tools",
+        sessionId: "session-no-id-tools",
+        startTime: "2026-08-05T11:50:00.000Z",
+        endTime: "2026-08-05T11:50:01.000Z",
+        type: "GENERATION",
+        providedModelName: "gpt-5",
+        usageDetails: { input: 100, output: 10, total: 110 },
+        totalCost: "0.01",
+        metadata: {
+          operation_id: "op-no-id-tools",
+          goal_id: "goal-p1a",
+          run_id: "run-001",
+          stage: "execute",
+          provider: "openai",
+        },
+      },
+      {
+        traceId: "trace-no-id-tools",
+        sessionId: "session-no-id-tools",
+        parentObservationId: "agent-gen-no-id-tools",
+        startTime: "2026-08-05T11:50:02.000Z",
+        endTime: "2026-08-05T11:50:03.000Z",
+        type: "TOOL",
+        name: "apply_patch",
+        metadata: {
+          operation_id: "op-no-id-tools",
+          tool_call_id: "tool-call-a",
+          tool_name: "apply_patch",
+        },
+      },
+      {
+        traceId: "trace-no-id-tools",
+        sessionId: "session-no-id-tools",
+        parentObservationId: "agent-gen-no-id-tools",
+        startTime: "2026-08-05T11:50:02.000Z",
+        endTime: "2026-08-05T11:50:03.000Z",
+        type: "TOOL",
+        name: "apply_patch",
+        metadata: {
+          operation_id: "op-no-id-tools",
+          tool_call_id: "tool-call-b",
+          tool_name: "apply_patch",
+        },
+      },
+    ],
+  };
+  const fetchImpl: typeof fetch = async () =>
+    new Response(JSON.stringify(page), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+
+  const result = await collectHermesObservability("24h", {
+    now: NOW,
+    fetchImpl,
+  });
+
+  assert.equal(result.source.rows, 3);
+  assert.equal(result.correlationCoverage.eligibleObservations, 3);
+  assert.equal(result.correlationCoverage.withOperationId, 3);
+  assert.equal(result.correlationCoverage.fullyCorrelatedObservations, 1);
+
+  const operation = result.operations.find((row) => row.operationId === "op-no-id-tools");
+  assert.equal(operation?.observations, 3);
+  assert.equal(operation?.calls, 3);
+  assert.equal(operation?.toolCalls, 2);
+});
+
+test("dedupes duplicate same-id observations across global aggregates while preserving raw rows", async () => {
+  setLangfuseEnv();
+  const page = {
+    data: [
+      {
+        id: "dup-gen",
+        traceId: "trace-counted",
+        sessionId: "session-counted",
+        startTime: "2026-08-05T11:50:00.000Z",
+        endTime: "2026-08-05T11:50:01.000Z",
+        type: "GENERATION",
+        providedModelName: "gpt-5",
+        usageDetails: {
+          input: 100,
+          output: 20,
+          total: 120,
+          cache_read_input_tokens: 5,
+          cache_creation_input_tokens: 2,
+        },
+        totalCost: "0.02",
+        metadata: {
+          operation_id: "op-dedupe",
+          goal_id: "goal-p1a",
+          run_id: "run-001",
+          stage: "execute",
+          provider: "openai",
+          platform: "codex",
+        },
+      },
+      {
+        id: "dup-gen",
+        traceId: "trace-duplicate",
+        sessionId: "session-duplicate",
+        startTime: "2026-08-05T11:59:00.000Z",
+        endTime: "2026-08-05T11:59:59.000Z",
+        type: "GENERATION",
+        level: "ERROR",
+        providedModelName: "claude-opus-4-6",
+        usageDetails: {
+          input: 1_000_000,
+          output: 500_000,
+          total: 1_500_000,
+          cache_read_input_tokens: 300_000,
+          cache_creation_input_tokens: 200_000,
+        },
+        totalCost: "99",
+        metadata: {
+          operation_id: "op-dedupe-duplicate",
+          goal_id: "goal-duplicate",
+          run_id: "run-duplicate",
+          stage: "duplicate",
+          provider: "anthropic",
+          platform: "server",
+        },
+      },
+      {
+        id: "dup-tool",
+        parentObservationId: "dup-gen",
+        traceId: "trace-counted",
+        sessionId: "session-counted",
+        startTime: "2026-08-05T11:50:02.000Z",
+        endTime: "2026-08-05T11:50:03.000Z",
+        type: "TOOL",
+        name: "web.run",
+        metadata: {
+          operation_id: "op-dedupe",
+          goal_id: "goal-p1a",
+          run_id: "run-001",
+          stage: "execute",
+          tool_name: "web.run",
+          tool_call_id: "tool-1",
+        },
+      },
+      {
+        id: "dup-tool",
+        parentObservationId: "dup-gen",
+        traceId: "trace-duplicate",
+        sessionId: "session-duplicate",
+        startTime: "2026-08-05T12:00:00.000Z",
+        endTime: "2026-08-05T12:00:30.000Z",
+        type: "TOOL",
+        name: "apply_patch",
+        level: "ERROR",
+        metadata: {
+          operation_id: "op-dedupe-duplicate",
+          goal_id: "goal-duplicate",
+          run_id: "run-duplicate",
+          stage: "duplicate",
+          tool_name: "apply_patch",
+          tool_call_id: "tool-duplicate",
+          tool_call_count: 9,
+        },
+      },
+    ],
+  };
+  const fetchImpl: typeof fetch = async () =>
+    new Response(JSON.stringify(page), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+
+  const result = await collectHermesObservability("24h", {
+    now: NOW,
+    fetchImpl,
+  });
+
+  assert.equal(result.source.rows, 4);
+  assert.equal(result.source.filteredRows, 0);
+  assert.equal(result.source.includedRows, 4);
+  assert.equal(result.correlationCoverage.totalObservations, 4);
+  assert.equal(result.correlationCoverage.eligibleObservations, 2);
+  assert.equal(result.correlationCoverage.withOperationId, 2);
+  assert.equal(result.correlationCoverage.fullyCorrelatedObservations, 2);
+  assert.equal(result.correlationCoverage.percentage, 1);
+
+  assert.equal(result.totals?.inputTokens, 100);
+  assert.equal(result.totals?.outputTokens, 20);
+  assert.equal(result.totals?.totalTokens, 120);
+  assert.equal(result.totals?.cacheReadTokens, 5);
+  assert.equal(result.totals?.cacheWriteTokens, 2);
+  assert.equal(result.totals?.reportedCost, 0.02);
+  assert.equal(result.totals?.effectiveCost, 0.02);
+  assert.equal(result.totals?.generationCalls, 1);
+  assert.equal(result.totals?.toolCalls, 1);
+  assert.equal(result.totals?.errors, 0);
+  assert.equal(result.totals?.uniqueTraces, 1);
+  assert.equal(result.totals?.uniqueSessions, 1);
+  assert.equal(result.totals?.latestTimestamp, "2026-08-05T11:50:03.000Z");
+
+  assert.deepEqual(result.byModel.map((model) => model.model), ["gpt-5"]);
+  assert.equal(result.byModel[0]?.calls, 1);
+  assert.deepEqual(result.byProvider.map((provider) => provider.provider), ["openai"]);
+  assert.equal(result.byProvider[0]?.calls, 1);
+  assert.deepEqual(result.sessions.map((session) => session.traceId), ["trace-counted"]);
+  assert.equal(result.sessions[0]?.totalTokens, 120);
+  assert.equal(result.sessions[0]?.toolCallCount, 1);
+  assert.equal(result.sessions[0]?.status, "ok");
+  assert.deepEqual(result.tools.recent.map((tool) => `${tool.name}:${tool.count}`), ["web.run:1"]);
+  assert.deepEqual(result.tools.repeated, []);
+
+  assert.deepEqual(result.workflow?.observationTypes, { GENERATION: 1, TOOL: 1 });
+  assert.equal(result.workflow?.parentEdges, 1);
+  assert.equal(result.workflow?.rootNodes, 1);
+  assert.equal(result.workflow?.modelGenerations, 1);
+  assert.equal(result.workflow?.toolCalls, 1);
+  assert.equal(result.workflow?.errorNodes, 0);
+
+  assert.equal(result.operations.length, 1);
+  assert.equal(result.operations[0]?.operationId, "op-dedupe");
+  assert.equal(result.operations[0]?.observations, 2);
+  assert.equal(result.operations[0]?.calls, 2);
+  assert.equal(result.operations[0]?.generationCalls, 1);
+  assert.equal(result.operations[0]?.toolCalls, 1);
+  assert.equal(result.operations[0]?.totalTokens, 120);
+  assert.equal(result.operations[0]?.effectiveCost, 0.02);
+  assert.equal(result.accounting.operationCount, 1);
+  assert.equal(result.accounting.effectiveCost, 0.02);
+
+  assert.deepEqual(result.topLargeTraces.map((trace) => trace.traceId), ["trace-counted"]);
+  assert.deepEqual(result.topExpensiveTraces.map((trace) => trace.traceId), ["trace-counted"]);
+  assert.equal(result.wasteFlags.find((flag) => flag.kind === "largest_token_session")?.value, 120);
+  assert.equal(JSON.stringify(result).includes("trace-duplicate"), false);
+  assert.equal(JSON.stringify(result).includes("apply_patch"), false);
+});
+
+test("keeps operation calls distinct from observations for span and event rows", async () => {
+  setLangfuseEnv();
+  const page = {
+    data: [
+      {
+        id: "calls-gen",
+        traceId: "trace-calls",
+        sessionId: "session-calls",
+        startTime: "2026-08-05T11:50:00.000Z",
+        type: "GENERATION",
+        providedModelName: "gpt-5",
+        usageDetails: { input: 100, output: 10, total: 110 },
+        totalCost: "0.01",
+        metadata: {
+          operation_id: "op-calls",
+          goal_id: "goal-p1a",
+          run_id: "run-001",
+          stage: "execute",
+          provider: "openai",
+        },
+      },
+      {
+        id: "calls-span-tool",
+        traceId: "trace-calls",
+        sessionId: "session-calls",
+        startTime: "2026-08-05T11:50:01.000Z",
+        type: "SPAN",
+        name: "agent tool",
+        metadata: {
+          operation_id: "op-calls",
+          tool_name: "browser.search",
+          tool_call_id: "tool-span",
+        },
+      },
+      {
+        id: "calls-event-tool",
+        traceId: "trace-calls",
+        sessionId: "session-calls",
+        startTime: "2026-08-05T11:50:02.000Z",
+        type: "EVENT",
+        name: "tool:memory.lookup",
+        metadata: {
+          operation_id: "op-calls",
+          tool_call_count: "2",
+        },
+      },
+      {
+        id: "calls-span-no-tool",
+        traceId: "trace-calls",
+        sessionId: "session-calls",
+        startTime: "2026-08-05T11:50:03.000Z",
+        type: "SPAN",
+        name: "agent bookkeeping",
+        metadata: {
+          operation_id: "op-calls",
+        },
+      },
+      {
+        id: "calls-event-no-tool",
+        traceId: "trace-calls",
+        sessionId: "session-calls",
+        startTime: "2026-08-05T11:50:04.000Z",
+        type: "EVENT",
+        name: "checkpoint",
+        metadata: {
+          operation_id: "op-calls",
+        },
+      },
+    ],
+  };
+  const fetchImpl: typeof fetch = async () =>
+    new Response(JSON.stringify(page), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+
+  const result = await collectHermesObservability("24h", {
+    now: NOW,
+    fetchImpl,
+  });
+
+  const operation = result.operations.find((row) => row.operationId === "op-calls");
+  assert.equal(operation?.observations, 5);
+  assert.equal(operation?.generationCalls, 1);
+  assert.equal(operation?.toolCalls, 3);
+  assert.equal(operation?.calls, 4);
+});
+
+test("reports operation-only tool observations as partial row-level correlation", async () => {
+  setLangfuseEnv();
+  const page = {
+    data: [
+      {
+        id: "agent-gen",
+        traceId: "trace-agent",
+        sessionId: "session-agent",
+        startTime: "2026-08-05T11:50:00.000Z",
+        endTime: "2026-08-05T11:50:01.000Z",
+        type: "GENERATION",
+        providedModelName: "gpt-5",
+        usageDetails: { input: 100, output: 25, total: 125 },
+        totalCost: "0.02",
+        metadata: {
+          operation_id: "op-agent",
+          goal_id: "goal-p1a",
+          run_id: "run-001",
+          stage: "execute",
+          provider: "openai",
+          platform: "codex",
+        },
+      },
+      {
+        id: "agent-tool-1",
+        traceId: "trace-agent",
+        sessionId: "session-agent",
+        startTime: "2026-08-05T11:50:02.000Z",
+        endTime: "2026-08-05T11:50:03.000Z",
+        type: "TOOL",
+        name: "web.run",
+        metadata: {
+          operation_id: "op-agent",
+          tool_name: "web.run",
+        },
+      },
+      {
+        id: "agent-tool-2",
+        traceId: "trace-agent",
+        sessionId: "session-agent",
+        startTime: "2026-08-05T11:50:04.000Z",
+        endTime: "2026-08-05T11:50:05.000Z",
+        type: "TOOL",
+        name: "apply_patch",
+        metadata: {
+          operation_id: "op-agent",
+          tool_name: "apply_patch",
+        },
+      },
+    ],
+  };
+  const fetchImpl: typeof fetch = async () =>
+    new Response(JSON.stringify(page), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+
+  const result = await collectHermesObservability("24h", {
+    now: NOW,
+    fetchImpl,
+  });
+
+  assert.equal(result.correlationCoverage.status, "partial");
+  assert.equal(result.correlationCoverage.totalObservations, 3);
+  assert.equal(result.correlationCoverage.eligibleObservations, 3);
+  assert.equal(result.correlationCoverage.withOperationId, 3);
+  assert.equal(result.correlationCoverage.withGoalId, 1);
+  assert.equal(result.correlationCoverage.withRunId, 1);
+  assert.equal(result.correlationCoverage.withStageId, 1);
+  assert.equal(result.correlationCoverage.invalidIdentifierObservations, 0);
+  assert.equal(result.correlationCoverage.fullyCorrelatedObservations, 1);
+  assert.equal(result.correlationCoverage.operationCount, 1);
+  assert.equal(result.correlationCoverage.fullyCorrelatedOperations, 1);
+  assert.equal(result.correlationCoverage.percentage, 0.33);
+  assert.equal(result.accounting.reconciliation, "partial");
+});
+
+test("caps operation rows and nested identifiers deterministically", async () => {
+  setLangfuseEnv();
+  const data = Array.from({ length: 45 }, (_, index) => ({
+    id: `cap-gen-${index}`,
+    traceId: `trace-${String(index).padStart(2, "0")}`,
+    sessionId: `session-${String(index).padStart(2, "0")}`,
+    startTime: `2026-08-05T11:${String(index).padStart(2, "0")}:00.000Z`,
+    endTime: `2026-08-05T11:${String(index).padStart(2, "0")}:01.000Z`,
+    type: "GENERATION",
+    providedModelName: "gpt-5",
+    usageDetails: { input: index + 1, output: 1, total: index + 2 },
+    totalCost: "0.01",
+    metadata: {
+      operation_id: `op-${String(index).padStart(2, "0")}`,
+      goal_id: "goal-cap",
+      run_id: "run-cap",
+      stage: "stage-cap",
+      provider: "openai",
+      platform: "cap-test",
+    },
+  }));
+  const page = { data };
+  const fetchImpl: typeof fetch = async () =>
+    new Response(JSON.stringify(page), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+
+  const result = await collectHermesObservability("24h", {
+    now: NOW,
+    fetchImpl,
+  });
+
+  assert.equal(result.correlationCoverage.status, "observed");
+  assert.equal(result.correlationCoverage.fullyCorrelatedObservations, 45);
+  assert.equal(result.correlationCoverage.operationCount, 45);
+  assert.equal(result.operations.length, 40);
+  assert.equal(result.accounting.operationCount, 45);
+  assert.equal(result.accounting.returnedOperations, 40);
+  assert.equal(result.accounting.truncatedOperations, true);
+  assert.equal(result.operations[0].operationId, "op-44");
+  assert.equal(result.operations[39].operationId, "op-05");
+  assert.equal(result.operations.every((operation) => operation.traceIds.length <= 6), true);
+});
+
+test("caps nested operation trace and session identifiers to deterministic six", async () => {
+  setLangfuseEnv();
+  const data = Array.from({ length: 8 }, (_, index) => ({
+    id: `nested-gen-${index}`,
+    traceId: `trace-nested-${String(7 - index).padStart(2, "0")}`,
+    sessionId: `session-nested-${String(7 - index).padStart(2, "0")}`,
+    startTime: `2026-08-05T11:5${index}:00.000Z`,
+    type: "GENERATION",
+    providedModelName: "gpt-5",
+    usageDetails: { input: 1, output: 1, total: 2 },
+    totalCost: "0.01",
+    metadata: {
+      operation_id: "op-nested-cap",
+      goal_id: "goal-cap",
+      run_id: "run-cap",
+      stage: "stage-cap",
+      provider: "openai",
+    },
+  }));
+  const page = { data };
+  const fetchImpl: typeof fetch = async () =>
+    new Response(JSON.stringify(page), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+
+  const result = await collectHermesObservability("24h", {
+    now: NOW,
+    fetchImpl,
+  });
+
+  assert.equal(result.operations.length, 1);
+  assert.deepEqual(result.operations[0].traceIds, [
+    "trace-nested-00",
+    "trace-nested-01",
+    "trace-nested-02",
+    "trace-nested-03",
+    "trace-nested-04",
+    "trace-nested-05",
+  ]);
+  assert.deepEqual(result.operations[0].sessionIds, [
+    "session-nested-00",
+    "session-nested-01",
+    "session-nested-02",
+    "session-nested-03",
+    "session-nested-04",
+    "session-nested-05",
+  ]);
+});
+
+test("keeps zero-cost null-estimate rows in operation cost-basis reconciliation", async () => {
+  setLangfuseEnv();
+  const page = {
+    data: [
+      {
+        id: "zero-cloud",
+        traceId: "trace-zero-cloud",
+        sessionId: "session-zero-cloud",
+        startTime: "2026-08-05T11:50:00.000Z",
+        type: "GENERATION",
+        providedModelName: "claude-future",
+        usageDetails: { input: 0, output: 0, total: 0 },
+        totalCost: "0",
+        metadata: {
+          operation_id: "op-zero-cloud",
+          goal_id: "goal-zero",
+          run_id: "run-zero",
+          stage: "execute",
+          provider: "anthropic",
+        },
+      },
+      {
+        id: "zero-local",
+        traceId: "trace-zero-local",
+        sessionId: "session-zero-local",
+        startTime: "2026-08-05T11:51:00.000Z",
+        type: "GENERATION",
+        providedModelName: "qwen3-coder",
+        usageDetails: { input: 0, output: 0, total: 0 },
+        totalCost: "0",
+        metadata: {
+          operation_id: "op-zero-local",
+          goal_id: "goal-zero",
+          run_id: "run-zero",
+          stage: "execute",
+          provider: "custom",
+        },
+      },
+    ],
+  };
+  const fetchImpl: typeof fetch = async () =>
+    new Response(JSON.stringify(page), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+
+  const result = await collectHermesObservability("24h", {
+    now: NOW,
+    fetchImpl,
+  });
+
+  const cloud = result.operations.find((operation) => operation.operationId === "op-zero-cloud");
+  const local = result.operations.find((operation) => operation.operationId === "op-zero-local");
+  assert.equal(cloud?.estimatedCost, null);
+  assert.equal(cloud?.costBasis, "reported_only_unknown_cloud");
+  assert.equal(local?.estimatedCost, 0);
+  assert.equal(local?.costBasis, "local_zero");
+  assert.equal(result.accounting.reportedCost, 0);
+  assert.equal(result.accounting.estimatedCost, 0);
+  assert.equal(result.accounting.effectiveCost, 0);
+  assert.equal(result.accounting.costBasis, "mixed");
+});
+
 test("separates reported, estimated, and effective costs without guessing unknown pricing", async () => {
   setLangfuseEnv();
   const page = {
@@ -404,6 +1406,10 @@ test("returns failure health without fake totals when Langfuse fails", async () 
   assert.equal(result.totals, null);
   assert.deepEqual(result.byModel, []);
   assert.deepEqual(result.byProvider, []);
+  assert.equal(result.correlationCoverage.status, "missing");
+  assert.equal(result.correlationCoverage.eligibleObservations, 0);
+  assert.deepEqual(result.operations, []);
+  assert.equal(result.accounting.reconciliation, "missing");
   assert.equal(result.workflow, null);
   assert.equal(result.amplification, null);
   assert.deepEqual(result.recommendations, []);

@@ -12,8 +12,13 @@ const DEFAULT_LIMIT = 1000;
 const DEFAULT_MAX_PAGES = 10;
 const DEFAULT_MAX_ROWS = 10_000;
 const DEFAULT_TIMEOUT_MS = 8000;
+const MAX_CORRELATION_ID_LENGTH = 80;
+const MAX_OPERATION_ROWS = 40;
+const MAX_OPERATION_NESTED_IDS = 6;
+const MAX_OBSERVATION_DEDUPE_KEY_PART_LENGTH = 120;
 
 type HealthStatus = "ok" | "warning" | "error";
+export type CorrelationStatus = "observed" | "partial" | "missing" | "invalid";
 export type ValueState = "known" | "partial" | "unknown";
 
 export type CostBasis =
@@ -169,6 +174,66 @@ export interface ProviderAggregate {
   cost: number;
 }
 
+export interface CorrelationCoverage {
+  status: CorrelationStatus;
+  totalObservations: number;
+  eligibleObservations: number;
+  withOperationId: number;
+  withGoalId: number;
+  withRunId: number;
+  withStageId: number;
+  invalidIdentifierObservations: number;
+  fullyCorrelatedObservations: number;
+  operationCount: number;
+  fullyCorrelatedOperations: number;
+  percentage: number | null;
+}
+
+export interface OperationAggregate {
+  operationId: string;
+  goalId: string | null;
+  runId: string | null;
+  stageId: string | null;
+  traceIds: string[];
+  sessionIds: string[];
+  models: string[];
+  providers: string[];
+  platforms: string[];
+  calls: number;
+  generationCalls: number;
+  observations: number;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  reportedCost: number;
+  estimatedCost: number | null;
+  effectiveCost: number;
+  costBasis: CostBasis;
+  estimatedCostRange?: CostRange;
+  toolCalls: number;
+  errors: number;
+  startTime: string | null;
+  endTime: string | null;
+  durationMs: number | null;
+  latestTimestamp: string | null;
+  status: "ok" | "error";
+}
+
+export interface AccountingSummary {
+  operationCount: number;
+  rowCap: number;
+  returnedOperations: number;
+  truncatedOperations: boolean;
+  reportedCost: number;
+  estimatedCost: number | null;
+  effectiveCost: number;
+  costBasis: CostBasis;
+  reconciliation: CorrelationStatus;
+  warnings: string[];
+}
+
 export interface AmplificationMetrics {
   inputOutputRatio: number | null;
   contextAmplification: number | null;
@@ -193,6 +258,9 @@ export interface HermesObservability {
   completeness: ObservabilityCompleteness | null;
   byModel: ModelAggregate[];
   byProvider: ProviderAggregate[];
+  correlationCoverage: CorrelationCoverage;
+  operations: OperationAggregate[];
+  accounting: AccountingSummary;
   workflow: WorkflowSummary | null;
   amplification: AmplificationMetrics | null;
   sessions: SessionTraceAggregate[];
@@ -275,6 +343,49 @@ interface SessionWork {
   cost: number;
   toolCallCount: number;
   errorCount: number;
+  latestMs: number | null;
+}
+
+interface CorrelationIds {
+  operationId: string | null;
+  goalId: string | null;
+  runId: string | null;
+  stageId: string | null;
+  invalid: boolean;
+}
+
+interface OperationWork {
+  operationId: string;
+  goalIds: Set<string>;
+  runIds: Set<string>;
+  stageIds: Set<string>;
+  traceIds: Set<string>;
+  sessionIds: Set<string>;
+  models: Set<string>;
+  providers: Set<string>;
+  platforms: Set<string>;
+  countedObservationKeys: Set<string>;
+  countedToolKeys: Set<string>;
+  calls: number;
+  generationCalls: number;
+  observations: number;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  reportedCost: number;
+  estimatedCost: number;
+  hasEstimatedCost: boolean;
+  effectiveCost: number;
+  costBases: Set<CostBasis>;
+  estimatedCostRangeLow: number;
+  estimatedCostRangeHigh: number;
+  hasEstimatedCostRange: boolean;
+  toolCalls: number;
+  errors: number;
+  startMs: number | null;
+  endMs: number | null;
   latestMs: number | null;
 }
 
@@ -498,9 +609,12 @@ function aggregateObservations(
   const models = new Map<string, ModelAggregate>();
   const providers = new Map<string, ProviderAggregate>();
   const sessionMap = new Map<string, SessionWork>();
+  const operationMap = new Map<string, OperationWork>();
   const tools = new Map<string, ToolAggregate>();
   const observationTypes = new Map<string, number>();
   const observationIds = new Set<string>();
+  const countedObservationKeys = new Set<string>();
+  const countedObservations: Observation[] = [];
   const childIds = new Set<string>();
   let latencyCount = 0;
   let latencyTotalMs = 0;
@@ -514,6 +628,13 @@ function aggregateObservations(
   let hasEstimatedCostRange = false;
   const totalCostBases = new Set<CostBasis>();
   let filteredRows = 0;
+  let eligibleCorrelationObservations = 0;
+  let withOperationId = 0;
+  let withGoalId = 0;
+  let withRunId = 0;
+  let withStageId = 0;
+  let invalidIdentifierObservations = 0;
+  let fullyCorrelatedObservations = 0;
 
   for (const obs of pageResult.observations) {
     if (isSyntheticObservation(obs)) {
@@ -540,6 +661,30 @@ function aggregateObservations(
     const tool = classifyToolObservation(obs, type);
     const isError = isErrorObservation(obs);
     const latencyMs = latencyToMs(obs.latency);
+    const correlation = extractCorrelationIds(obs.metadata);
+    const observationKey = observationDeduplicationKey(obs, type, correlation.operationId);
+
+    if (countedObservationKeys.has(observationKey)) {
+      continue;
+    }
+    countedObservationKeys.add(observationKey);
+    countedObservations.push(obs);
+
+    eligibleCorrelationObservations += 1;
+    if (correlation.operationId) withOperationId += 1;
+    if (correlation.goalId) withGoalId += 1;
+    if (correlation.runId) withRunId += 1;
+    if (correlation.stageId) withStageId += 1;
+    if (correlation.invalid) invalidIdentifierObservations += 1;
+    if (
+      correlation.operationId &&
+      correlation.goalId &&
+      correlation.runId &&
+      correlation.stageId &&
+      !correlation.invalid
+    ) {
+      fullyCorrelatedObservations += 1;
+    }
 
     if (type) observationTypes.set(type, (observationTypes.get(type) ?? 0) + 1);
     if (obs.id) observationIds.add(obs.id);
@@ -672,6 +817,42 @@ function aggregateObservations(
       current.latestTimestamp = maxIso(current.latestTimestamp, rowLatestMs);
       tools.set(tool.name, current);
     }
+
+    if (correlation.operationId) {
+      const operation = getOperationWork(operationMap, correlation.operationId);
+      addOptional(operation.goalIds, correlation.goalId);
+      addOptional(operation.runIds, correlation.runId);
+      addOptional(operation.stageIds, correlation.stageId);
+      addOptional(operation.traceIds, obs.traceId);
+      addOptional(operation.sessionIds, obs.sessionId);
+      addOptional(operation.models, model);
+      addOptional(operation.providers, provider);
+      addOptional(operation.platforms, platform);
+
+      operation.countedObservationKeys.add(observationKey);
+      operation.observations += 1;
+      if (type === "GENERATION" || model) operation.calls += 1;
+      if (type === "GENERATION") operation.generationCalls += 1;
+      operation.inputTokens += usage.inputTokens;
+      operation.outputTokens += usage.outputTokens;
+      operation.totalTokens += usage.totalTokens;
+      operation.cacheReadTokens += usage.cacheReadTokens;
+      operation.cacheWriteTokens += usage.cacheWriteTokens;
+      mergeOperationCostFields(operation, costFields);
+      if (isError) operation.errors += 1;
+      if (startMs != null) operation.startMs = Math.min(operation.startMs ?? startMs, startMs);
+      if (endMs != null) operation.endMs = Math.max(operation.endMs ?? endMs, endMs);
+      if (rowLatestMs != null) operation.latestMs = Math.max(operation.latestMs ?? rowLatestMs, rowLatestMs);
+
+      if (tool) {
+        const toolKey = safeCorrelationId(obs.metadata.tool_call_id) ?? observationKey;
+        if (!operation.countedToolKeys.has(toolKey)) {
+          operation.countedToolKeys.add(toolKey);
+          operation.toolCalls += tool.count;
+          operation.calls += tool.count;
+        }
+      }
+    }
   }
 
   totals.uniqueTraces = traces.size;
@@ -692,6 +873,10 @@ function aggregateObservations(
     .map(finalizeSession)
     .sort((a, b) => (Date.parse(b.latestTimestamp ?? "") || 0) - (Date.parse(a.latestTimestamp ?? "") || 0))
     .slice(0, 80);
+  const allOperationRows = Array.from(operationMap.values())
+    .map(finalizeOperation)
+    .sort(compareOperations);
+  const operationRows = allOperationRows.slice(0, MAX_OPERATION_ROWS);
   const recentTools = Array.from(tools.values())
     .sort((a, b) => (Date.parse(b.latestTimestamp ?? "") || 0) - (Date.parse(a.latestTimestamp ?? "") || 0))
     .slice(0, 12);
@@ -699,15 +884,14 @@ function aggregateObservations(
     .filter((tool) => tool.count > 1)
     .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name))
     .slice(0, 8);
-  const includedObservations = pageResult.observations.filter((obs) => !isSyntheticObservation(obs));
   const topExpensiveTraces = [...sessionRows].sort((a, b) => b.effectiveCost - a.effectiveCost).slice(0, 8);
   const topLargeTraces = [...sessionRows].sort((a, b) => b.totalTokens - a.totalTokens).slice(0, 8);
   const workflow: WorkflowSummary = {
     langGraphDetected,
     message: langGraphDetected ? "LangGraph trace metadata detected" : "LangGraph traces not detected",
     observationTypes: Object.fromEntries([...observationTypes.entries()].sort((a, b) => a[0].localeCompare(b[0]))),
-    parentEdges: includedObservations.filter((obs) => obs.parentObservationId).length,
-    rootNodes: includedObservations.filter((obs) => obs.id && !childIds.has(obs.id)).length,
+    parentEdges: countedObservations.filter((obs) => obs.parentObservationId).length,
+    rootNodes: countedObservations.filter((obs) => obs.id && !childIds.has(obs.id)).length,
     modelGenerations: totals.generationCalls,
     toolCalls: totals.toolCalls,
     errorNodes: totals.errors,
@@ -727,6 +911,18 @@ function aggregateObservations(
   };
   const amplification = buildAmplification(totals, sessionRows);
   const wasteFlags = buildWasteFlags(sessionRows, repeatedTools);
+  const correlationCoverage = buildCorrelationCoverage({
+    totalObservations: pageResult.observations.length,
+    eligibleObservations: eligibleCorrelationObservations,
+    withOperationId,
+    withGoalId,
+    withRunId,
+    withStageId,
+    invalidIdentifierObservations,
+    fullyCorrelatedObservations,
+    operations: allOperationRows,
+  });
+  const accounting = buildAccountingSummary(allOperationRows, operationRows.length, correlationCoverage);
 
   const warning = pageResult.truncated
     ? "Langfuse row safety cap reached; showing the newest bounded sample."
@@ -758,6 +954,9 @@ function aggregateObservations(
       .map(roundCostAggregate)
       .sort((a, b) => b.effectiveCost - a.effectiveCost || b.totalTokens - a.totalTokens)
       .slice(0, 12),
+    correlationCoverage,
+    operations: operationRows,
+    accounting,
     workflow,
     amplification,
     sessions: sessionRows,
@@ -841,6 +1040,100 @@ function extractUsage(usageDetails: Record<string, unknown>) {
     cacheWriteTokens,
     hasTokenEvidence,
   };
+}
+
+function extractCorrelationIds(metadata: Record<string, unknown>): CorrelationIds {
+  const operation = firstCorrelationId(metadata, [
+    "operation_id",
+    "operationId",
+    "operation",
+    "hermes_operation_id",
+    "mission_operation_id",
+    "mc_operation_id",
+  ]);
+  const goal = firstCorrelationId(metadata, [
+    "goal_id",
+    "goalId",
+    "goal",
+    "hermes_goal_id",
+    "mission_goal_id",
+    "mc_goal_id",
+  ]);
+  const run = firstCorrelationId(metadata, [
+    "run_id",
+    "runId",
+    "run",
+    "request_id",
+    "requestId",
+    "hermes_run_id",
+    "mission_run_id",
+    "mc_run_id",
+  ]);
+  const stage = firstCorrelationId(metadata, [
+    "stage_id",
+    "stageId",
+    "stage",
+    "phase",
+    "node_stage",
+    "langgraph_stage",
+  ]);
+
+  return {
+    operationId: operation.value,
+    goalId: goal.value,
+    runId: run.value,
+    stageId: stage.value,
+    invalid: operation.invalid || goal.invalid || run.invalid || stage.invalid,
+  };
+}
+
+function firstCorrelationId(metadata: Record<string, unknown>, keys: string[]) {
+  let invalid = false;
+  let firstValid: string | null = null;
+  for (const key of keys) {
+    if (!Object.prototype.hasOwnProperty.call(metadata, key)) continue;
+    const value = safeCorrelationId(metadata[key]);
+    if (value) {
+      firstValid ??= value;
+    } else {
+      invalid = true;
+    }
+  }
+  return { value: firstValid, invalid };
+}
+
+function safeCorrelationId(value: unknown) {
+  const text = scalarText(value);
+  if (!text) return null;
+  if (text.length > MAX_CORRELATION_ID_LENGTH) return null;
+  if (!/^[A-Za-z0-9][A-Za-z0-9._:@/-]*$/.test(text)) return null;
+  return text;
+}
+
+function observationDeduplicationKey(obs: Observation, type: string, operationId: string | null) {
+  if (obs.id) return `id:${obs.id}`;
+
+  const toolCallId = safeCorrelationId(obs.metadata.tool_call_id);
+  return [
+    "fallback",
+    operationId,
+    type,
+    obs.name,
+    obs.traceId,
+    obs.parentObservationId,
+    toolCallId,
+    obs.startTime,
+    obs.endTime,
+  ]
+    .map(boundedObservationKeyPart)
+    .join("|");
+}
+
+function boundedObservationKeyPart(value: string | null) {
+  if (!value) return "";
+  return value.length > MAX_OBSERVATION_DEDUPE_KEY_PART_LENGTH
+    ? value.slice(0, MAX_OBSERVATION_DEDUPE_KEY_PART_LENGTH)
+    : value;
 }
 
 function computeObservationCost({
@@ -929,6 +1222,21 @@ function mergeCostFields(target: ModelAggregate | ProviderAggregate, cost: CostF
 }
 
 function mergeSessionCostFields(target: SessionWork, cost: CostFields) {
+  target.reportedCost += cost.reportedCost;
+  target.effectiveCost += cost.effectiveCost;
+  target.costBases.add(cost.costBasis);
+  if (cost.estimatedCost != null) {
+    target.estimatedCost += cost.estimatedCost;
+    target.hasEstimatedCost = true;
+  }
+  if (cost.estimatedCostRange) {
+    target.estimatedCostRangeLow += cost.estimatedCostRange.low;
+    target.estimatedCostRangeHigh += cost.estimatedCostRange.high;
+    target.hasEstimatedCostRange = true;
+  }
+}
+
+function mergeOperationCostFields(target: OperationWork, cost: CostFields) {
   target.reportedCost += cost.reportedCost;
   target.effectiveCost += cost.effectiveCost;
   target.costBases.add(cost.costBasis);
@@ -1053,6 +1361,243 @@ function finalizeSession(work: SessionWork): SessionTraceAggregate {
     errorCount: work.errorCount,
     status: work.errorCount > 0 ? "error" : "ok",
     latestTimestamp: isoOrNull(work.latestMs),
+  };
+}
+
+function getOperationWork(operationMap: Map<string, OperationWork>, operationId: string) {
+  const current = operationMap.get(operationId);
+  if (current) return current;
+
+  const created: OperationWork = {
+    operationId,
+    goalIds: new Set(),
+    runIds: new Set(),
+    stageIds: new Set(),
+    traceIds: new Set(),
+    sessionIds: new Set(),
+    models: new Set(),
+    providers: new Set(),
+    platforms: new Set(),
+    countedObservationKeys: new Set(),
+    countedToolKeys: new Set(),
+    calls: 0,
+    generationCalls: 0,
+    observations: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    totalTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    reportedCost: 0,
+    estimatedCost: 0,
+    hasEstimatedCost: false,
+    effectiveCost: 0,
+    costBases: new Set(),
+    estimatedCostRangeLow: 0,
+    estimatedCostRangeHigh: 0,
+    hasEstimatedCostRange: false,
+    toolCalls: 0,
+    errors: 0,
+    startMs: null,
+    endMs: null,
+    latestMs: null,
+  };
+  operationMap.set(operationId, created);
+  return created;
+}
+
+function finalizeOperation(work: OperationWork): OperationAggregate {
+  const durationMs =
+    work.startMs != null && work.endMs != null && work.endMs >= work.startMs
+      ? work.endMs - work.startMs
+      : null;
+
+  return {
+    operationId: work.operationId,
+    goalId: firstSorted(work.goalIds),
+    runId: firstSorted(work.runIds),
+    stageId: firstSorted(work.stageIds),
+    traceIds: boundedSorted(work.traceIds),
+    sessionIds: boundedSorted(work.sessionIds),
+    models: boundedSorted(work.models),
+    providers: boundedSorted(work.providers),
+    platforms: boundedSorted(work.platforms),
+    calls: work.calls,
+    generationCalls: work.generationCalls,
+    observations: work.observations,
+    inputTokens: work.inputTokens,
+    outputTokens: work.outputTokens,
+    totalTokens: work.totalTokens,
+    cacheReadTokens: work.cacheReadTokens,
+    cacheWriteTokens: work.cacheWriteTokens,
+    reportedCost: roundMoney(work.reportedCost),
+    estimatedCost: work.hasEstimatedCost ? roundMoney(work.estimatedCost) : null,
+    effectiveCost: roundMoney(work.effectiveCost),
+    costBasis: summarizeCostBasis(work.costBases),
+    ...(work.hasEstimatedCostRange
+      ? {
+          estimatedCostRange: {
+            low: roundMoney(work.estimatedCostRangeLow),
+            high: roundMoney(work.estimatedCostRangeHigh),
+            basis: "Recognized model estimate range; Claude Opus 4.6 cache writes use 5m as estimate and 1h as upper bound when TTL is unknown.",
+          },
+        }
+      : {}),
+    toolCalls: work.toolCalls,
+    errors: work.errors,
+    startTime: isoOrNull(work.startMs),
+    endTime: isoOrNull(work.endMs),
+    durationMs,
+    latestTimestamp: isoOrNull(work.latestMs),
+    status: work.errors > 0 ? "error" : "ok",
+  };
+}
+
+function compareOperations(a: OperationAggregate, b: OperationAggregate) {
+  const latestDelta = (Date.parse(b.latestTimestamp ?? "") || 0) - (Date.parse(a.latestTimestamp ?? "") || 0);
+  if (latestDelta !== 0) return latestDelta;
+  const costDelta = b.effectiveCost - a.effectiveCost;
+  if (costDelta !== 0) return costDelta;
+  const tokenDelta = b.totalTokens - a.totalTokens;
+  if (tokenDelta !== 0) return tokenDelta;
+  return a.operationId.localeCompare(b.operationId);
+}
+
+function buildCorrelationCoverage({
+  totalObservations,
+  eligibleObservations,
+  withOperationId,
+  withGoalId,
+  withRunId,
+  withStageId,
+  invalidIdentifierObservations,
+  fullyCorrelatedObservations,
+  operations,
+}: {
+  totalObservations: number;
+  eligibleObservations: number;
+  withOperationId: number;
+  withGoalId: number;
+  withRunId: number;
+  withStageId: number;
+  invalidIdentifierObservations: number;
+  fullyCorrelatedObservations: number;
+  operations: OperationAggregate[];
+}): CorrelationCoverage {
+  const fullyCorrelatedOperations = operations.filter(
+    (operation) => operation.goalId && operation.runId && operation.stageId,
+  ).length;
+  const percentage = eligibleObservations > 0 ? roundRatio(fullyCorrelatedObservations / eligibleObservations) : null;
+  let status: CorrelationStatus = "missing";
+
+  if (eligibleObservations === 0 || withOperationId === 0) {
+    status = invalidIdentifierObservations > 0 ? "invalid" : "missing";
+  } else if (
+    invalidIdentifierObservations === 0 &&
+    fullyCorrelatedObservations === eligibleObservations
+  ) {
+    status = "observed";
+  } else {
+    status = "partial";
+  }
+
+  return {
+    status,
+    totalObservations,
+    eligibleObservations,
+    withOperationId,
+    withGoalId,
+    withRunId,
+    withStageId,
+    invalidIdentifierObservations,
+    fullyCorrelatedObservations,
+    operationCount: operations.length,
+    fullyCorrelatedOperations,
+    percentage,
+  };
+}
+
+function buildAccountingSummary(
+  operations: OperationAggregate[],
+  returnedOperations: number,
+  coverage: CorrelationCoverage,
+): AccountingSummary {
+  const costBases = new Set<CostBasis>();
+  let reportedCost = 0;
+  let estimatedCost = 0;
+  let hasEstimatedCost = false;
+  let effectiveCost = 0;
+
+  for (const operation of operations) {
+    reportedCost += operation.reportedCost;
+    effectiveCost += operation.effectiveCost;
+    costBases.add(operation.costBasis);
+    if (operation.estimatedCost != null) {
+      estimatedCost += operation.estimatedCost;
+      hasEstimatedCost = true;
+    }
+  }
+
+  const warnings: string[] = [];
+  if (coverage.status === "missing") {
+    warnings.push("No allowlisted operation metadata was observed; operation rows are not fabricated.");
+  }
+  if (coverage.status === "invalid") {
+    warnings.push("Allowlisted correlation fields were present but invalid; non-scalar or oversized identifiers were ignored.");
+  }
+  if (coverage.status === "partial") {
+    warnings.push("Only part of the Langfuse window carries allowlisted operation, goal, run, and stage identifiers.");
+  }
+  if (coverage.status !== "invalid" && coverage.invalidIdentifierObservations > 0) {
+    warnings.push("Allowlisted correlation fields were present but invalid; non-scalar or oversized identifiers were ignored.");
+  }
+  if (operations.length > MAX_OPERATION_ROWS) {
+    warnings.push(`Operation rows capped at ${MAX_OPERATION_ROWS}; counts still use the full bounded fetch window.`);
+  }
+
+  return {
+    operationCount: operations.length,
+    rowCap: MAX_OPERATION_ROWS,
+    returnedOperations,
+    truncatedOperations: operations.length > MAX_OPERATION_ROWS,
+    reportedCost: roundMoney(reportedCost),
+    estimatedCost: hasEstimatedCost ? roundMoney(estimatedCost) : null,
+    effectiveCost: roundMoney(effectiveCost),
+    costBasis: summarizeCostBasis(costBases),
+    reconciliation: coverage.status,
+    warnings,
+  };
+}
+
+function emptyCorrelationCoverage(): CorrelationCoverage {
+  return {
+    status: "missing",
+    totalObservations: 0,
+    eligibleObservations: 0,
+    withOperationId: 0,
+    withGoalId: 0,
+    withRunId: 0,
+    withStageId: 0,
+    invalidIdentifierObservations: 0,
+    fullyCorrelatedObservations: 0,
+    operationCount: 0,
+    fullyCorrelatedOperations: 0,
+    percentage: null,
+  };
+}
+
+function emptyAccountingSummary(): AccountingSummary {
+  return {
+    operationCount: 0,
+    rowCap: MAX_OPERATION_ROWS,
+    returnedOperations: 0,
+    truncatedOperations: false,
+    reportedCost: 0,
+    estimatedCost: null,
+    effectiveCost: 0,
+    costBasis: "reported_only_unknown",
+    reconciliation: "missing",
+    warnings: ["Langfuse observations were unavailable; no operation accounting was inferred."],
   };
 }
 
@@ -1237,6 +1782,9 @@ function failurePayload(
     completeness: null,
     byModel: [],
     byProvider: [],
+    correlationCoverage: emptyCorrelationCoverage(),
+    operations: [],
+    accounting: emptyAccountingSummary(),
     workflow: null,
     amplification: null,
     sessions: [],
@@ -1388,6 +1936,12 @@ function stringValue(value: unknown) {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
+function scalarText(value: unknown) {
+  if (typeof value === "string") return value.trim() || null;
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  return null;
+}
+
 function numberValue(value: unknown): number | null {
   if (typeof value === "number") return Number.isFinite(value) ? value : null;
   if (typeof value !== "string" || !value.trim()) return null;
@@ -1432,8 +1986,16 @@ function maxIso(current: string | null, candidateMs: number | null) {
   return isoOrNull(maxMs);
 }
 
+function addOptional(target: Set<string>, value: string | null) {
+  if (value) target.add(value);
+}
+
 function firstSorted(values: Set<string>) {
   return Array.from(values).sort()[0] ?? null;
+}
+
+function boundedSorted(values: Set<string>) {
+  return Array.from(values).sort().slice(0, MAX_OPERATION_NESTED_IDS);
 }
 
 function formatCount(value: number) {
