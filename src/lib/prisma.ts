@@ -13,6 +13,11 @@ const globalForPrisma = globalThis as unknown as {
 
 const SAFE_ERROR_CLASS = /^[A-Za-z][A-Za-z0-9_.:-]{0,63}$/;
 const SAFE_ERROR_CODE = /^(?:[A-Z0-9]{5}|E[A-Z0-9_]{1,31})$/;
+const SUPABASE_SHARED_POOLER_HOST_SUFFIX = ".pooler.supabase.com";
+const PG_SSL_QUERY_PARAMS = new Set(["ssl", "sslmode", "uselibpqcompat"]);
+const PG_OPERATOR_TLS_MATERIAL_PARAMS = new Set(["sslcert", "sslkey", "sslrootcert"]);
+const PG_OPERATOR_VERIFY_SSLMODES = new Set(["verify-ca", "verify-full"]);
+const PG_COMPATIBLE_SSLMODES = new Set(["require", "prefer", "no-verify"]);
 
 export function normalizePrismaDatabaseUrl(databaseUrl: string | undefined): string | undefined {
   if (!databaseUrl) return undefined;
@@ -35,15 +40,92 @@ export function normalizePrismaDatabaseUrl(databaseUrl: string | undefined): str
   return url.toString();
 }
 
+export function usesSupabaseSharedPoolerTlsCompatibility(databaseUrl: string): boolean {
+  let url: URL;
+  try {
+    url = new URL(databaseUrl);
+  } catch {
+    return false;
+  }
+
+  if (url.protocol !== "postgres:" && url.protocol !== "postgresql:") {
+    return false;
+  }
+
+  if (!url.hostname.endsWith(SUPABASE_SHARED_POOLER_HOST_SUFFIX)) {
+    return false;
+  }
+
+  if (url.hostname.slice(0, -SUPABASE_SHARED_POOLER_HOST_SUFFIX.length).length === 0) {
+    return false;
+  }
+
+  if (url.port !== "6543") {
+    return false;
+  }
+
+  let hasPgbouncer = false;
+  for (const [key, value] of url.searchParams) {
+    const normalizedKey = key.toLowerCase();
+    const normalizedValue = value.toLowerCase();
+
+    if (normalizedKey === "host") {
+      return false;
+    }
+
+    if (PG_OPERATOR_TLS_MATERIAL_PARAMS.has(normalizedKey)) {
+      return false;
+    }
+
+    if (normalizedKey === "sslmode") {
+      if (
+        PG_OPERATOR_VERIFY_SSLMODES.has(normalizedValue) ||
+        !PG_COMPATIBLE_SSLMODES.has(normalizedValue)
+      ) {
+        return false;
+      }
+    }
+
+    if (normalizedKey === "pgbouncer" && normalizedValue === "true") {
+      hasPgbouncer = true;
+    }
+  }
+
+  return hasPgbouncer;
+}
+
+function removeSupabaseSharedPoolerTlsCompatibilityQueryParams(databaseUrl: string): string {
+  const url = new URL(databaseUrl);
+
+  for (const key of Array.from(url.searchParams.keys())) {
+    if (PG_SSL_QUERY_PARAMS.has(key.toLowerCase())) {
+      url.searchParams.delete(key);
+    }
+  }
+
+  return url.toString();
+}
+
 export function createPrismaPgPoolConfig(databaseUrl: string): PoolConfig {
-  return {
-    connectionString: databaseUrl,
+  const usesTlsCompatibility = usesSupabaseSharedPoolerTlsCompatibility(databaseUrl);
+  const config: PoolConfig = {
+    connectionString: usesTlsCompatibility
+      ? removeSupabaseSharedPoolerTlsCompatibilityQueryParams(databaseUrl)
+      : databaseUrl,
     max: PRISMA_PG_POOL_MAX,
     // Release idle serverless sessions quickly while avoiding churn inside a short warm-runtime burst.
     idleTimeoutMillis: PRISMA_PG_IDLE_TIMEOUT_MILLIS,
     connectionTimeoutMillis: PRISMA_PG_CONNECTION_TIMEOUT_MILLIS,
     allowExitOnIdle: true,
   };
+
+  if (usesTlsCompatibility) {
+    // Supabase shared-pooler compatibility mode: encrypted TLS without certificate verification,
+    // equivalent to libpq sslmode=require. Project-specific CA/verify-full is preferred follow-up.
+    config.ssl = { rejectUnauthorized: false };
+  }
+
+  return config;
 }
 
 function safePrismaPgPoolErrorToken(value: unknown): string | undefined {
