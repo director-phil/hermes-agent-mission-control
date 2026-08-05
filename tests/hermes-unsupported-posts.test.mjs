@@ -14,7 +14,7 @@ async function read(relativePath) {
 test("unsupported briefing POST returns gone without queueing or env opt-in", async () => {
   const route = await read("src/app/api/hermes/briefing/route.ts");
 
-  assert.match(route, /export async function POST\(\)/);
+  assert.match(route, /export async function POST\([^)]*\)/);
   assert.match(route, /status:\s*410/);
   assert.match(route, /Daily briefing generation is not supported in this Mission Control release\./);
   assert.doesNotMatch(route, /agentRequest\.create/);
@@ -25,7 +25,7 @@ test("unsupported briefing POST returns gone without queueing or env opt-in", as
 test("unsupported memory POST returns gone without queueing or env opt-in", async () => {
   const route = await read("src/app/api/hermes/memory/route.ts");
 
-  assert.match(route, /export async function POST\(\)/);
+  assert.match(route, /export async function POST\([^)]*\)/);
   assert.match(route, /status:\s*410/);
   assert.match(route, /Wiki memory writes are not supported in this Mission Control release\./);
   assert.doesNotMatch(route, /agentRequest\.create/);

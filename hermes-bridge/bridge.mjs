@@ -283,6 +283,7 @@ async function mirrorCrons() {
 
 async function mirrorRuns() {
   const syncedAt = new Date().toISOString();
+  const secrets = knownSecrets();
   try {
     await fs.access(CONFIG.chatdevRunsDir);
   } catch {
@@ -291,27 +292,31 @@ async function mirrorRuns() {
   }
 
   try {
-    const index = await listRuns(CONFIG.chatdevRunsDir, { goalStateDir: CONFIG.chatdevGoalStateDir });
+    const index = await listRuns(CONFIG.chatdevRunsDir, { goalStateDir: CONFIG.chatdevGoalStateDir, secrets });
     const graphs = {};
+    const maxPayloadBytes = 1_500_000;
+    let payloadBytes = Buffer.byteLength(JSON.stringify({ index, graphs, syncedAt }));
     const candidates = index
       .filter((run) => run.running || ["running", "ready", "failed", "done", "complete"].includes(run.status))
       .slice(0, 12);
 
     for (const run of candidates) {
       try {
-        graphs[run.goal] = await parseRunTrace(path.join(CONFIG.chatdevRunsDir, run.goal), {
+        const graph = await parseRunTrace(path.join(CONFIG.chatdevRunsDir, run.goal), {
           goalStateDir: CONFIG.chatdevGoalStateDir,
+          secrets,
         });
+        const graphJson = JSON.stringify(graph);
+        const entryBytes = Buffer.byteLength(`${JSON.stringify(run.goal)}:${graphJson}`) + (Object.keys(graphs).length ? 1 : 0);
+        if (payloadBytes + entryBytes > maxPayloadBytes) break;
+        graphs[run.goal] = graph;
+        payloadBytes += entryBytes;
       } catch (error) {
         log("run trace parse failed:", run.goal, error.message);
       }
     }
 
-    let payload = { index, graphs, syncedAt };
-    while (JSON.stringify(payload).length > 1_500_000 && Object.keys(payload.graphs).length > 0) {
-      const lastGoal = Object.keys(payload.graphs).at(-1);
-      delete payload.graphs[lastGoal];
-    }
+    const payload = { index, graphs, syncedAt };
     await setStore("hermes-runs", payload);
   } catch (error) {
     log("runs mirror failed:", error.message);

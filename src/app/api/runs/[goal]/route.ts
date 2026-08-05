@@ -13,7 +13,18 @@ export async function GET(
   context: { params: Promise<{ goal: string }> },
 ) {
   const { goal } = await context.params;
-  const decoded = decodeURIComponent(goal);
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(goal);
+  } catch (error) {
+    if (error instanceof URIError) {
+      return NextResponse.json(
+        { error: "invalid goal" },
+        { status: 400, headers: { "Cache-Control": "no-store, no-cache, must-revalidate" } },
+      );
+    }
+    throw error;
+  }
   if (!/^[A-Za-z0-9_.-]{1,180}$/.test(decoded)) {
     return NextResponse.json(
       { error: "invalid goal" },
@@ -22,7 +33,8 @@ export async function GET(
   }
 
   const payload = await readDataStore<RunsPayload>("hermes-runs").catch(() => null);
-  const graph = payload?.graphs?.[decoded];
+  const graphs = payload?.graphs ?? {};
+  const graph = Object.hasOwn(graphs, decoded) ? graphs[decoded] : null;
   if (!graph) {
     return NextResponse.json(
       { error: "run graph not found" },
