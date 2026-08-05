@@ -40,10 +40,15 @@ export function normalizePrismaDatabaseUrl(databaseUrl: string | undefined): str
   return url.toString();
 }
 
-// Prisma's `?schema=` URL param configures the engine's search_path, but the
-// raw `pg` Pool used by the adapter ignores it. Extract it so we can pass it
-// explicitly to PrismaPg (which sets the Postgres search_path per connection).
-// Falls back to "public" when unset.
+// Prisma's `?schema=` URL param configures the ORM's table qualification, but
+// the @prisma/adapter-pg raw Pool ignores it. Extract it so we can pass it to
+// PrismaPg via `{ schema }`, which makes Prisma qualify ORM-generated SQL as
+// "<schema>"."Table" (e.g. "hermy_hq"."DataStore") instead of defaulting to
+// "public". NOTE: this sets ORM table qualification only — it does NOT emit
+// `SET search_path`, so any unqualified `$queryRaw`/`$executeRaw` would still
+// resolve against the connection's default search_path. The app is pure ORM
+// today; if raw SQL is added later, qualify it or set search_path at the driver.
+// Falls back to "public" when unset or invalid.
 export function resolvePrismaSchema(databaseUrl: string | undefined): string {
   if (!databaseUrl) return "public";
   try {
