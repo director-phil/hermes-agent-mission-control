@@ -2,6 +2,10 @@
 import pg from "pg";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import fs from "node:fs/promises";
+import path from "node:path";
+import { listRuns, parseRunTrace } from "./lib/parse-runs.mjs";
+import { redactText } from "./lib/redact.mjs";
 
 export const CONFIG = {
   hermesBin: process.env.HERMES_BIN || "hermes",
@@ -14,6 +18,8 @@ export const CONFIG = {
   maxPromptChars: safeNumber(process.env.BRIDGE_MAX_PROMPT_CHARS, 12000, 1, 50000),
   maxResultChars: safeNumber(process.env.BRIDGE_MAX_RESULT_CHARS, 8000, 1, 50000),
   maxEventDetailChars: 400,
+  chatdevRunsDir: process.env.CHATDEV_RUNS_DIR || path.join(process.env.HOME || "", "ChatDev", "runs"),
+  chatdevGoalStateDir: process.env.CHATDEV_GOAL_STATE_DIR || path.join(process.env.HOME || "", "ChatDev", "goals", "state"),
 };
 
 const CORE_REQUEST_KINDS = ["oneshot", "chat", "cron.create", "cron.run", "cron.pause", "cron.resume", "cron.remove", "cron.edit"];
@@ -275,6 +281,44 @@ async function mirrorCrons() {
   }
 }
 
+async function mirrorRuns() {
+  const syncedAt = new Date().toISOString();
+  try {
+    await fs.access(CONFIG.chatdevRunsDir);
+  } catch {
+    await setStore("hermes-runs", { index: [], graphs: {}, syncedAt });
+    return;
+  }
+
+  try {
+    const index = await listRuns(CONFIG.chatdevRunsDir, { goalStateDir: CONFIG.chatdevGoalStateDir });
+    const graphs = {};
+    const candidates = index
+      .filter((run) => run.running || ["running", "ready", "failed", "done", "complete"].includes(run.status))
+      .slice(0, 12);
+
+    for (const run of candidates) {
+      try {
+        graphs[run.goal] = await parseRunTrace(path.join(CONFIG.chatdevRunsDir, run.goal), {
+          goalStateDir: CONFIG.chatdevGoalStateDir,
+        });
+      } catch (error) {
+        log("run trace parse failed:", run.goal, error.message);
+      }
+    }
+
+    let payload = { index, graphs, syncedAt };
+    while (JSON.stringify(payload).length > 1_500_000 && Object.keys(payload.graphs).length > 0) {
+      const lastGoal = Object.keys(payload.graphs).at(-1);
+      delete payload.graphs[lastGoal];
+    }
+    await setStore("hermes-runs", payload);
+  } catch (error) {
+    log("runs mirror failed:", error.message);
+    await setStore("hermes-runs", { index: [], graphs: {}, syncedAt });
+  }
+}
+
 async function failLegacyRequests() {
   await q(
     `UPDATE "AgentRequest"
@@ -363,6 +407,7 @@ export function unsupportedRequestFailures() {
 async function mirrorTick() {
   try { await mirrorNative(); } catch (error) { log("native mirror failed:", error.message); }
   try { await mirrorCrons(); } catch (error) { log("cron mirror failed:", error.message); }
+  try { await mirrorRuns(); } catch (error) { log("runs mirror failed:", error.message); }
 }
 
 async function main() {
@@ -520,15 +565,8 @@ function killProcessGroup(pid) {
   setTimeout(() => { try { process.kill(-pid, "SIGKILL"); } catch {} }, 1500).unref();
 }
 
-function redact(value) {
-  let text = String(value || "");
-  for (const secret of knownSecrets()) {
-    text = text.split(secret).join("[redacted]");
-  }
-  return text
-    .replace(/sk-[A-Za-z0-9_-]{10,}/g, "[redacted]")
-    .replace(/(api[_-]?key|secret|token|password|authorization|bearer)\s*[:=]\s*\S+/gi, "$1=[redacted]")
-    .slice(0, 2000);
+export function redact(value) {
+  return redactText(value, knownSecrets());
 }
 
 function validateNativeInternalSecret(value) {

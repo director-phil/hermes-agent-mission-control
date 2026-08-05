@@ -13,7 +13,7 @@ import {
   PRISMA_PG_POOL_MAX,
   resolvePrismaSchema,
   usesSupabaseSharedPoolerTlsCompatibility,
-} from "../src/lib/prisma";
+} from "../src/lib/prisma.ts";
 
 const secretUsername = "pool_user";
 const secretPassword = "super-secret-password";

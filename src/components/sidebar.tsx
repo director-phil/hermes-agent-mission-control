@@ -9,6 +9,7 @@ import {
   Twitter,
   Play,
   Bot,
+  Network,
   Lightbulb,
   Flower2,
   FileText,
@@ -48,6 +49,7 @@ const navGroups = [
   {
     name: "System",
     items: [
+      { href: "/floor", label: "Floor", icon: Network },
       { href: "/observability", label: "Observability", icon: Activity },
       { href: "/agents", label: "Agents", icon: Bot },
       { href: "/memory-wiki", label: "Memory Wiki", icon: BookOpen },

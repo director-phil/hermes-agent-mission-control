@@ -1,6 +1,6 @@
-import type { HermesNativeSnapshot } from "@/lib/hermes-native";
-import { readHermesNativeSnapshot } from "@/lib/hermes-native";
-import { prisma } from "@/lib/prisma";
+import type { HermesNativeSnapshot } from "./hermes-native.ts";
+import { readHermesNativeSnapshot } from "./hermes-native.ts";
+import { prisma } from "./prisma.ts";
 
 const MIRROR_KEY = "hermes-native";
 const DEFAULT_STALE_MS = 90_000;
@@ -73,6 +73,12 @@ export async function readHermesNativeMirror(): Promise<HermesNativeSnapshot | n
       stale,
     },
   };
+}
+
+export async function readDataStore<T = unknown>(key: string): Promise<T | null> {
+  if (!/^[a-z0-9_.:-]{1,120}$/i.test(key)) return null;
+  const row = await prisma.dataStore.findUnique({ where: { key } });
+  return (row?.data as T | null | undefined) ?? null;
 }
 
 export async function readHermesBridgeHealth(): Promise<HermesBridgeHealth> {

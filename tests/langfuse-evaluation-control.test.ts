@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { collectLangfuseEvaluationControl } from "../src/lib/langfuse-evaluation-control";
+import { collectLangfuseEvaluationControl } from "../src/lib/langfuse-evaluation-control.ts";
 
 const NOW = new Date("2026-08-05T12:00:00.000Z");
 
