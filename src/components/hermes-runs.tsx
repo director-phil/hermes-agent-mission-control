@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Activity, AlertTriangle, CheckCircle2, ChevronRight, Gauge } from "lucide-react";
+import { Activity, AlertTriangle, CheckCircle2, ChevronRight, Gauge, Link2 } from "lucide-react";
 import { Panel, SectionHeader, Pill, EmptyState, Eyebrow } from "@/components/ui/kit";
 
 // ── Types ─────────────────────────────────────────────────
@@ -155,6 +155,67 @@ interface ProviderUsage {
   cost: number;
 }
 
+type CorrelationStatus = "observed" | "partial" | "missing" | "invalid";
+
+interface CorrelationCoverage {
+  status: CorrelationStatus;
+  totalObservations: number;
+  eligibleObservations: number;
+  withOperationId: number;
+  withGoalId: number;
+  withRunId: number;
+  withStageId: number;
+  invalidIdentifierObservations: number;
+  operationCount: number;
+  fullyCorrelatedOperations: number;
+  percentage: number | null;
+}
+
+interface OperationUsage {
+  operationId: string;
+  goalId: string | null;
+  runId: string | null;
+  stageId: string | null;
+  traceIds: string[];
+  sessionIds: string[];
+  models: string[];
+  providers: string[];
+  platforms: string[];
+  calls: number;
+  generationCalls: number;
+  observations: number;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  reportedCost: number;
+  estimatedCost: number | null;
+  effectiveCost: number;
+  costBasis: CostBasis;
+  estimatedCostRange?: CostRange;
+  toolCalls: number;
+  errors: number;
+  startTime: string | null;
+  endTime: string | null;
+  durationMs: number | null;
+  latestTimestamp: string | null;
+  status: "ok" | "error";
+}
+
+interface AccountingSummary {
+  operationCount: number;
+  rowCap: number;
+  returnedOperations: number;
+  truncatedOperations: boolean;
+  reportedCost: number;
+  estimatedCost: number | null;
+  effectiveCost: number;
+  costBasis: CostBasis;
+  reconciliation: CorrelationStatus;
+  warnings: string[];
+}
+
 interface AmplificationMetrics {
   inputOutputRatio: number | null;
   contextAmplification: number | null;
@@ -177,6 +238,9 @@ interface Observability {
   totals: ObservabilityTotals | null;
   byModel: ModelUsage[];
   byProvider: ProviderUsage[];
+  correlationCoverage: CorrelationCoverage;
+  operations: OperationUsage[];
+  accounting: AccountingSummary;
   workflow: WorkflowSummary | null;
   amplification: AmplificationMetrics | null;
   sessions: SessionTrace[];
@@ -261,6 +325,36 @@ function fmtCostBasis(value: CostBasis | undefined): string {
       return "Mixed cost bases";
     default:
       return "Cost basis unavailable";
+  }
+}
+
+function fmtCoverageStatus(status: CorrelationStatus | undefined): string {
+  switch (status) {
+    case "observed":
+      return "Observed";
+    case "partial":
+      return "Partial";
+    case "invalid":
+      return "Invalid";
+    case "missing":
+      return "Missing";
+    default:
+      return "Loading";
+  }
+}
+
+function coverageTone(status: CorrelationStatus | undefined): Tone {
+  switch (status) {
+    case "observed":
+      return "up";
+    case "partial":
+      return "warn";
+    case "invalid":
+      return "down";
+    case "missing":
+      return "neutral";
+    default:
+      return "neutral";
   }
 }
 
@@ -676,6 +770,185 @@ function WorkflowObservability({ data }: { data: Observability | null }) {
   );
 }
 
+function CorrelationAccounting({
+  data,
+  loaded,
+}: {
+  data: Observability | null;
+  loaded: boolean;
+}) {
+  const coverage = data?.correlationCoverage ?? null;
+  const accounting = data?.accounting ?? null;
+  const operations = data?.operations ?? [];
+  const warnings = accounting?.warnings ?? [];
+  const sourceDown = data?.source.status === "error";
+
+  if (!loaded || !data) {
+    return (
+      <Panel className="p-2">
+        <div className="sk h-72 m-1 rounded-[10px]" />
+      </Panel>
+    );
+  }
+
+  return (
+    <Panel className="overflow-hidden p-5">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <Eyebrow>Correlation &amp; accounting</Eyebrow>
+          <h3 className="mt-1 text-[16px] font-semibold text-[var(--text)]">
+            Operation visibility
+          </h3>
+        </div>
+        <Pill tone={coverageTone(coverage?.status)} className="w-fit !py-0.5 !text-[10px]">
+          <Link2 className="h-3 w-3" />
+          {fmtCoverageStatus(coverage?.status)}
+        </Pill>
+      </div>
+
+      {(sourceDown || warnings.length > 0) && (
+        <div className="mt-4 flex flex-col gap-2">
+          {sourceDown && (
+            <div className="flex items-start gap-2 rounded-[8px] border border-[color-mix(in_srgb,var(--down)_24%,transparent)] bg-[color-mix(in_srgb,var(--down)_8%,transparent)] p-3 text-[12.5px] text-[var(--text-2)]">
+              <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[var(--down)]" />
+              <span>Langfuse is unavailable; operation accounting is not inferred.</span>
+            </div>
+          )}
+          {warnings.map((warning) => (
+            <div
+              key={warning}
+              className="flex items-start gap-2 rounded-[8px] border border-[color-mix(in_srgb,var(--warn)_24%,transparent)] bg-[color-mix(in_srgb,var(--warn)_8%,transparent)] p-3 text-[12.5px] text-[var(--text-2)]"
+            >
+              <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[var(--warn)]" />
+              <span>{warning}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div className="mt-5 grid grid-cols-2 gap-4 lg:grid-cols-4">
+        <MetricBlock
+          label="Coverage"
+          value={fmtPct(coverage?.percentage ?? null)}
+          sub={
+            coverage
+              ? `${coverage.withOperationId}/${coverage.eligibleObservations} observations`
+              : undefined
+          }
+        />
+        <MetricBlock
+          label="Operations"
+          value={coverage ? String(coverage.operationCount) : "—"}
+          sub={
+            coverage
+              ? `${coverage.fullyCorrelatedOperations} fully correlated`
+              : undefined
+          }
+        />
+        <MetricBlock
+          label="Effective cost"
+          value={accounting ? fmtUsd(accounting.effectiveCost) : "—"}
+          sub={accounting ? `reported ${fmtUsd(accounting.reportedCost)}` : undefined}
+        />
+        <MetricBlock
+          label="Invalid IDs"
+          value={coverage ? String(coverage.invalidIdentifierObservations) : "—"}
+          sub={
+            coverage
+              ? `${coverage.withGoalId}/${coverage.eligibleObservations} goal · ${coverage.withRunId}/${coverage.eligibleObservations} run · ${coverage.withStageId}/${coverage.eligibleObservations} stage`
+              : undefined
+          }
+        />
+      </div>
+
+      {accounting?.estimatedCost != null && (
+        <p className="mt-3 text-[11.5px] text-[var(--text-3)]">
+          Operation estimated {fmtUsd(accounting.estimatedCost)} · {fmtCostBasis(accounting.costBasis)}
+        </p>
+      )}
+
+      {operations.length === 0 ? (
+        <div className="mt-5 border-t border-[var(--line)] pt-4">
+          <EmptyState
+            icon={<Link2 className="w-6 h-6" />}
+            title="No correlated operations"
+            hint="Allowlisted operation metadata was not present in this Langfuse window."
+          />
+        </div>
+      ) : (
+        <div className="mt-5 overflow-hidden rounded-[8px] border border-[var(--line)]">
+          <div className="hidden md:grid grid-cols-[1.15fr_1fr_1fr_0.7fr_0.8fr_0.55fr_0.65fr] gap-3 border-b border-[var(--line)] bg-[var(--surface-2)] px-3.5 py-2 text-[10.5px] uppercase tracking-[0.14em] text-[var(--text-4)]">
+            <span>Operation</span>
+            <span>Goal / run / stage</span>
+            <span>Model</span>
+            <span className="text-right">Tokens</span>
+            <span className="text-right">Cost</span>
+            <span className="text-right">Tools</span>
+            <span className="text-right">Status</span>
+          </div>
+          <div className="divide-y divide-[var(--line)]">
+            {operations.map((operation) => (
+              <div
+                key={operation.operationId}
+                className="grid gap-3 px-3.5 py-3 md:grid-cols-[1.15fr_1fr_1fr_0.7fr_0.8fr_0.55fr_0.65fr] md:items-center"
+              >
+                <div className="min-w-0">
+                  <p className="num truncate text-[12.5px] text-[var(--text)]">
+                    {shortId(operation.operationId)}
+                  </p>
+                  <p className="num mt-0.5 truncate text-[10.5px] text-[var(--text-3)]">
+                    {operation.traceIds[0]
+                      ? `trace ${shortId(operation.traceIds[0])}`
+                      : operation.sessionIds[0]
+                        ? `session ${shortId(operation.sessionIds[0])}`
+                        : "no trace"}
+                  </p>
+                </div>
+                <div className="min-w-0">
+                  <p className="num truncate text-[12px] text-[var(--text-2)]">
+                    {shortId(operation.goalId)}
+                  </p>
+                  <p className="num mt-0.5 truncate text-[10.5px] text-[var(--text-3)]">
+                    {shortId(operation.runId)} · {shortId(operation.stageId)}
+                  </p>
+                </div>
+                <div className="min-w-0">
+                  <p className="truncate text-[12px] text-[var(--text-2)]">
+                    {operation.models[0] ?? "unknown"}
+                  </p>
+                  <p className="mt-0.5 truncate text-[10.5px] text-[var(--text-3)]">
+                    {[operation.providers[0], operation.platforms[0]].filter(Boolean).join(" · ") || "—"}
+                  </p>
+                </div>
+                <div className="md:text-right">
+                  <p className="num text-[12px] text-[var(--text)]">{fmtTokens(operation.totalTokens)}</p>
+                  <p className="num mt-0.5 text-[10.5px] text-[var(--text-3)]">
+                    {fmtTokens(operation.inputTokens)} / {fmtTokens(operation.outputTokens)}
+                  </p>
+                </div>
+                <div className="md:text-right">
+                  <p className="num text-[12px] text-[var(--text)]">{fmtUsd(operation.effectiveCost)}</p>
+                  <p className="num mt-0.5 text-[10.5px] text-[var(--text-3)]">
+                    rep {fmtUsd(operation.reportedCost)}
+                  </p>
+                </div>
+                <div className="num text-[12px] text-[var(--text-2)] md:text-right">
+                  {operation.toolCalls}
+                </div>
+                <div className="flex md:justify-end">
+                  <Pill tone={operation.status === "ok" ? "up" : "down"} className="!py-0.5 !text-[10px]">
+                    {operation.status === "ok" ? "ok" : `${operation.errors} errors`}
+                  </Pill>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </Panel>
+  );
+}
+
 function TraceExtremes({ expensive, large }: { expensive: SessionTrace[]; large: SessionTrace[] }) {
   const rows = [
     ...expensive.slice(0, 3).map((trace) => ({ kind: "cost", trace })),
@@ -992,6 +1265,11 @@ export function HermesRuns() {
       </div>
 
       <WorkflowObservability data={observability} />
+
+      <div>
+        <SectionHeader label="Correlation" title="Operation accounting" />
+        <CorrelationAccounting data={observability} loaded={loaded} />
+      </div>
 
       <div>
         <SectionHeader label="Trace extremes" title="Top expensive / large traces" />
