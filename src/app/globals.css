@@ -425,6 +425,25 @@ textarea, input {
   animation: floor-node-pulse 1.6s var(--ease-inout) infinite;
 }
 
+.floor-node-file.is-active {
+  border-color: color-mix(in srgb, var(--accent) 38%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 18%, transparent), inset 0 1px 0 rgba(255, 255, 255, 0.03);
+}
+
+.floor-now-strip {
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+}
+
+.floor-now-dot {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 auto;
+  border-radius: 999px;
+  background: var(--accent);
+  box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 35%, transparent);
+  animation: floor-now-pulse 1.25s var(--ease-inout) infinite;
+}
+
 .floor-handle {
   width: 8px !important;
   height: 8px !important;
@@ -437,8 +456,15 @@ textarea, input {
   50% { box-shadow: 0 0 0 6px color-mix(in srgb, var(--accent) 0%, transparent), inset 0 1px 0 rgba(255, 255, 255, 0.03); }
 }
 
+@keyframes floor-now-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 35%, transparent); }
+  50% { box-shadow: 0 0 0 5px color-mix(in srgb, var(--accent) 0%, transparent); }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .hq-rise { animation: none; opacity: 1; }
+  .floor-node-agent.is-running,
+  .floor-now-dot { animation: none; }
   .hq-ambient::before { animation: none; }
   .panel-interactive:hover { transform: none; }
   .panel-interactive:active,
