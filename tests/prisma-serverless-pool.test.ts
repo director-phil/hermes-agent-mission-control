@@ -11,6 +11,7 @@ import {
   PRISMA_PG_CONNECTION_TIMEOUT_MILLIS,
   PRISMA_PG_IDLE_TIMEOUT_MILLIS,
   PRISMA_PG_POOL_MAX,
+  resolvePrismaSchema,
   usesSupabaseSharedPoolerTlsCompatibility,
 } from "../src/lib/prisma";
 
@@ -534,7 +535,7 @@ test("Prisma source uses adapter-backed pg Pool and cache clear keeps the shared
   assert.match(source, /if \(!databaseUrl\)\s*{\s*throw new Error\(["']DATABASE_URL is required for Prisma client engine["']\);\s*}/);
   assert.match(source, /new Pool\(createPrismaPgPoolConfig\(databaseUrl\)\)/);
   assert.match(source, /pool\.on\(["']error["'], logPrismaPgPoolError\)/);
-  assert.match(source, /new PrismaPg\(getPrismaPgPool\(databaseUrl\)\)/);
+  assert.match(source, /new PrismaPg\(getPrismaPgPool\(databaseUrl\), \{\s*schema: resolvePrismaSchema\(databaseUrl\),\s*\}\)/);
   assert.match(source, /new PrismaClient\(\{ adapter \}\)/);
   assert.match(source, /export const prisma = createLazyPrismaClient\(\);/);
   assert.match(source, /prismaPgPool: Pool \| undefined/);
@@ -544,4 +545,30 @@ test("Prisma source uses adapter-backed pg Pool and cache clear keeps the shared
   assert.doesNotMatch(route, /new PrismaClient\(/);
   assert.doesNotMatch(route, /from ["']@prisma\/client["']/);
   assert.match(route, /import { prisma } from ["']@\/lib\/prisma["']/);
+});
+
+
+test("resolvePrismaSchema extracts a valid schema from the URL, else public", () => {
+  assert.equal(
+    resolvePrismaSchema(
+      `postgresql://${secretUsername}:${secretPassword}@aws-1-ap-southeast-1.pooler.supabase.com:5432/postgres?schema=hermy_hq&sslmode=require`,
+    ),
+    "hermy_hq",
+  );
+  assert.equal(resolvePrismaSchema(`postgresql://${secretUsername}:${secretPassword}@db.example.com:5432/app`), "public");
+  assert.equal(resolvePrismaSchema(undefined), "public");
+  // reject injection / invalid identifiers -> fall back to public
+  assert.equal(
+    resolvePrismaSchema(
+      `postgresql://${secretUsername}:${secretPassword}@db.example.com:5432/app?schema=${encodeURIComponent("evil;DROP TABLE x")}`,
+    ),
+    "public",
+  );
+  // normalize must preserve the schema param
+  assert.equal(
+    normalizePrismaDatabaseUrl(
+      `postgresql://${secretUsername}:${secretPassword}@aws-1-ap-southeast-1.pooler.supabase.com:5432/postgres?schema=hermy_hq&sslmode=require`,
+    )?.includes("schema=hermy_hq"),
+    true,
+  );
 });

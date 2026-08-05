@@ -40,6 +40,24 @@ export function normalizePrismaDatabaseUrl(databaseUrl: string | undefined): str
   return url.toString();
 }
 
+// Prisma's `?schema=` URL param configures the engine's search_path, but the
+// raw `pg` Pool used by the adapter ignores it. Extract it so we can pass it
+// explicitly to PrismaPg (which sets the Postgres search_path per connection).
+// Falls back to "public" when unset.
+export function resolvePrismaSchema(databaseUrl: string | undefined): string {
+  if (!databaseUrl) return "public";
+  try {
+    const url = new URL(databaseUrl);
+    const schema = url.searchParams.get("schema");
+    if (schema && /^[A-Za-z_][A-Za-z0-9_$]{0,62}$/.test(schema)) {
+      return schema;
+    }
+  } catch {
+    // fall through
+  }
+  return "public";
+}
+
 export function usesSupabaseSharedPoolerTlsCompatibility(databaseUrl: string): boolean {
   let url: URL;
   try {
@@ -188,7 +206,9 @@ export function createPrismaClient() {
     throw new Error("DATABASE_URL is required for Prisma client engine");
   }
 
-  const adapter = new PrismaPg(getPrismaPgPool(databaseUrl));
+  const adapter = new PrismaPg(getPrismaPgPool(databaseUrl), {
+    schema: resolvePrismaSchema(databaseUrl),
+  });
   return new PrismaClient({ adapter });
 }
 
