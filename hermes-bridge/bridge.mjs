@@ -296,9 +296,11 @@ async function mirrorRuns() {
     const graphs = {};
     const maxPayloadBytes = 1_500_000;
     let payloadBytes = Buffer.byteLength(JSON.stringify({ index, graphs, syncedAt }));
-    const candidates = index
-      .filter((run) => run.running || ["running", "ready", "failed", "done", "complete"].includes(run.status))
-      .slice(0, 12);
+    // Build graphs for every non-trivial run in the index (top 12 by recency).
+    // Do NOT filter by an allow-list of statuses: the conveyor emits many
+    // statuses (shipping, blocked, materializing, recovered, ...) and any run
+    // present in the index should have a resolvable graph, else /api/runs/[goal] 404s.
+    const candidates = index.slice(0, 12);
 
     for (const run of candidates) {
       try {
