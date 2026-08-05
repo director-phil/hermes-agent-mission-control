@@ -24,7 +24,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="en" dir="ltr" className="dark">
+    <html lang="en" dir="ltr" className="dark" suppressHydrationWarning>
       <body className={`${geist.variable} ${geistMono.variable} ${geist.className} bg-[#0a0a0a] text-white min-h-screen`}>
         <ConditionalLayout>{children}</ConditionalLayout>
       </body>

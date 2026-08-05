@@ -1,0 +1,1365 @@
+export type ObservabilityWindow = "24h" | "7d";
+
+export const LANGFUSE_OBSERVATION_FIELDS =
+  "core,basic,model,usage,metrics,metadata,trace_context";
+
+const WINDOW_MS: Record<ObservabilityWindow, number> = {
+  "24h": 24 * 60 * 60 * 1000,
+  "7d": 7 * 24 * 60 * 60 * 1000,
+};
+
+const DEFAULT_LIMIT = 1000;
+const DEFAULT_MAX_PAGES = 10;
+const DEFAULT_MAX_ROWS = 10_000;
+const DEFAULT_TIMEOUT_MS = 8000;
+
+type HealthStatus = "ok" | "warning" | "error";
+
+export type CostBasis =
+  | "anthropic_claude_opus_4_6_estimate_cache_write_5m_assumed"
+  | "local_zero"
+  | "reported_only_unknown_cloud"
+  | "reported_only_unknown"
+  | "mixed";
+
+export interface CostRange {
+  low: number;
+  high: number;
+  basis: string;
+}
+
+interface CostFields {
+  reportedCost: number;
+  estimatedCost: number | null;
+  effectiveCost: number;
+  costBasis: CostBasis;
+  estimatedCostRange?: CostRange;
+}
+
+export interface SourceHealth {
+  status: HealthStatus;
+  source: "langfuse";
+  message: string;
+  warning?: string;
+  lastSync: string | null;
+  window: ObservabilityWindow;
+  fromStartTime: string;
+  toStartTime: string;
+  rows: number;
+  filteredRows: number;
+  includedRows: number;
+  pages: number;
+  truncated: boolean;
+}
+
+export interface ObservabilityTotals {
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  reportedCost: number;
+  estimatedCost: number | null;
+  effectiveCost: number;
+  costBasis: CostBasis;
+  estimatedCostRange?: CostRange;
+  totalCost: number;
+  generationCalls: number;
+  toolCalls: number;
+  uniqueTraces: number;
+  uniqueSessions: number;
+  errors: number;
+  latestTimestamp: string | null;
+}
+
+export interface ModelAggregate {
+  model: string;
+  provider: string | null;
+  calls: number;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  reportedCost: number;
+  estimatedCost: number | null;
+  effectiveCost: number;
+  costBasis: CostBasis;
+  estimatedCostRange?: CostRange;
+  cost: number;
+}
+
+export interface SessionTraceAggregate {
+  id: string;
+  sessionId: string | null;
+  traceId: string | null;
+  startTime: string | null;
+  endTime: string | null;
+  durationMs: number | null;
+  models: string[];
+  provider: string | null;
+  platform: string | null;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  reportedCost: number;
+  estimatedCost: number | null;
+  effectiveCost: number;
+  costBasis: CostBasis;
+  estimatedCostRange?: CostRange;
+  cost: number;
+  toolCallCount: number;
+  errorCount: number;
+  status: "ok" | "error";
+  latestTimestamp: string | null;
+}
+
+export interface ToolAggregate {
+  name: string;
+  count: number;
+  latestTimestamp: string | null;
+}
+
+export interface WorkflowSummary {
+  langGraphDetected: boolean;
+  message: string;
+  observationTypes: Record<string, number>;
+  parentEdges: number;
+  rootNodes: number;
+  modelGenerations: number;
+  toolCalls: number;
+  errorNodes: number;
+  avgLatencyMs: number | null;
+  maxLatencyMs: number | null;
+}
+
+export interface ProviderAggregate {
+  provider: string;
+  modelClass: "local" | "cloud" | "unknown";
+  calls: number;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  reportedCost: number;
+  estimatedCost: number | null;
+  effectiveCost: number;
+  costBasis: CostBasis;
+  estimatedCostRange?: CostRange;
+  cost: number;
+}
+
+export interface AmplificationMetrics {
+  inputOutputRatio: number | null;
+  contextAmplification: number | null;
+  cacheReadRatio: number | null;
+  cacheWriteRatio: number | null;
+  deterministicFlags: string[];
+}
+
+export interface WasteFlag {
+  kind: "largest_token_session" | "repeated_tool" | "high_input_output_ratio";
+  severity: "warn" | "down";
+  label: string;
+  detail: string;
+  sessionId?: string | null;
+  traceId?: string | null;
+  value: number;
+}
+
+export interface HermesObservability {
+  source: SourceHealth;
+  totals: ObservabilityTotals | null;
+  byModel: ModelAggregate[];
+  byProvider: ProviderAggregate[];
+  workflow: WorkflowSummary | null;
+  amplification: AmplificationMetrics | null;
+  sessions: SessionTraceAggregate[];
+  tools: {
+    recent: ToolAggregate[];
+    repeated: ToolAggregate[];
+  };
+  topExpensiveTraces: SessionTraceAggregate[];
+  topLargeTraces: SessionTraceAggregate[];
+  wasteFlags: WasteFlag[];
+  recommendations: string[];
+}
+
+interface CollectOptions {
+  now?: Date;
+  fetchImpl?: typeof fetch;
+  maxPages?: number;
+  maxRows?: number;
+  timeoutMs?: number;
+}
+
+interface LangfuseConfig {
+  baseUrl: URL;
+  publicKey: string;
+  secretKey: string;
+}
+
+interface ObservationPage {
+  observations: Observation[];
+  nextCursor: string | null;
+}
+
+interface Observation {
+  id: string | null;
+  parentObservationId: string | null;
+  traceId: string | null;
+  sessionId: string | null;
+  startTime: string | null;
+  endTime: string | null;
+  type: string | null;
+  name: string | null;
+  level: string | null;
+  statusMessage: string | null;
+  model: string | null;
+  providedModelName: string | null;
+  usageDetails: Record<string, unknown>;
+  costDetails: Record<string, unknown>;
+  totalCost: number;
+  latency: number | null;
+  metadata: Record<string, unknown>;
+}
+
+interface SessionWork {
+  id: string;
+  sessionId: string | null;
+  traceId: string | null;
+  startMs: number | null;
+  endMs: number | null;
+  models: Set<string>;
+  providers: Set<string>;
+  platforms: Set<string>;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  reportedCost: number;
+  estimatedCost: number;
+  hasEstimatedCost: boolean;
+  effectiveCost: number;
+  costBases: Set<CostBasis>;
+  estimatedCostRangeLow: number;
+  estimatedCostRangeHigh: number;
+  hasEstimatedCostRange: boolean;
+  cost: number;
+  toolCallCount: number;
+  errorCount: number;
+  latestMs: number | null;
+}
+
+// Official Anthropic Claude Platform pricing page, checked 2026-08-05.
+// Claude Opus 4.6 per 1M tokens: input $5, 5m cache write $6.25,
+// 1h cache write $10, cache hit/refresh $0.50, output $25.
+const OFFICIAL_MODEL_PRICING = {
+  anthropicClaudeOpus46: {
+    checkedAt: "2026-08-05",
+    source: "Anthropic Claude Platform pricing page",
+    inputPerMTok: 5,
+    cacheWrite5mPerMTok: 6.25,
+    cacheWrite1hPerMTok: 10,
+    cacheReadPerMTok: 0.5,
+    outputPerMTok: 25,
+  },
+} as const;
+
+export function parseObservabilityWindow(value: string | null): ObservabilityWindow | null {
+  if (value === "24h" || value === "7d") return value;
+  return null;
+}
+
+export async function collectHermesObservability(
+  window: ObservabilityWindow,
+  options: CollectOptions = {},
+): Promise<HermesObservability> {
+  const now = options.now ?? new Date();
+  const range = getWindowRange(window, now);
+  const maxPages = options.maxPages ?? DEFAULT_MAX_PAGES;
+  const maxRows = options.maxRows ?? DEFAULT_MAX_ROWS;
+
+  try {
+    const config = getLangfuseConfig();
+    const pageResult = await fetchObservationPages(config, range, {
+      fetchImpl: options.fetchImpl ?? fetch,
+      maxPages,
+      maxRows,
+      timeoutMs: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+    });
+    return aggregateObservations(window, range, pageResult);
+  } catch (error) {
+    return failurePayload(window, range, safeFailureMessage(error));
+  }
+}
+
+function getWindowRange(window: ObservabilityWindow, now: Date) {
+  const to = new Date(now.getTime());
+  const from = new Date(now.getTime() - WINDOW_MS[window]);
+  return {
+    fromStartTime: from.toISOString(),
+    toStartTime: to.toISOString(),
+  };
+}
+
+function getLangfuseConfig(): LangfuseConfig {
+  const base = process.env.HERMES_LANGFUSE_BASE_URL?.trim();
+  const publicKey = process.env.HERMES_LANGFUSE_PUBLIC_KEY?.trim();
+  const secretKey = process.env.HERMES_LANGFUSE_SECRET_KEY?.trim();
+
+  if (!base || !publicKey || !secretKey) {
+    throw new Error("LANGFUSE_ENV_MISSING");
+  }
+
+  let baseUrl: URL;
+  try {
+    baseUrl = new URL(base);
+  } catch {
+    throw new Error("LANGFUSE_ENV_INVALID");
+  }
+
+  return {
+    baseUrl,
+    publicKey,
+    secretKey,
+  };
+}
+
+async function fetchObservationPages(
+  config: LangfuseConfig,
+  range: { fromStartTime: string; toStartTime: string },
+  options: Required<Pick<CollectOptions, "fetchImpl" | "maxPages" | "maxRows" | "timeoutMs">>,
+) {
+  const observations: Observation[] = [];
+  let cursor: string | null = null;
+  let pages = 0;
+  let truncated = false;
+
+  do {
+    if (pages >= options.maxPages || observations.length >= options.maxRows) {
+      truncated = true;
+      break;
+    }
+
+    const url = new URL("/api/public/v2/observations", config.baseUrl);
+    url.searchParams.set("fromStartTime", range.fromStartTime);
+    url.searchParams.set("toStartTime", range.toStartTime);
+    url.searchParams.set("limit", String(DEFAULT_LIMIT));
+    url.searchParams.set("fields", LANGFUSE_OBSERVATION_FIELDS);
+    if (cursor) url.searchParams.set("cursor", cursor);
+
+    const payload = await fetchLangfuseJson(url, config, options);
+    const page = parseObservationPage(payload);
+    pages += 1;
+
+    const remainingRows = options.maxRows - observations.length;
+    observations.push(...page.observations.slice(0, remainingRows));
+    if (page.observations.length > remainingRows) {
+      truncated = true;
+      break;
+    }
+
+    cursor = page.nextCursor;
+  } while (cursor);
+
+  if (cursor) truncated = true;
+
+  return { observations, pages, truncated };
+}
+
+async function fetchLangfuseJson(
+  url: URL,
+  config: LangfuseConfig,
+  options: Required<Pick<CollectOptions, "fetchImpl" | "timeoutMs">>,
+) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), options.timeoutMs);
+  try {
+    const response = await options.fetchImpl(url, {
+      method: "GET",
+      headers: {
+        Accept: "application/json",
+        Authorization: `Basic ${Buffer.from(`${config.publicKey}:${config.secretKey}`).toString("base64")}`,
+      },
+      signal: controller.signal,
+      cache: "no-store",
+    });
+
+    if (!response.ok) {
+      throw new Error(`LANGFUSE_HTTP_${response.status}`);
+    }
+
+    return (await response.json()) as unknown;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function parseObservationPage(payload: unknown): ObservationPage {
+  const root = asRecord(payload);
+  const rows = arrayValue(root.data) ?? arrayValue(root.observations);
+  if (!rows) throw new Error("LANGFUSE_PAYLOAD_INVALID");
+
+  const meta = asRecord(root.meta);
+  const nextCursor =
+    stringValue(meta.cursor) ??
+    stringValue(root.nextCursor) ??
+    stringValue(meta.nextCursor) ??
+    stringValue(meta.nextPageCursor) ??
+    stringValue(root.nextPageCursor);
+
+  return {
+    observations: rows.map(parseObservation),
+    nextCursor,
+  };
+}
+
+function parseObservation(value: unknown): Observation {
+  const row = asRecord(value);
+  const metadata = asRecord(row.metadata);
+  return {
+    id: safeText(row.id),
+    parentObservationId:
+      safeText(row.parentObservationId) ??
+      safeText(row.parent_observation_id) ??
+      safeText(asRecord(row.traceContext).parentObservationId) ??
+      safeText(asRecord(row.trace_context).parentObservationId),
+    traceId: safeText(row.traceId),
+    sessionId: safeText(row.sessionId),
+    startTime: safeText(row.startTime),
+    endTime: safeText(row.endTime),
+    type: safeText(row.type),
+    name: safeText(row.name),
+    level: safeText(row.level),
+    statusMessage: safeText(row.statusMessage),
+    model: safeText(row.model),
+    providedModelName: safeText(row.providedModelName),
+    usageDetails: asRecord(row.usageDetails),
+    costDetails: asRecord(row.costDetails),
+    totalCost: numberValue(row.totalCost) ?? numberValue(asRecord(row.costDetails).total) ?? 0,
+    latency: numberValue(row.latency),
+    metadata,
+  };
+}
+
+function aggregateObservations(
+  window: ObservabilityWindow,
+  range: { fromStartTime: string; toStartTime: string },
+  pageResult: { observations: Observation[]; pages: number; truncated: boolean },
+): HermesObservability {
+  const totals: ObservabilityTotals = {
+    inputTokens: 0,
+    outputTokens: 0,
+    totalTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    reportedCost: 0,
+    estimatedCost: null,
+    effectiveCost: 0,
+    costBasis: "reported_only_unknown",
+    totalCost: 0,
+    generationCalls: 0,
+    toolCalls: 0,
+    uniqueTraces: 0,
+    uniqueSessions: 0,
+    errors: 0,
+    latestTimestamp: null,
+  };
+  const traces = new Set<string>();
+  const sessions = new Set<string>();
+  const models = new Map<string, ModelAggregate>();
+  const providers = new Map<string, ProviderAggregate>();
+  const sessionMap = new Map<string, SessionWork>();
+  const tools = new Map<string, ToolAggregate>();
+  const observationTypes = new Map<string, number>();
+  const observationIds = new Set<string>();
+  const childIds = new Set<string>();
+  let latencyCount = 0;
+  let latencyTotalMs = 0;
+  let maxLatencyMs: number | null = null;
+  let langGraphDetected = false;
+  let latestMs: number | null = null;
+  let estimatedCostTotal = 0;
+  let hasEstimatedCost = false;
+  let estimatedCostRangeLow = 0;
+  let estimatedCostRangeHigh = 0;
+  let hasEstimatedCostRange = false;
+  const totalCostBases = new Set<CostBasis>();
+  let filteredRows = 0;
+
+  for (const obs of pageResult.observations) {
+    if (isSyntheticObservation(obs)) {
+      filteredRows += 1;
+      continue;
+    }
+
+    const type = obs.type?.toUpperCase() ?? "";
+    const usage = extractUsage(obs.usageDetails);
+    const startMs = parseDateMs(obs.startTime);
+    const endMs = parseDateMs(obs.endTime) ?? startMs;
+    const rowLatestMs = endMs ?? startMs;
+    const model = safeText(obs.providedModelName ?? obs.model);
+    const provider = safeText(obs.metadata.provider);
+    const platform = safeText(obs.metadata.platform);
+    const costFields = computeObservationCost({
+      reportedCost: obs.totalCost,
+      usage,
+      model,
+      provider,
+      metadata: obs.metadata,
+    });
+    const cost = costFields.effectiveCost;
+    const tool = classifyToolObservation(obs, type);
+    const isError = isErrorObservation(obs);
+    const latencyMs = latencyToMs(obs.latency);
+
+    if (type) observationTypes.set(type, (observationTypes.get(type) ?? 0) + 1);
+    if (obs.id) observationIds.add(obs.id);
+    if (obs.parentObservationId) childIds.add(obs.id ?? `${obs.traceId}:${obs.parentObservationId}`);
+    if (latencyMs != null) {
+      latencyCount += 1;
+      latencyTotalMs += latencyMs;
+      maxLatencyMs = Math.max(maxLatencyMs ?? latencyMs, latencyMs);
+    }
+    if (hasLangGraphMetadata(obs.metadata)) langGraphDetected = true;
+
+    totals.inputTokens += usage.inputTokens;
+    totals.outputTokens += usage.outputTokens;
+    totals.totalTokens += usage.totalTokens;
+    totals.cacheReadTokens += usage.cacheReadTokens;
+    totals.cacheWriteTokens += usage.cacheWriteTokens;
+    totals.reportedCost += costFields.reportedCost;
+    totals.effectiveCost += costFields.effectiveCost;
+    totals.totalCost += cost;
+    totalCostBases.add(costFields.costBasis);
+    if (costFields.estimatedCost != null) {
+      estimatedCostTotal += costFields.estimatedCost;
+      hasEstimatedCost = true;
+    }
+    if (costFields.estimatedCostRange) {
+      estimatedCostRangeLow += costFields.estimatedCostRange.low;
+      estimatedCostRangeHigh += costFields.estimatedCostRange.high;
+      hasEstimatedCostRange = true;
+    }
+    if (type === "GENERATION") totals.generationCalls += 1;
+    if (tool) totals.toolCalls += tool.count;
+    if (isError) totals.errors += 1;
+    if (obs.traceId) traces.add(obs.traceId);
+    if (obs.sessionId) sessions.add(obs.sessionId);
+    if (rowLatestMs != null) latestMs = Math.max(latestMs ?? rowLatestMs, rowLatestMs);
+
+    if (model) {
+      const current =
+        models.get(model) ??
+        {
+          model,
+          provider: provider ?? null,
+          calls: 0,
+          inputTokens: 0,
+          outputTokens: 0,
+          totalTokens: 0,
+          cacheReadTokens: 0,
+          cacheWriteTokens: 0,
+          reportedCost: 0,
+          estimatedCost: null,
+          effectiveCost: 0,
+          costBasis: costFields.costBasis,
+          cost: 0,
+        };
+      current.calls += 1;
+      current.inputTokens += usage.inputTokens;
+      current.outputTokens += usage.outputTokens;
+      current.totalTokens += usage.totalTokens;
+      current.cacheReadTokens += usage.cacheReadTokens;
+      current.cacheWriteTokens += usage.cacheWriteTokens;
+      mergeCostFields(current, costFields);
+      current.cost += cost;
+      if (!current.provider && provider) current.provider = provider;
+      models.set(model, current);
+    }
+
+    if (provider || model) {
+      const providerKey = provider ?? "unknown";
+      const current =
+        providers.get(providerKey) ??
+        {
+          provider: providerKey,
+          modelClass: inferModelClass(providerKey, model),
+          calls: 0,
+          inputTokens: 0,
+          outputTokens: 0,
+          totalTokens: 0,
+          cacheReadTokens: 0,
+          cacheWriteTokens: 0,
+          reportedCost: 0,
+          estimatedCost: null,
+          effectiveCost: 0,
+          costBasis: costFields.costBasis,
+          cost: 0,
+        };
+      current.calls += type === "GENERATION" || model ? 1 : 0;
+      current.inputTokens += usage.inputTokens;
+      current.outputTokens += usage.outputTokens;
+      current.totalTokens += usage.totalTokens;
+      current.cacheReadTokens += usage.cacheReadTokens;
+      current.cacheWriteTokens += usage.cacheWriteTokens;
+      mergeCostFields(current, costFields);
+      current.cost += cost;
+      if (current.modelClass === "unknown") current.modelClass = inferModelClass(providerKey, model);
+      providers.set(providerKey, current);
+    }
+
+    const session = getSessionWork(sessionMap, obs);
+    if (startMs != null) session.startMs = Math.min(session.startMs ?? startMs, startMs);
+    if (endMs != null) session.endMs = Math.max(session.endMs ?? endMs, endMs);
+    if (rowLatestMs != null) session.latestMs = Math.max(session.latestMs ?? rowLatestMs, rowLatestMs);
+    if (model) session.models.add(model);
+    if (provider) session.providers.add(provider);
+    if (platform) session.platforms.add(platform);
+    session.inputTokens += usage.inputTokens;
+    session.outputTokens += usage.outputTokens;
+    session.totalTokens += usage.totalTokens;
+    session.cacheReadTokens += usage.cacheReadTokens;
+    session.cacheWriteTokens += usage.cacheWriteTokens;
+    mergeSessionCostFields(session, costFields);
+    session.cost += cost;
+    if (tool) session.toolCallCount += tool.count;
+    if (isError) session.errorCount += 1;
+
+    if (tool) {
+      const current = tools.get(tool.name) ?? {
+        name: tool.name,
+        count: 0,
+        latestTimestamp: null,
+      };
+      current.count += tool.count;
+      current.latestTimestamp = maxIso(current.latestTimestamp, rowLatestMs);
+      tools.set(tool.name, current);
+    }
+  }
+
+  totals.uniqueTraces = traces.size;
+  totals.uniqueSessions = sessions.size;
+  totals.latestTimestamp = isoOrNull(latestMs);
+  totals.estimatedCost = hasEstimatedCost ? estimatedCostTotal : null;
+  totals.costBasis = summarizeCostBasis(totalCostBases);
+  if (hasEstimatedCostRange) {
+    totals.estimatedCostRange = {
+      low: estimatedCostRangeLow,
+      high: estimatedCostRangeHigh,
+      basis: "Recognized model estimate range; Claude Opus 4.6 cache writes use 5m as estimate and 1h as upper bound when TTL is unknown.",
+    };
+  }
+  roundTotals(totals);
+
+  const sessionRows = Array.from(sessionMap.values())
+    .map(finalizeSession)
+    .sort((a, b) => (Date.parse(b.latestTimestamp ?? "") || 0) - (Date.parse(a.latestTimestamp ?? "") || 0))
+    .slice(0, 80);
+  const recentTools = Array.from(tools.values())
+    .sort((a, b) => (Date.parse(b.latestTimestamp ?? "") || 0) - (Date.parse(a.latestTimestamp ?? "") || 0))
+    .slice(0, 12);
+  const repeatedTools = Array.from(tools.values())
+    .filter((tool) => tool.count > 1)
+    .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name))
+    .slice(0, 8);
+  const includedObservations = pageResult.observations.filter((obs) => !isSyntheticObservation(obs));
+  const topExpensiveTraces = [...sessionRows].sort((a, b) => b.effectiveCost - a.effectiveCost).slice(0, 8);
+  const topLargeTraces = [...sessionRows].sort((a, b) => b.totalTokens - a.totalTokens).slice(0, 8);
+  const workflow: WorkflowSummary = {
+    langGraphDetected,
+    message: langGraphDetected ? "LangGraph trace metadata detected" : "LangGraph traces not detected",
+    observationTypes: Object.fromEntries([...observationTypes.entries()].sort((a, b) => a[0].localeCompare(b[0]))),
+    parentEdges: includedObservations.filter((obs) => obs.parentObservationId).length,
+    rootNodes: includedObservations.filter((obs) => obs.id && !childIds.has(obs.id)).length,
+    modelGenerations: totals.generationCalls,
+    toolCalls: totals.toolCalls,
+    errorNodes: totals.errors,
+    avgLatencyMs: latencyCount ? Math.round(latencyTotalMs / latencyCount) : null,
+    maxLatencyMs,
+  };
+  const amplification = buildAmplification(totals, sessionRows);
+  const wasteFlags = buildWasteFlags(sessionRows, repeatedTools);
+
+  const warning = pageResult.truncated
+    ? "Langfuse row safety cap reached; showing the newest bounded sample."
+    : undefined;
+
+  return {
+    source: {
+      status: warning ? "warning" : "ok",
+      source: "langfuse",
+      message: warning ? "Langfuse live with capped rows" : "Langfuse live",
+      warning,
+      lastSync: new Date().toISOString(),
+      window,
+      fromStartTime: range.fromStartTime,
+      toStartTime: range.toStartTime,
+      rows: pageResult.observations.length,
+      filteredRows,
+      includedRows: pageResult.observations.length - filteredRows,
+      pages: pageResult.pages,
+      truncated: pageResult.truncated,
+    },
+    totals,
+    byModel: Array.from(models.values())
+      .map(roundCostAggregate)
+      .sort((a, b) => b.effectiveCost - a.effectiveCost || b.totalTokens - a.totalTokens)
+      .slice(0, 12),
+    byProvider: Array.from(providers.values())
+      .map(roundCostAggregate)
+      .sort((a, b) => b.effectiveCost - a.effectiveCost || b.totalTokens - a.totalTokens)
+      .slice(0, 12),
+    workflow,
+    amplification,
+    sessions: sessionRows,
+    tools: {
+      recent: recentTools,
+      repeated: repeatedTools,
+    },
+    topExpensiveTraces,
+    topLargeTraces,
+    wasteFlags,
+    recommendations: buildRecommendations({
+      totals,
+      workflow,
+      amplification,
+      repeatedTools,
+      topExpensiveTraces,
+      topLargeTraces,
+      wasteFlags,
+      byModel: Array.from(models.values()).map(roundCostAggregate),
+    }),
+  };
+}
+
+function extractUsage(usageDetails: Record<string, unknown>) {
+  const inputTokens =
+    numberValue(usageDetails.input) ??
+    numberValue(usageDetails.input_tokens) ??
+    numberValue(usageDetails.inputTokens) ??
+    numberValue(usageDetails.promptTokens) ??
+    0;
+  const outputTokens =
+    numberValue(usageDetails.output) ??
+    numberValue(usageDetails.output_tokens) ??
+    numberValue(usageDetails.outputTokens) ??
+    numberValue(usageDetails.completionTokens) ??
+    0;
+  const explicitTotal =
+    numberValue(usageDetails.total) ??
+    numberValue(usageDetails.total_tokens) ??
+    numberValue(usageDetails.totalTokens);
+  const cacheReadTokens =
+    numberValue(usageDetails.cache_read_input_tokens) ??
+    numberValue(usageDetails.cacheReadInputTokens) ??
+    numberValue(usageDetails.input_cache_read) ??
+    numberValue(usageDetails.cache_read) ??
+    0;
+  const cacheWriteTokens =
+    numberValue(usageDetails.cache_creation_input_tokens) ??
+    numberValue(usageDetails.cacheWriteInputTokens) ??
+    numberValue(usageDetails.input_cache_write) ??
+    numberValue(usageDetails.cache_write) ??
+    0;
+
+  return {
+    inputTokens,
+    outputTokens,
+    totalTokens: explicitTotal ?? inputTokens + outputTokens,
+    cacheReadTokens,
+    cacheWriteTokens,
+  };
+}
+
+function computeObservationCost({
+  reportedCost,
+  usage,
+  model,
+  provider,
+  metadata,
+}: {
+  reportedCost: number;
+  usage: ReturnType<typeof extractUsage>;
+  model: string | null;
+  provider: string | null;
+  metadata: Record<string, unknown>;
+}): CostFields {
+  const cleanReportedCost = roundMoney(Math.max(0, reportedCost));
+  const modelClass = inferModelClass(provider, model);
+
+  if (modelClass === "local") {
+    return {
+      reportedCost: cleanReportedCost,
+      estimatedCost: 0,
+      effectiveCost: 0,
+      costBasis: "local_zero",
+    };
+  }
+
+  if (isClaudeOpus46(model, metadata)) {
+    const pricing = OFFICIAL_MODEL_PRICING.anthropicClaudeOpus46;
+    const inputCost = mtokCost(usage.inputTokens, pricing.inputPerMTok);
+    const outputCost = mtokCost(usage.outputTokens, pricing.outputPerMTok);
+    const cacheReadCost = mtokCost(usage.cacheReadTokens, pricing.cacheReadPerMTok);
+    const cacheWriteLowCost = mtokCost(usage.cacheWriteTokens, pricing.cacheWrite5mPerMTok);
+    const cacheWriteHighCost = mtokCost(usage.cacheWriteTokens, pricing.cacheWrite1hPerMTok);
+    const estimatedCost = roundMoney(inputCost + outputCost + cacheReadCost + cacheWriteLowCost);
+    const high = roundMoney(inputCost + outputCost + cacheReadCost + cacheWriteHighCost);
+
+    return {
+      reportedCost: cleanReportedCost,
+      estimatedCost,
+      effectiveCost: estimatedCost,
+      costBasis: "anthropic_claude_opus_4_6_estimate_cache_write_5m_assumed",
+      estimatedCostRange: {
+        low: estimatedCost,
+        high,
+        basis: "Claude Opus 4.6 official pricing checked 2026-08-05; cache-write TTL unknown, so 5m is the estimate and 1h is the upper bound.",
+      },
+    };
+  }
+
+  return {
+    reportedCost: cleanReportedCost,
+    estimatedCost: null,
+    effectiveCost: cleanReportedCost,
+    costBasis: modelClass === "cloud" ? "reported_only_unknown_cloud" : "reported_only_unknown",
+  };
+}
+
+function mtokCost(tokens: number, pricePerMTok: number) {
+  return (Math.max(0, tokens) / 1_000_000) * pricePerMTok;
+}
+
+function isClaudeOpus46(model: string | null, metadata: Record<string, unknown>) {
+  const text = `${model ?? ""} ${safeText(metadata.model) ?? ""} ${safeText(metadata.model_name) ?? ""}`.toLowerCase();
+  return /\bclaude[-_ ]opus[-_ ]4[-_. ]?6\b/.test(text);
+}
+
+function mergeCostFields(target: ModelAggregate | ProviderAggregate, cost: CostFields) {
+  target.reportedCost += cost.reportedCost;
+  target.effectiveCost += cost.effectiveCost;
+  target.costBasis = mergeCostBasis(target.costBasis, cost.costBasis);
+  if (cost.estimatedCost != null) {
+    target.estimatedCost = (target.estimatedCost ?? 0) + cost.estimatedCost;
+  }
+  if (cost.estimatedCostRange) {
+    target.estimatedCostRange = {
+      low: (target.estimatedCostRange?.low ?? 0) + cost.estimatedCostRange.low,
+      high: (target.estimatedCostRange?.high ?? 0) + cost.estimatedCostRange.high,
+      basis: "Recognized model estimate range; Claude Opus 4.6 cache writes use 5m as estimate and 1h as upper bound when TTL is unknown.",
+    };
+  }
+}
+
+function mergeSessionCostFields(target: SessionWork, cost: CostFields) {
+  target.reportedCost += cost.reportedCost;
+  target.effectiveCost += cost.effectiveCost;
+  target.costBases.add(cost.costBasis);
+  if (cost.estimatedCost != null) {
+    target.estimatedCost += cost.estimatedCost;
+    target.hasEstimatedCost = true;
+  }
+  if (cost.estimatedCostRange) {
+    target.estimatedCostRangeLow += cost.estimatedCostRange.low;
+    target.estimatedCostRangeHigh += cost.estimatedCostRange.high;
+    target.hasEstimatedCostRange = true;
+  }
+}
+
+function mergeCostBasis(current: CostBasis, next: CostBasis): CostBasis {
+  return current === next ? current : "mixed";
+}
+
+function summarizeCostBasis(values: Set<CostBasis>): CostBasis {
+  if (values.size === 0) return "reported_only_unknown";
+  return values.size === 1 ? [...values][0] : "mixed";
+}
+
+function roundCostAggregate<T extends ModelAggregate | ProviderAggregate>(aggregate: T): T {
+  return {
+    ...aggregate,
+    reportedCost: roundMoney(aggregate.reportedCost),
+    estimatedCost: aggregate.estimatedCost == null ? null : roundMoney(aggregate.estimatedCost),
+    effectiveCost: roundMoney(aggregate.effectiveCost),
+    estimatedCostRange: aggregate.estimatedCostRange
+      ? {
+          ...aggregate.estimatedCostRange,
+          low: roundMoney(aggregate.estimatedCostRange.low),
+          high: roundMoney(aggregate.estimatedCostRange.high),
+        }
+      : undefined,
+    cost: roundMoney(aggregate.cost),
+  };
+}
+
+function getSessionWork(sessionMap: Map<string, SessionWork>, obs: Observation) {
+  const id = obs.sessionId ?? obs.traceId ?? obs.id ?? "unknown";
+  const key = obs.sessionId ? `session:${obs.sessionId}` : obs.traceId ? `trace:${obs.traceId}` : `obs:${id}`;
+  const current = sessionMap.get(key);
+  if (current) return current;
+
+  const created: SessionWork = {
+    id,
+    sessionId: obs.sessionId,
+    traceId: obs.traceId,
+    startMs: null,
+    endMs: null,
+    models: new Set(),
+    providers: new Set(),
+    platforms: new Set(),
+    inputTokens: 0,
+    outputTokens: 0,
+    totalTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    reportedCost: 0,
+    estimatedCost: 0,
+    hasEstimatedCost: false,
+    effectiveCost: 0,
+    costBases: new Set(),
+    estimatedCostRangeLow: 0,
+    estimatedCostRangeHigh: 0,
+    hasEstimatedCostRange: false,
+    cost: 0,
+    toolCallCount: 0,
+    errorCount: 0,
+    latestMs: null,
+  };
+  sessionMap.set(key, created);
+  return created;
+}
+
+function finalizeSession(work: SessionWork): SessionTraceAggregate {
+  const durationMs =
+    work.startMs != null && work.endMs != null && work.endMs >= work.startMs
+      ? work.endMs - work.startMs
+      : null;
+
+  return {
+    id: work.id,
+    sessionId: work.sessionId,
+    traceId: work.traceId,
+    startTime: isoOrNull(work.startMs),
+    endTime: isoOrNull(work.endMs),
+    durationMs,
+    models: Array.from(work.models).sort(),
+    provider: firstSorted(work.providers),
+    platform: firstSorted(work.platforms),
+    inputTokens: work.inputTokens,
+    outputTokens: work.outputTokens,
+    totalTokens: work.totalTokens,
+    cacheReadTokens: work.cacheReadTokens,
+    cacheWriteTokens: work.cacheWriteTokens,
+    reportedCost: roundMoney(work.reportedCost),
+    estimatedCost: work.hasEstimatedCost ? roundMoney(work.estimatedCost) : null,
+    effectiveCost: roundMoney(work.effectiveCost),
+    costBasis: summarizeCostBasis(work.costBases),
+    ...(work.hasEstimatedCostRange
+      ? {
+          estimatedCostRange: {
+            low: roundMoney(work.estimatedCostRangeLow),
+            high: roundMoney(work.estimatedCostRangeHigh),
+            basis: "Recognized model estimate range; Claude Opus 4.6 cache writes use 5m as estimate and 1h as upper bound when TTL is unknown.",
+          },
+        }
+      : {}),
+    cost: roundMoney(work.cost),
+    toolCallCount: work.toolCallCount,
+    errorCount: work.errorCount,
+    status: work.errorCount > 0 ? "error" : "ok",
+    latestTimestamp: isoOrNull(work.latestMs),
+  };
+}
+
+function buildWasteFlags(
+  sessions: SessionTraceAggregate[],
+  repeatedTools: ToolAggregate[],
+): WasteFlag[] {
+  const flags: WasteFlag[] = [];
+  const largest = [...sessions].sort((a, b) => b.totalTokens - a.totalTokens)[0];
+  if (largest && largest.totalTokens > 0) {
+    flags.push({
+      kind: "largest_token_session",
+      severity: largest.totalTokens >= 100_000 ? "down" : "warn",
+      label: "Largest token session",
+      detail: `${formatCount(largest.totalTokens)} tokens`,
+      sessionId: largest.sessionId,
+      traceId: largest.traceId,
+      value: largest.totalTokens,
+    });
+  }
+
+  const repeated = repeatedTools[0];
+  if (repeated) {
+    flags.push({
+      kind: "repeated_tool",
+      severity: repeated.count >= 5 ? "down" : "warn",
+      label: "Repeated tool calls",
+      detail: `${repeated.name} ran ${repeated.count} times`,
+      value: repeated.count,
+    });
+  }
+
+  const highRatio = [...sessions]
+    .map((session) => ({
+      session,
+      ratio: session.outputTokens > 0 ? session.inputTokens / session.outputTokens : Infinity,
+    }))
+    .filter(({ session, ratio }) => session.inputTokens >= 1000 && ratio >= 4)
+    .sort((a, b) => b.ratio - a.ratio)[0];
+
+  if (highRatio) {
+    flags.push({
+      kind: "high_input_output_ratio",
+      severity: highRatio.ratio >= 10 ? "down" : "warn",
+      label: "High input/output ratio",
+      detail:
+        highRatio.ratio === Infinity
+          ? `${formatCount(highRatio.session.inputTokens)} input tokens with no output`
+          : `${highRatio.ratio.toFixed(1)}x more input than output`,
+      sessionId: highRatio.session.sessionId,
+      traceId: highRatio.session.traceId,
+      value: highRatio.ratio,
+    });
+  }
+
+  return flags.slice(0, 4);
+}
+
+function buildAmplification(
+  totals: ObservabilityTotals,
+  sessions: SessionTraceAggregate[],
+): AmplificationMetrics {
+  const inputOutputRatio =
+    totals.outputTokens > 0 ? roundRatio(totals.inputTokens / totals.outputTokens) : totals.inputTokens > 0 ? null : 0;
+  const medianSessionTokens = median(sessions.map((session) => session.totalTokens).filter((value) => value > 0));
+  const contextAmplification =
+    medianSessionTokens && medianSessionTokens > 0
+      ? roundRatio((totals.totalTokens / Math.max(1, sessions.length)) / medianSessionTokens)
+      : null;
+  const cacheReadRatio = totals.inputTokens > 0 ? roundRatio(totals.cacheReadTokens / totals.inputTokens) : null;
+  const cacheWriteRatio = totals.inputTokens > 0 ? roundRatio(totals.cacheWriteTokens / totals.inputTokens) : null;
+  const deterministicFlags: string[] = [];
+
+  if (inputOutputRatio != null && inputOutputRatio >= 4) {
+    deterministicFlags.push("input_output_ratio_high");
+  }
+  if ((cacheReadRatio ?? 0) < 0.05 && totals.inputTokens >= 50_000) {
+    deterministicFlags.push("low_cache_read_on_high_input");
+  }
+  if (sessions.some((session) => session.toolCallCount >= 8)) {
+    deterministicFlags.push("tool_loop_pressure");
+  }
+  if (sessions.some((session) => session.totalTokens >= 100_000)) {
+    deterministicFlags.push("large_context_trace");
+  }
+
+  return {
+    inputOutputRatio,
+    contextAmplification,
+    cacheReadRatio,
+    cacheWriteRatio,
+    deterministicFlags,
+  };
+}
+
+function buildRecommendations({
+  totals,
+  workflow,
+  amplification,
+  repeatedTools,
+  topExpensiveTraces,
+  topLargeTraces,
+  wasteFlags,
+  byModel,
+}: {
+  totals: ObservabilityTotals;
+  workflow: WorkflowSummary;
+  amplification: AmplificationMetrics;
+  repeatedTools: ToolAggregate[];
+  topExpensiveTraces: SessionTraceAggregate[];
+  topLargeTraces: SessionTraceAggregate[];
+  wasteFlags: WasteFlag[];
+  byModel: ModelAggregate[];
+}) {
+  const recommendations: string[] = [];
+  const repeated = repeatedTools[0];
+  const expensive = topExpensiveTraces[0];
+  const large = topLargeTraces[0];
+  const expensiveModel = [...byModel].sort((a, b) => b.effectiveCost - a.effectiveCost)[0];
+  const topCacheWrite = [...byModel].sort((a, b) => b.cacheWriteTokens - a.cacheWriteTokens)[0];
+  const topCacheRead = [...byModel].sort((a, b) => b.cacheReadTokens - a.cacheReadTokens)[0];
+
+  if (!workflow.langGraphDetected) {
+    recommendations.push("Do not label these as LangGraph runs until trace metadata includes LangGraph graph/node fields.");
+  }
+  if (expensiveModel && expensiveModel.effectiveCost > 0) {
+    recommendations.push(`Cost pressure is led by ${expensiveModel.model}: ${formatMoney(expensiveModel.effectiveCost)} effective on ${expensiveModel.costBasis}.`);
+  }
+  if (topCacheWrite && topCacheWrite.cacheWriteTokens > 0) {
+    recommendations.push(`Cache-write pressure is led by ${topCacheWrite.model}: ${formatCount(topCacheWrite.cacheWriteTokens)} write tokens.`);
+  }
+  if (topCacheRead && topCacheRead.cacheReadTokens > 0) {
+    recommendations.push(`Cache-read volume is led by ${topCacheRead.model}: ${formatCount(topCacheRead.cacheReadTokens)} read tokens.`);
+  }
+  if (repeated && repeated.count >= 2) {
+    recommendations.push(`Inspect ${repeated.name}: ${repeated.count} calls in the window suggests a dedupe/cache boundary is missing.`);
+  }
+  if ((amplification.inputOutputRatio ?? 0) >= 4) {
+    recommendations.push(`Tighten retrieved context or summaries: input/output ratio is ${amplification.inputOutputRatio}x.`);
+  }
+  if ((amplification.cacheReadRatio ?? 0) < 0.05 && totals.inputTokens >= 50_000) {
+    recommendations.push("Enable or verify prompt/cache reuse for stable system, repository, and policy context.");
+  }
+  if (large && large.totalTokens >= 100_000) {
+    recommendations.push(`Review large trace ${large.sessionId ?? large.traceId}: ${formatCount(large.totalTokens)} tokens may need compression earlier.`);
+  }
+  if (expensive && expensive.effectiveCost > 0) {
+    recommendations.push(`Review top cost trace ${expensive.sessionId ?? expensive.traceId}: ${formatMoney(expensive.effectiveCost)} effective from ${expensive.models[0] ?? "unknown model"}.`);
+  }
+  if (workflow.errorNodes > 0) {
+    recommendations.push(`Triage ${workflow.errorNodes} Langfuse error node${workflow.errorNodes === 1 ? "" : "s"} before adding new runtime work.`);
+  }
+  if (recommendations.length === 0 && wasteFlags.length === 0) {
+    recommendations.push("No deterministic optimization flag fired in this window; keep metadata-only capture and revisit after more runs.");
+  }
+
+  return recommendations.slice(0, 6);
+}
+
+function failurePayload(
+  window: ObservabilityWindow,
+  range: { fromStartTime: string; toStartTime: string },
+  warning: string,
+): HermesObservability {
+  return {
+    source: {
+      status: "error",
+      source: "langfuse",
+      message: "Langfuse unavailable",
+      warning,
+      lastSync: null,
+      window,
+      fromStartTime: range.fromStartTime,
+      toStartTime: range.toStartTime,
+      rows: 0,
+      filteredRows: 0,
+      includedRows: 0,
+      pages: 0,
+      truncated: false,
+    },
+    totals: null,
+    byModel: [],
+    byProvider: [],
+    workflow: null,
+    amplification: null,
+    sessions: [],
+    tools: {
+      recent: [],
+      repeated: [],
+    },
+    topExpensiveTraces: [],
+    topLargeTraces: [],
+    wasteFlags: [],
+    recommendations: [],
+  };
+}
+
+function safeFailureMessage(error: unknown): string {
+  if (!(error instanceof Error)) return "Langfuse request failed.";
+  if (error.message === "LANGFUSE_ENV_MISSING") return "Langfuse server credentials are not configured.";
+  if (error.message === "LANGFUSE_ENV_INVALID") return "Langfuse base URL is invalid.";
+  if (error.name === "AbortError") return "Langfuse request timed out.";
+  if (error.message.startsWith("LANGFUSE_HTTP_")) {
+    return `Langfuse returned HTTP ${error.message.replace("LANGFUSE_HTTP_", "")}.`;
+  }
+  return "Langfuse request failed.";
+}
+
+function roundTotals(totals: ObservabilityTotals) {
+  totals.inputTokens = Math.round(totals.inputTokens);
+  totals.outputTokens = Math.round(totals.outputTokens);
+  totals.totalTokens = Math.round(totals.totalTokens);
+  totals.cacheReadTokens = Math.round(totals.cacheReadTokens);
+  totals.cacheWriteTokens = Math.round(totals.cacheWriteTokens);
+  totals.reportedCost = roundMoney(totals.reportedCost);
+  totals.estimatedCost = totals.estimatedCost == null ? null : roundMoney(totals.estimatedCost);
+  totals.effectiveCost = roundMoney(totals.effectiveCost);
+  if (totals.estimatedCostRange) {
+    totals.estimatedCostRange.low = roundMoney(totals.estimatedCostRange.low);
+    totals.estimatedCostRange.high = roundMoney(totals.estimatedCostRange.high);
+  }
+  totals.totalCost = roundMoney(totals.totalCost);
+}
+
+function roundMoney(value: number) {
+  return Math.round((Number.isFinite(value) ? value : 0) * 1_000_000) / 1_000_000;
+}
+
+function isErrorObservation(obs: Observation) {
+  return obs.level?.toUpperCase() === "ERROR";
+}
+
+function isSyntheticObservation(obs: Observation) {
+  const metadata = obs.metadata;
+  const environment = safeText(metadata.environment ?? metadata.env)?.toLowerCase();
+  if (environment === "test") return true;
+
+  if (booleanValue(metadata.synthetic) || booleanValue(metadata.isSynthetic) || booleanValue(metadata.is_synthetic)) {
+    return true;
+  }
+
+  const metadataModel = safeText(metadata.model ?? metadata.model_name)?.toLowerCase();
+  const metadataProvider = safeText(metadata.provider)?.toLowerCase();
+  return metadataModel === "synthetic" || metadataProvider === "synthetic";
+}
+
+function classifyToolObservation(obs: Observation, type: string): { name: string; count: number } | null {
+  if (type === "GENERATION") return null;
+
+  if (type === "TOOL") {
+    return {
+      name: safeToolName(obs.metadata.tool_name ?? obs.name),
+      count: 1,
+    };
+  }
+
+  if (type !== "SPAN" && type !== "EVENT") return null;
+
+  const metadataToolName = safeText(obs.metadata.tool_name);
+  const metadataToolCallId = safeText(obs.metadata.tool_call_id);
+  const metadataToolCallCount = positiveInteger(obs.metadata.tool_call_count);
+  const nameToolName = toolNameFromObservationName(obs.name);
+
+  if (!metadataToolName && !metadataToolCallId && metadataToolCallCount == null && !nameToolName) {
+    return null;
+  }
+
+  return {
+    name: metadataToolName ?? nameToolName ?? safeToolName(obs.name),
+    count: metadataToolCallCount ?? 1,
+  };
+}
+
+function latencyToMs(value: number | null) {
+  if (value == null || !Number.isFinite(value)) return null;
+  return value < 1000 ? Math.round(value * 1000) : Math.round(value);
+}
+
+function hasLangGraphMetadata(metadata: Record<string, unknown>) {
+  return Object.keys(metadata).some((key) => /langgraph|lang_graph|graph_node|graph_step/i.test(key));
+}
+
+function inferModelClass(provider: string | null, model: string | null): ProviderAggregate["modelClass"] {
+  const text = `${provider ?? ""} ${model ?? ""}`.toLowerCase();
+  if (!text.trim()) return "unknown";
+  if (/(localhost|127\.0\.0\.1|ollama|lmstudio|custom|coder|reviewer|local|qwen|ornith)/.test(text)) return "local";
+  if (/(openai|anthropic|gemini|google|bedrock|openrouter|claude|gpt)/.test(text)) return "cloud";
+  return "unknown";
+}
+
+function median(values: number[]) {
+  if (values.length === 0) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
+function roundRatio(value: number) {
+  if (!Number.isFinite(value)) return null;
+  return Math.round(value * 100) / 100;
+}
+
+function toolNameFromObservationName(value: unknown) {
+  const text = safeText(value);
+  if (!text) return null;
+
+  const prefixed = text.match(/^tools?(?:_call)?[:./\s-]+(.+)$/i);
+  if (prefixed?.[1]) return safeText(prefixed[1]);
+
+  if (/\btool(?:_call)?\b/i.test(text)) return text;
+
+  return null;
+}
+
+function safeToolName(value: unknown) {
+  return safeText(value) ?? "unknown-tool";
+}
+
+function safeText(value: unknown) {
+  const text = stringValue(value);
+  if (!text) return null;
+  return text.replace(/[\u0000-\u001f\u007f]/g, "").slice(0, 96);
+}
+
+function stringValue(value: unknown) {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function numberValue(value: unknown): number | null {
+  if (typeof value === "number") return Number.isFinite(value) ? value : null;
+  if (typeof value !== "string" || !value.trim()) return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function positiveInteger(value: unknown): number | null {
+  const parsed = numberValue(value);
+  if (parsed == null || parsed < 1) return null;
+  return Math.floor(parsed);
+}
+
+function booleanValue(value: unknown) {
+  if (typeof value === "boolean") return value;
+  if (typeof value !== "string") return false;
+  return /^(true|1|yes)$/i.test(value.trim());
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  return value as Record<string, unknown>;
+}
+
+function arrayValue(value: unknown): unknown[] | null {
+  return Array.isArray(value) ? value : null;
+}
+
+function parseDateMs(value: string | null) {
+  if (!value) return null;
+  const ms = Date.parse(value);
+  return Number.isFinite(ms) ? ms : null;
+}
+
+function isoOrNull(ms: number | null) {
+  return ms == null ? null : new Date(ms).toISOString();
+}
+
+function maxIso(current: string | null, candidateMs: number | null) {
+  const currentMs = parseDateMs(current);
+  const maxMs = candidateMs == null ? currentMs : Math.max(currentMs ?? candidateMs, candidateMs);
+  return isoOrNull(maxMs);
+}
+
+function firstSorted(values: Set<string>) {
+  return Array.from(values).sort()[0] ?? null;
+}
+
+function formatCount(value: number) {
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
+  if (value >= 1_000) return `${(value / 1_000).toFixed(value >= 10_000 ? 0 : 1)}K`;
+  return String(value);
+}
+
+function formatMoney(value: number) {
+  return `$${roundMoney(value).toLocaleString("en-US", {
+    minimumFractionDigits: value < 100 ? 2 : 0,
+    maximumFractionDigits: value < 100 ? 2 : 0,
+  })}`;
+}

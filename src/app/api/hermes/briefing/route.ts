@@ -6,17 +6,9 @@ export async function GET() {
   return NextResponse.json(row?.data ?? { generatedAt: null, summary: null, sections: [] });
 }
 
-// POST → ask the bridge to (re)generate the chief-of-staff brief now.
 export async function POST() {
-  const row = await prisma.agentRequest.create({
-    data: {
-      origin: "web",
-      kind: "briefing.generate",
-      title: "Generate chief-of-staff brief",
-      prompt: "now",
-      sideEffecting: false,
-      status: "queued",
-    },
-  });
-  return NextResponse.json({ request: row });
+  return NextResponse.json(
+    { error: "Daily briefing generation is not supported in this Mission Control release." },
+    { status: 410 },
+  );
 }
