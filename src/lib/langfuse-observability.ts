@@ -14,6 +14,7 @@ const DEFAULT_MAX_ROWS = 10_000;
 const DEFAULT_TIMEOUT_MS = 8000;
 
 type HealthStatus = "ok" | "warning" | "error";
+export type ValueState = "known" | "partial" | "unknown";
 
 export type CostBasis =
   | "anthropic_claude_opus_4_6_estimate_cache_write_5m_assumed"
@@ -33,6 +34,7 @@ interface CostFields {
   estimatedCost: number | null;
   effectiveCost: number;
   costBasis: CostBasis;
+  costState: ValueState;
   estimatedCostRange?: CostRange;
 }
 
@@ -93,6 +95,7 @@ export interface SessionTraceAggregate {
   id: string;
   sessionId: string | null;
   traceId: string | null;
+  parentObservationIds: string[];
   startTime: string | null;
   endTime: string | null;
   durationMs: number | null;
@@ -108,12 +111,26 @@ export interface SessionTraceAggregate {
   estimatedCost: number | null;
   effectiveCost: number;
   costBasis: CostBasis;
+  tokenState: ValueState;
+  costState: ValueState;
   estimatedCostRange?: CostRange;
   cost: number;
   toolCallCount: number;
   errorCount: number;
   status: "ok" | "error";
   latestTimestamp: string | null;
+}
+
+export interface ObservabilityCompleteness {
+  sessionRows: number;
+  missingSessionIdRows: number;
+  missingTraceIdRows: number;
+  unknownTokenRows: number;
+  unknownCostRows: number;
+  partialCostRows: number;
+  parentEdges: number;
+  logicalRootCount: number;
+  includedObservations: number;
 }
 
 export interface ToolAggregate {
@@ -173,6 +190,7 @@ export interface WasteFlag {
 export interface HermesObservability {
   source: SourceHealth;
   totals: ObservabilityTotals | null;
+  completeness: ObservabilityCompleteness | null;
   byModel: ModelAggregate[];
   byProvider: ProviderAggregate[];
   workflow: WorkflowSummary | null;
@@ -222,7 +240,7 @@ interface Observation {
   providedModelName: string | null;
   usageDetails: Record<string, unknown>;
   costDetails: Record<string, unknown>;
-  totalCost: number;
+  totalCost: number | null;
   latency: number | null;
   metadata: Record<string, unknown>;
 }
@@ -236,6 +254,7 @@ interface SessionWork {
   models: Set<string>;
   providers: Set<string>;
   platforms: Set<string>;
+  parentObservationIds: Set<string>;
   inputTokens: number;
   outputTokens: number;
   totalTokens: number;
@@ -246,6 +265,10 @@ interface SessionWork {
   hasEstimatedCost: boolean;
   effectiveCost: number;
   costBases: Set<CostBasis>;
+  tokenEvidenceCount: number;
+  missingTokenEvidenceCount: number;
+  costEvidenceCount: number;
+  missingCostEvidenceCount: number;
   estimatedCostRangeLow: number;
   estimatedCostRangeHigh: number;
   hasEstimatedCostRange: boolean;
@@ -441,7 +464,7 @@ function parseObservation(value: unknown): Observation {
     providedModelName: safeText(row.providedModelName),
     usageDetails: asRecord(row.usageDetails),
     costDetails: asRecord(row.costDetails),
-    totalCost: numberValue(row.totalCost) ?? numberValue(asRecord(row.costDetails).total) ?? 0,
+    totalCost: numberValue(row.totalCost) ?? numberValue(asRecord(row.costDetails).total),
     latency: numberValue(row.latency),
     metadata,
   };
@@ -626,7 +649,15 @@ function aggregateObservations(
     session.totalTokens += usage.totalTokens;
     session.cacheReadTokens += usage.cacheReadTokens;
     session.cacheWriteTokens += usage.cacheWriteTokens;
+    if (obs.parentObservationId) session.parentObservationIds.add(obs.parentObservationId);
+    if (usage.hasTokenEvidence) session.tokenEvidenceCount += 1;
+    else if (type === "GENERATION" || tool) session.missingTokenEvidenceCount += 1;
     mergeSessionCostFields(session, costFields);
+    if (costFields.costState === "known") {
+      session.costEvidenceCount += 1;
+    } else if (type === "GENERATION" || obs.totalCost != null || model) {
+      session.missingCostEvidenceCount += 1;
+    }
     session.cost += cost;
     if (tool) session.toolCallCount += tool.count;
     if (isError) session.errorCount += 1;
@@ -683,6 +714,17 @@ function aggregateObservations(
     avgLatencyMs: latencyCount ? Math.round(latencyTotalMs / latencyCount) : null,
     maxLatencyMs,
   };
+  const completeness: ObservabilityCompleteness = {
+    sessionRows: sessionRows.length,
+    missingSessionIdRows: sessionRows.filter((session) => !session.sessionId).length,
+    missingTraceIdRows: sessionRows.filter((session) => !session.traceId).length,
+    unknownTokenRows: sessionRows.filter((session) => session.tokenState === "unknown").length,
+    unknownCostRows: sessionRows.filter((session) => session.costState === "unknown").length,
+    partialCostRows: sessionRows.filter((session) => session.costState === "partial").length,
+    parentEdges: workflow.parentEdges,
+    logicalRootCount: workflow.rootNodes,
+    includedObservations: pageResult.observations.length - filteredRows,
+  };
   const amplification = buildAmplification(totals, sessionRows);
   const wasteFlags = buildWasteFlags(sessionRows, repeatedTools);
 
@@ -707,6 +749,7 @@ function aggregateObservations(
       truncated: pageResult.truncated,
     },
     totals,
+    completeness,
     byModel: Array.from(models.values())
       .map(roundCostAggregate)
       .sort((a, b) => b.effectiveCost - a.effectiveCost || b.totalTokens - a.totalTokens)
@@ -739,6 +782,28 @@ function aggregateObservations(
 }
 
 function extractUsage(usageDetails: Record<string, unknown>) {
+  const tokenKeys = [
+    "input",
+    "input_tokens",
+    "inputTokens",
+    "promptTokens",
+    "output",
+    "output_tokens",
+    "outputTokens",
+    "completionTokens",
+    "total",
+    "total_tokens",
+    "totalTokens",
+    "cache_read_input_tokens",
+    "cacheReadInputTokens",
+    "input_cache_read",
+    "cache_read",
+    "cache_creation_input_tokens",
+    "cacheWriteInputTokens",
+    "input_cache_write",
+    "cache_write",
+  ];
+  const hasTokenEvidence = tokenKeys.some((key) => numberValue(usageDetails[key]) != null);
   const inputTokens =
     numberValue(usageDetails.input) ??
     numberValue(usageDetails.input_tokens) ??
@@ -774,6 +839,7 @@ function extractUsage(usageDetails: Record<string, unknown>) {
     totalTokens: explicitTotal ?? inputTokens + outputTokens,
     cacheReadTokens,
     cacheWriteTokens,
+    hasTokenEvidence,
   };
 }
 
@@ -784,14 +850,15 @@ function computeObservationCost({
   provider,
   metadata,
 }: {
-  reportedCost: number;
+  reportedCost: number | null;
   usage: ReturnType<typeof extractUsage>;
   model: string | null;
   provider: string | null;
   metadata: Record<string, unknown>;
 }): CostFields {
-  const cleanReportedCost = roundMoney(Math.max(0, reportedCost));
+  const cleanReportedCost = reportedCost == null ? 0 : roundMoney(Math.max(0, reportedCost));
   const modelClass = inferModelClass(provider, model);
+  const hasReportedCost = reportedCost != null;
 
   if (modelClass === "local") {
     return {
@@ -799,10 +866,11 @@ function computeObservationCost({
       estimatedCost: 0,
       effectiveCost: 0,
       costBasis: "local_zero",
+      costState: "known",
     };
   }
 
-  if (isClaudeOpus46(model, metadata)) {
+  if (isClaudeOpus46(model, metadata) && usage.hasTokenEvidence) {
     const pricing = OFFICIAL_MODEL_PRICING.anthropicClaudeOpus46;
     const inputCost = mtokCost(usage.inputTokens, pricing.inputPerMTok);
     const outputCost = mtokCost(usage.outputTokens, pricing.outputPerMTok);
@@ -817,6 +885,7 @@ function computeObservationCost({
       estimatedCost,
       effectiveCost: estimatedCost,
       costBasis: "anthropic_claude_opus_4_6_estimate_cache_write_5m_assumed",
+      costState: "known",
       estimatedCostRange: {
         low: estimatedCost,
         high,
@@ -830,6 +899,7 @@ function computeObservationCost({
     estimatedCost: null,
     effectiveCost: cleanReportedCost,
     costBasis: modelClass === "cloud" ? "reported_only_unknown_cloud" : "reported_only_unknown",
+    costState: hasReportedCost ? "known" : "unknown",
   };
 }
 
@@ -914,6 +984,7 @@ function getSessionWork(sessionMap: Map<string, SessionWork>, obs: Observation) 
     models: new Set(),
     providers: new Set(),
     platforms: new Set(),
+    parentObservationIds: new Set(),
     inputTokens: 0,
     outputTokens: 0,
     totalTokens: 0,
@@ -924,6 +995,10 @@ function getSessionWork(sessionMap: Map<string, SessionWork>, obs: Observation) 
     hasEstimatedCost: false,
     effectiveCost: 0,
     costBases: new Set(),
+    tokenEvidenceCount: 0,
+    missingTokenEvidenceCount: 0,
+    costEvidenceCount: 0,
+    missingCostEvidenceCount: 0,
     estimatedCostRangeLow: 0,
     estimatedCostRangeHigh: 0,
     hasEstimatedCostRange: false,
@@ -946,6 +1021,7 @@ function finalizeSession(work: SessionWork): SessionTraceAggregate {
     id: work.id,
     sessionId: work.sessionId,
     traceId: work.traceId,
+    parentObservationIds: Array.from(work.parentObservationIds).sort(),
     startTime: isoOrNull(work.startMs),
     endTime: isoOrNull(work.endMs),
     durationMs,
@@ -961,6 +1037,8 @@ function finalizeSession(work: SessionWork): SessionTraceAggregate {
     estimatedCost: work.hasEstimatedCost ? roundMoney(work.estimatedCost) : null,
     effectiveCost: roundMoney(work.effectiveCost),
     costBasis: summarizeCostBasis(work.costBases),
+    tokenState: summarizeValueState(work.tokenEvidenceCount, work.missingTokenEvidenceCount),
+    costState: summarizeValueState(work.costEvidenceCount, work.missingCostEvidenceCount),
     ...(work.hasEstimatedCostRange
       ? {
           estimatedCostRange: {
@@ -1156,6 +1234,7 @@ function failurePayload(
       truncated: false,
     },
     totals: null,
+    completeness: null,
     byModel: [],
     byProvider: [],
     workflow: null,
@@ -1170,6 +1249,12 @@ function failurePayload(
     wasteFlags: [],
     recommendations: [],
   };
+}
+
+function summarizeValueState(known: number, missing: number): ValueState {
+  if (known > 0 && missing > 0) return "partial";
+  if (known > 0) return "known";
+  return "unknown";
 }
 
 function safeFailureMessage(error: unknown): string {
