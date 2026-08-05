@@ -9,6 +9,7 @@ const TOUCH_CAP = 400;
 const INDEX_CAP = 60;
 const FLOW_CAP = AGENT_CAP * 2;
 const LITE_FILE_CAP = 200;
+const TIMELINE_CAP = 30;
 const MAX_TRACE_BYTES = 25 * 1024 * 1024;
 const MAX_SCRIBE_BYTES = 512 * 1024;
 const MAX_LINE_BYTES = 200 * 1024;
@@ -45,6 +46,9 @@ export async function parseRunTrace(goalDir, options = {}) {
   const flow = [];
   const flowKeys = new Set();
   const activeAgents = new Set();
+  const activeAgentStarts = new Map();
+  const timeline = [];
+  let currentActivity = null;
   let startedAt = null;
   let endedAt = null;
   let running = false;
@@ -83,21 +87,33 @@ export async function parseRunTrace(goalDir, options = {}) {
     } else if (eventType === "NODE_START" && nodeId) {
       running = true;
       if (agents.has(nodeId) || agents.size < AGENT_CAP) activeAgents.add(nodeId);
+      // Bound the open-node map to AGENT_CAP so a hostile trace with many
+      // NODE_START ids and no matching NODE_END cannot grow memory unbounded.
+      if (activeAgentStarts.has(nodeId) || activeAgentStarts.size < AGENT_CAP) {
+        activeAgentStarts.set(nodeId, timestamp || new Date(0).toISOString());
+      }
       const agent = ensureAgent(agents, nodeId);
       if (agent) agent.startedAt = earlierIso(agent.startedAt, timestamp);
+      currentActivity = { node: nodeId, kind: "idle", tool: null, file: null, at: timestamp };
+      pushTimeline(timeline, { seq: eventCount, node: nodeId, kind: "node_start", tool: null, file: null, at: timestamp });
     } else if (eventType === "NODE_END" && nodeId) {
       activeAgents.delete(nodeId);
+      activeAgentStarts.delete(nodeId);
       const agent = ensureAgent(agents, nodeId);
       if (agent) agent.endedAt = laterIso(agent.endedAt, timestamp);
+      currentActivity = { node: nodeId, kind: "idle", tool: null, file: null, at: timestamp };
+      pushTimeline(timeline, { seq: eventCount, node: nodeId, kind: "node_end", tool: null, file: null, at: timestamp });
     } else if (eventType === "MODEL_CALL" && nodeId) {
       modelCalls += 1;
       const agent = ensureAgent(agents, nodeId);
+      const model = safeLabel(details.model_name || details.model || data.model_name, secrets);
       if (agent) {
         agent.modelCalls += 1;
-        const model = safeLabel(details.model_name || details.model || data.model_name, secrets);
         if (model) agent.model = model;
         agent.startedAt = agent.startedAt || timestamp;
       }
+      currentActivity = { node: nodeId, kind: "model", tool: model, file: null, at: timestamp };
+      pushTimeline(timeline, { seq: eventCount, node: nodeId, kind: "model", tool: model, file: null, at: timestamp });
     } else if (eventType === "TOOL_CALL" && nodeId && details.stage !== "after") {
       toolCalls += 1;
       const agent = ensureAgent(agents, nodeId);
@@ -109,7 +125,11 @@ export async function parseRunTrace(goalDir, options = {}) {
       }
 
       const op = OP_BY_TOOL.get(toolName) || inferOp(toolName);
-      for (const filePath of extractPaths(details.tool_args || details.arguments, secrets)) {
+      const toolPaths = extractPaths(details.tool_args || details.arguments, secrets);
+      const activityFile = toolPaths[0] || null;
+      currentActivity = { node: nodeId, kind: "tool", tool: toolName, file: activityFile, at: timestamp };
+      pushTimeline(timeline, { seq: eventCount, node: nodeId, kind: "tool", tool: toolName, file: activityFile, at: timestamp });
+      for (const filePath of toolPaths) {
         recordFile(files, filePath, op, nodeId);
         recordTouch(touches, nodeId, filePath, op);
       }
@@ -139,6 +159,7 @@ export async function parseRunTrace(goalDir, options = {}) {
 
   running = running || activeAgents.size > 0 || state.status === "running";
   if (workflowComplete && activeAgents.size === 0 && state.status !== "running") running = false;
+  const currentAgent = latestActiveAgent(activeAgentStarts);
 
   return {
     goal,
@@ -152,6 +173,9 @@ export async function parseRunTrace(goalDir, options = {}) {
     flow,
     touches: graphTouches,
     learnings: scribe,
+    currentAgent,
+    currentActivity,
+    timeline,
     counts: { events: eventCount, modelCalls, toolCalls },
   };
 }
@@ -362,6 +386,21 @@ function recordTouch(touches, agent, filePath, op) {
   touches.get(key).count += 1;
 }
 
+function pushTimeline(timeline, entry) {
+  timeline.push(entry);
+  if (timeline.length > TIMELINE_CAP) timeline.shift();
+}
+
+function latestActiveAgent(activeAgentStarts) {
+  let latest = null;
+  for (const [node, startedAt] of activeAgentStarts.entries()) {
+    if (!latest || Date.parse(startedAt) >= Date.parse(latest.startedAt)) {
+      latest = { node, startedAt };
+    }
+  }
+  return latest?.node ?? null;
+}
+
 function extractPaths(value, secrets = []) {
   const out = new Set();
   walkPaths(value, out, 0, secrets);
@@ -424,6 +463,9 @@ function emptyGraph(goal, state) {
     flow: [],
     touches: [],
     learnings: [],
+    currentAgent: null,
+    currentActivity: null,
+    timeline: [],
     counts: { events: 0, modelCalls: 0, toolCalls: 0 },
   };
 }

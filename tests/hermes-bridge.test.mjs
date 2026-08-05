@@ -305,3 +305,31 @@ test("scrubTextPaths collapses absolute paths but leaves URLs intact", () => {
   assert.ok(withUrl.includes("https://example.com/a/b"), "url corrupted");
   assert.equal(withUrl.includes("/home/phil"), false);
 });
+
+
+test("run trace parser exposes live cursor fields", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "hermes-runs-"));
+  try {
+    const goalDir = path.join(root, "live-goal");
+    await fs.mkdir(goalDir, { recursive: true });
+    const repoPath = path.join(os.homedir(), "Documents/GitHub/client-project/src/live-file.ts");
+    const ev = (event_type, node_id, sec, details = {}) => ({ data: { event_type, node_id, timestamp: new Date(Date.UTC(2026, 7, 6, 0, 0, sec)).toISOString(), details } });
+    const events = [ev("NODE_START", "Planner", 0), ev("NODE_END", "Planner", 1), ev("NODE_START", "Local Implementer", 2)];
+    for (let i = 0; i < 33; i += 1) events.push(ev("MODEL_CALL", "Local Implementer", 3 + i, { model: "qwen3-coder-next" }));
+    events.push(ev("TOOL_CALL", "Local Implementer", 36, { tool_name: "apply_patch", tool_args: { path: repoPath } }));
+    await fs.writeFile(path.join(goalDir, "attempt-1-events.jsonl"), events.map(JSON.stringify).join("\n") + "\n", "utf8");
+    const graph = await parseRunTrace(goalDir);
+    const liveFields = JSON.stringify({ currentAgent: graph.currentAgent, currentActivity: graph.currentActivity, timeline: graph.timeline });
+    assert.equal(graph.currentAgent, "Local Implementer");
+    assert.equal(graph.currentActivity.node, "Local Implementer");
+    assert.equal(graph.currentActivity.kind, "tool");
+    assert.equal(graph.currentActivity.tool, "apply_patch");
+    assert.equal(graph.currentActivity.file, "src/live-file.ts");
+    assert.equal(graph.timeline.length, 30);
+    assert.equal(graph.timeline.at(-1).file, "src/live-file.ts");
+    assert.equal(liveFields.includes(os.homedir()), false);
+    assert.equal(liveFields.includes("\"file\":\"/"), false);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});

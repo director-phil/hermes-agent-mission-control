@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Background,
   Controls,
@@ -8,7 +8,10 @@ import {
   MiniMap,
   Position,
   ReactFlow,
+  useEdgesState,
+  useNodesState,
   type Edge,
+  type ReactFlowInstance,
   type Node,
   type NodeProps,
 } from "@xyflow/react";
@@ -61,6 +64,23 @@ interface LearningTrace {
   inferred: string[];
 }
 
+interface CurrentActivity {
+  node: string;
+  kind: "model" | "tool" | "idle";
+  tool: string | null;
+  file: string | null;
+  at: string | null;
+}
+
+interface TimelineEntry {
+  seq: number;
+  node: string;
+  kind: "node_start" | "node_end" | "model" | "tool";
+  tool: string | null;
+  file: string | null;
+  at: string | null;
+}
+
 interface RunGraph {
   goal: string;
   attempt: number;
@@ -73,6 +93,9 @@ interface RunGraph {
   flow: Array<{ from: string; to: string }>;
   touches: TouchTrace[];
   learnings: LearningTrace[];
+  currentAgent?: string | null;
+  currentActivity?: CurrentActivity | null;
+  timeline?: TimelineEntry[];
   counts: { events: number; modelCalls: number; toolCalls: number };
 }
 
@@ -83,6 +106,7 @@ type AgentNodeData = {
 
 type FileNodeData = {
   file: FileTrace;
+  active: boolean;
 };
 
 type AgentNode = Node<AgentNodeData, "agent">;
@@ -188,7 +212,7 @@ function AgentTraceNode({ data }: NodeProps<AgentNode>) {
 function FileTraceNode({ data }: NodeProps<FileNode>) {
   const op = data.file.lastOp || "read";
   return (
-    <div className="floor-node floor-node-file">
+    <div className={`floor-node floor-node-file ${data.active ? "is-active" : ""}`}>
       <Handle type="target" position={Position.Left} className="floor-handle" />
       <div className="flex items-start gap-2.5">
         <FileCode2 className="mt-0.5 h-4 w-4 shrink-0" style={{ color: OP_COLOR[op] }} />
@@ -222,11 +246,12 @@ function buildGraph(graph: RunGraph): { nodes: FloorNode[]; edges: Edge[] } {
   const edges: Edge[] = [];
 
   graph.agents.forEach((agent, index) => {
+    const running = graph.currentAgent ? agent.label === graph.currentAgent : graph.running && !agent.endedAt;
     nodes.push({
       id: safeId("agent", agent.label),
       type: "agent",
       position: { x: 0, y: index * 168 },
-      data: { agent, running: graph.running && !agent.endedAt },
+      data: { agent, running },
     });
   });
 
@@ -235,7 +260,7 @@ function buildGraph(graph: RunGraph): { nodes: FloorNode[]; edges: Edge[] } {
       id: fileIdByPath.get(file.path) || safeId("file", file.path),
       type: "file",
       position: { x: 480 + (index % 2) * 280, y: Math.floor(index / 2) * 124 },
-      data: { file },
+      data: { file, active: graph.currentActivity?.file === file.path },
     });
   });
 
@@ -272,6 +297,50 @@ function buildGraph(graph: RunGraph): { nodes: FloorNode[]; edges: Edge[] } {
   });
 
   return { nodes, edges };
+}
+
+function nodeSignature(node: FloorNode) {
+  return JSON.stringify({ type: node.type, data: node.data });
+}
+
+function edgeSignature(edge: Edge) {
+  return JSON.stringify({ source: edge.source, target: edge.target, label: edge.label, animated: edge.animated, style: edge.style });
+}
+
+function mergeNodes(previous: FloorNode[], incoming: FloorNode[]): FloorNode[] {
+  const previousById = new Map(previous.map((node) => [node.id, node]));
+  return incoming.map((node) => {
+    const current = previousById.get(node.id);
+    if (!current) return node;
+    if (nodeSignature(current) === nodeSignature(node)) return current;
+    return { ...current, type: node.type, data: node.data } as FloorNode;
+  });
+}
+
+function mergeEdges(previous: Edge[], incoming: Edge[]): Edge[] {
+  const previousById = new Map(previous.map((edge) => [edge.id, edge]));
+  return incoming.map((edge) => {
+    const current = previousById.get(edge.id);
+    return current && edgeSignature(current) === edgeSignature(edge) ? current : edge;
+  });
+}
+
+function activityText(graph: RunGraph) {
+  const activity = graph.currentActivity;
+  const agent = graph.currentAgent || activity?.node || "idle";
+  if (!activity) return agent + " · waiting";
+  const model = graph.agents.find((item) => item.label === activity.node)?.model;
+  const pieces = [agent];
+  if (model) pieces.push(model);
+  pieces.push(activity.kind === "tool" ? activity.tool || "tool" : activity.kind === "model" ? activity.tool || "MODEL_CALL" : "idle");
+  if (activity.file) pieces.push("→ " + shortPath(activity.file));
+  pieces.push(fmtRelative(activity.at));
+  return pieces.join(" · ");
+}
+
+function timelineText(item: TimelineEntry) {
+  const action = item.kind === "node_start" ? "NODE_START" : item.kind === "node_end" ? "NODE_END" : item.tool || item.kind.toUpperCase();
+  return item.file ? item.node + " → " + action + " " + shortPath(item.file) : item.node + " → " + action;
 }
 
 function RunRail({
@@ -382,7 +451,33 @@ function LearningPanel({ graph }: { graph: RunGraph | null }) {
 }
 
 function FlowCanvas({ graph, loaded }: { graph: RunGraph | null; loaded: boolean }) {
-  const { nodes, edges } = useMemo(() => graph ? buildGraph(graph) : { nodes: [], edges: [] }, [graph]);
+  const built = useMemo(() => graph ? buildGraph(graph) : { nodes: [], edges: [] }, [graph]);
+  const [nodes, setNodes, onNodesChange] = useNodesState<FloorNode>([]);
+  const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
+  const flowRef = useRef<ReactFlowInstance<FloorNode, Edge> | null>(null);
+  const fittedGoalRef = useRef<string | null>(null);
+  const timeline = graph?.timeline?.slice(-15).reverse() ?? [];
+
+  useEffect(() => {
+    if (!graph) {
+      setNodes([]);
+      setEdges([]);
+      return;
+    }
+    setNodes((current) => mergeNodes(current as FloorNode[], built.nodes));
+    setEdges((current) => mergeEdges(current, built.edges));
+  }, [built.edges, built.nodes, graph, setEdges, setNodes]);
+
+  useEffect(() => {
+    if (!graph || nodes.length === 0 || !flowRef.current) return;
+    if (fittedGoalRef.current === graph.goal) return;
+    fittedGoalRef.current = graph.goal;
+    const frame = requestAnimationFrame(() => {
+      flowRef.current?.fitView({ padding: 0.16, duration: 360 });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [graph, nodes.length]);
+
   return (
     <Panel className="min-h-[620px] overflow-hidden p-0">
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--line)] px-5 py-4">
@@ -399,21 +494,30 @@ function FlowCanvas({ graph, loaded }: { graph: RunGraph | null; loaded: boolean
         </div>
       </div>
 
-      <div className="floor-flow h-[560px]">
+      {graph && (
+        <div className="floor-now-strip mx-5 mt-4 flex min-w-0 items-center gap-2 rounded-[var(--r-md)] border border-[var(--line)] bg-[var(--surface-1)] px-3 py-2 text-[12px] text-[var(--text-2)]">
+          <span className="floor-now-dot" aria-hidden="true" />
+          <span className="truncate"><span className="font-semibold text-[var(--text)]">NOW</span> · {activityText(graph)}</span>
+        </div>
+      )}
+
+      <div className="floor-flow h-[500px]">
         {!loaded ? (
           <div className="p-5">
-            <Skeleton className="h-[520px]" />
+            <Skeleton className="h-[460px]" />
           </div>
         ) : !graph ? (
           <EmptyState icon={<GitBranch className="h-6 w-6" />} title="No graph loaded" hint="Select a mirrored run from the rail." className="h-full" />
         ) : nodes.length === 0 ? (
           <EmptyState icon={<Bot className="h-6 w-6" />} title="Trace is empty" hint="The mirrored run has no agent or file events." className="h-full" />
         ) : (
-          <ReactFlow
+          <ReactFlow<FloorNode, Edge>
             nodes={nodes}
             edges={edges}
+            onNodesChange={onNodesChange}
+            onEdgesChange={onEdgesChange}
+            onInit={(instance) => { flowRef.current = instance; }}
             nodeTypes={nodeTypes}
-            fitView
             minZoom={0.25}
             maxZoom={1.4}
             nodesDraggable={false}
@@ -430,6 +534,23 @@ function FlowCanvas({ graph, loaded }: { graph: RunGraph | null; loaded: boolean
           </ReactFlow>
         )}
       </div>
+
+      {graph && timeline.length > 0 && (
+        <div className="border-t border-[var(--line)] px-5 py-4">
+          <div className="mb-2 flex items-center justify-between gap-3">
+            <Eyebrow>Sequence</Eyebrow>
+            <Pill tone="neutral" className="!py-0.5 !text-[10px]">last {timeline.length}</Pill>
+          </div>
+          <ol className="grid max-h-32 gap-1.5 overflow-y-auto pr-1 md:grid-cols-2">
+            {timeline.map((item) => (
+              <li key={item.seq} className="min-w-0 truncate rounded-[var(--r-sm)] border border-[var(--line)] bg-[var(--surface-1)] px-2.5 py-1.5 text-[11px] text-[var(--text-3)]">
+                <span className="text-[var(--text-2)]">{timelineText(item)}</span>
+                <span className="num ml-2 text-[var(--text-4)]">{fmtRelative(item.at)}</span>
+              </li>
+            ))}
+          </ol>
+        </div>
+      )}
     </Panel>
   );
 }
@@ -440,6 +561,16 @@ export default function FloorPage() {
   const [selectedGoal, setSelectedGoal] = useState<string | null>(null);
   const [graph, setGraph] = useState<RunGraph | null>(null);
   const [graphLoaded, setGraphLoaded] = useState(false);
+  const runsRef = useRef<RunIndex[]>([]);
+  const graphRunningRef = useRef(false);
+
+  useEffect(() => {
+    runsRef.current = runs;
+  }, [runs]);
+
+  useEffect(() => {
+    graphRunningRef.current = graph?.running ?? false;
+  }, [graph?.running]);
 
   const loadRuns = useCallback(async () => {
     const data = await getJSON<RunIndex[]>("/api/runs");
@@ -471,11 +602,11 @@ export default function FloorPage() {
     setGraphLoaded(false);
     void loadGraph(selectedGoal);
     const interval = setInterval(() => {
-      const selectedRun = runs.find((run) => run.goal === selectedGoal);
-      if (selectedRun?.running || graph?.running) void loadGraph(selectedGoal);
+      const selectedRun = runsRef.current.find((run) => run.goal === selectedGoal);
+      if (selectedRun?.running || graphRunningRef.current) void loadGraph(selectedGoal);
     }, 4_000);
     return () => clearInterval(interval);
-  }, [graph?.running, loadGraph, runs, runsLoaded, selectedGoal]);
+  }, [loadGraph, runsLoaded, selectedGoal]);
 
   const activeRuns = runs.filter((run) => run.running).length;
 
