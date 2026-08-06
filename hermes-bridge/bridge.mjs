@@ -464,20 +464,23 @@ async function mirrorRuns() {
 }
 
 // Probe an LM box's /v1/models. Returns { label, host, reachable, models }.
+// The abort stays active through body parsing so a box that sends headers then
+// stalls (or streams an unbounded body) cannot hang the mirror loop.
 async function probeLmBox(spec) {
   const [label, hostPort] = spec.includes("|") ? spec.split("|") : [spec, spec];
   const url = `http://${hostPort.trim()}/v1/models`;
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), 3000);
   try {
-    const ctrl = new AbortController();
-    const t = setTimeout(() => ctrl.abort(), 3000);
     const res = await fetch(url, { signal: ctrl.signal });
-    clearTimeout(t);
     if (!res.ok) return { label: label.trim(), host: hostPort.trim(), reachable: false, models: [] };
-    const body = await res.json();
-    const models = Array.isArray(body?.data) ? body.data.map((m) => m.id).filter(Boolean) : [];
+    const body = await res.json(); // still under the same abort signal
+    const models = (Array.isArray(body?.data) ? body.data.map((m) => m.id).filter(Boolean) : []).slice(0, 40);
     return { label: label.trim(), host: hostPort.trim(), reachable: true, models };
   } catch {
     return { label: label.trim(), host: hostPort.trim(), reachable: false, models: [] };
+  } finally {
+    clearTimeout(t);
   }
 }
 
@@ -521,9 +524,9 @@ async function mirrorConveyor() {
 
   const payload = {
     conveyorOn: Boolean(status?.conveyor_on) || live.size > 0,
-    controllerPids: Array.isArray(status?.controller_pids) ? status.controller_pids : [],
-    liveGoals,
-    active: activeGoals.map((gid) => {
+    controllerPids: (Array.isArray(status?.controller_pids) ? status.controller_pids : []).slice(0, 50),
+    liveGoals: liveGoals.slice(0, 25),
+    active: activeGoals.slice(0, 25).map((gid) => {
       const detail = activeDetail.find((d) => d.goal_id === gid) || {};
       return {
         goalId: gid,
@@ -539,14 +542,14 @@ async function mirrorConveyor() {
       title: g.title || g.goal_id,
       specialist: g.specialist ?? null,
     })) : [],
-    planRequired: Array.isArray(status?.plan_required) ? status.plan_required.map((g) => ({
+    planRequired: Array.isArray(status?.plan_required) ? status.plan_required.slice(0, 25).map((g) => ({
       goalId: g.goal_id, title: g.title || g.goal_id,
     })) : [],
-    blocked: Array.isArray(status?.blocked) ? status.blocked.map((b) => ({
+    blocked: Array.isArray(status?.blocked) ? status.blocked.slice(0, 50).map((b) => ({
       goalId: b.goal_id,
       queueState: b.queue_state,
-      blockedBy: Array.isArray(b.blocked_by) ? b.blocked_by : [],
-      failedDependencies: Array.isArray(b.failed_dependencies) ? b.failed_dependencies : [],
+      blockedBy: (Array.isArray(b.blocked_by) ? b.blocked_by : []).slice(0, 12),
+      failedDependencies: (Array.isArray(b.failed_dependencies) ? b.failed_dependencies : []).slice(0, 12),
     })) : [],
     counts: status?.counts || {},
     focusPrefixes: Array.isArray(status?.focus_prefixes) ? status.focus_prefixes : [],
