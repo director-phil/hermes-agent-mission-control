@@ -32,6 +32,23 @@ interface RunIndex {
   running: boolean;
 }
 
+interface RecoveryEvent {
+  ts: string;
+  gid: string;
+  event: string;
+  reason?: string;
+  detail?: string;
+  pr?: string;
+}
+
+interface RecoverySummary {
+  gid: string;
+  dispatches: number;
+  pr: string | null;
+  last: string | null;
+  at: string | null;
+}
+
 interface AgentTrace {
   id: string;
   label: string;
@@ -364,16 +381,79 @@ const RUN_TABS: Array<{ key: RunBucket; label: string }> = [
   { key: "failed", label: "Failed" },
 ];
 
+const RECOVERY_LABEL: Record<string, string> = {
+  codex_dispatch: "Codex dispatched",
+  scope_ok: "Scope gate passed",
+  scope_refused: "Scope gate REFUSED",
+  acceptance_pass: "Acceptance passed",
+  acceptance_fail: "Acceptance failed",
+  pr_opened: "PR opened",
+  codex_failed: "Codex run failed",
+  push_failed: "Push failed",
+  skip: "Skipped",
+  plan: "Planned (dry)",
+};
+
+function recoveryTone(event: string): RunStatusTone {
+  if (["acceptance_pass", "pr_opened", "scope_ok"].includes(event)) return "up";
+  if (["scope_refused", "acceptance_fail", "codex_failed", "push_failed"].includes(event)) return "down";
+  if (event === "codex_dispatch") return "accent";
+  return "neutral";
+}
+
+function RecoveryLog({ events, forGoal }: { events: RecoveryEvent[]; forGoal: string | null }) {
+  const scoped = forGoal ? events.filter((event) => event.gid === forGoal) : events;
+  const recent = scoped.slice(-40).reverse();
+  if (recent.length === 0) {
+    return (
+      <div className="mt-3 rounded-[var(--r-md)] border border-dashed border-[var(--line)] px-3 py-4 text-center text-[11px] text-[var(--text-4)]">
+        No Codex corrections logged yet. Failed goals stamped eligible are picked up here.
+      </div>
+    );
+  }
+  return (
+    <div className="mt-3 space-y-1.5">
+      <Eyebrow>Codex correction log{forGoal ? "" : " (all goals)"}</Eyebrow>
+      {recent.map((event, index) => (
+        <div
+          key={`${event.gid}:${event.ts}:${index}`}
+          className="flex items-start justify-between gap-2 rounded-[var(--r-sm)] border border-[var(--line)] bg-[var(--surface-1)] px-2.5 py-1.5"
+        >
+          <div className="min-w-0">
+            <div className="flex items-center gap-1.5">
+              <Pill tone={recoveryTone(event.event)} className="!py-0.5 !text-[9.5px]">
+                {RECOVERY_LABEL[event.event] || event.event}
+              </Pill>
+              {!forGoal && <span className="truncate text-[10.5px] text-[var(--text-3)]">{event.gid}</span>}
+            </div>
+            {(event.reason || event.detail) && (
+              <p className="mt-1 truncate text-[10.5px] text-[var(--text-4)]">{event.reason || event.detail}</p>
+            )}
+            {event.pr && event.pr.startsWith("http") && (
+              <a href={event.pr} target="_blank" rel="noreferrer" className="mt-1 block truncate text-[10.5px] text-[var(--accent)] underline">
+                {event.pr}
+              </a>
+            )}
+          </div>
+          <span className="num shrink-0 text-[10px] text-[var(--text-4)]">{fmtRelative(event.ts)}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function RunRail({
   runs,
   selected,
   loaded,
   onSelect,
+  recovery,
 }: {
   runs: RunIndex[];
   selected: string | null;
   loaded: boolean;
   onSelect: (goal: string) => void;
+  recovery: RecoveryEvent[];
 }) {
   const [tab, setTab] = useState<RunBucket>("active");
 
@@ -467,6 +547,9 @@ function RunRail({
             </button>
           ))}
         </div>
+      )}
+      {tab === "failed" && (
+        <RecoveryLog events={recovery} forGoal={selected && buckets.failed.some((r) => r.goal === selected) ? selected : null} />
       )}
     </Panel>
   );
@@ -624,6 +707,7 @@ export default function FloorPage() {
   const [selectedGoal, setSelectedGoal] = useState<string | null>(null);
   const [graph, setGraph] = useState<RunGraph | null>(null);
   const [graphLoaded, setGraphLoaded] = useState(false);
+  const [recovery, setRecovery] = useState<RecoveryEvent[]>([]);
   const runsRef = useRef<RunIndex[]>([]);
   const graphRunningRef = useRef(false);
 
@@ -642,6 +726,8 @@ export default function FloorPage() {
       setSelectedGoal((current) => current && data.some((run) => run.goal === current) ? current : data[0]?.goal ?? null);
     }
     setRunsLoaded(true);
+    const rec = await getJSON<{ events?: RecoveryEvent[] }>("/api/recovery");
+    if (rec && Array.isArray(rec.events)) setRecovery(rec.events);
   }, []);
 
   const loadGraph = useCallback(async (goal: string) => {
@@ -698,7 +784,7 @@ export default function FloorPage() {
       </div>
 
       <section className="mt-10 grid grid-cols-1 gap-4 xl:grid-cols-[340px_minmax(0,1fr)_340px]">
-        <RunRail runs={runs} selected={selectedGoal} loaded={runsLoaded} onSelect={setSelectedGoal} />
+        <RunRail runs={runs} selected={selectedGoal} loaded={runsLoaded} onSelect={setSelectedGoal} recovery={recovery} />
         <FlowCanvas graph={graph} loaded={graphLoaded} />
         <LearningPanel graph={graph} />
       </section>

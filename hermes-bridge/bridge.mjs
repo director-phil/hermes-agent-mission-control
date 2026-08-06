@@ -326,6 +326,57 @@ async function mirrorRuns() {
   }
 }
 
+// Publish the cloud-recovery correction ledger so the Floor can show every
+// Codex correction of a failed goal (dispatch, scope gate, acceptance, PR).
+async function mirrorRecovery() {
+  const syncedAt = new Date().toISOString();
+  const ledgerPath = path.join(CONFIG.chatdevGoalStateDir, "cloud_recovery_ledger.jsonl");
+  const secrets = knownSecrets();
+  const redact = (s) => {
+    let out = String(s == null ? "" : s);
+    for (const sec of secrets) if (sec) out = out.split(sec).join("[redacted]");
+    return out;
+  };
+  let events = [];
+  try {
+    const raw = await fs.readFile(ledgerPath, "utf8");
+    events = raw
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => {
+        try {
+          const rec = JSON.parse(line);
+          // redact any free-text tail/reason fields
+          for (const k of ["tail", "reason", "detail", "pr", "brief", "worktree"]) {
+            if (rec[k] != null) rec[k] = redact(rec[k]);
+          }
+          return rec;
+        } catch {
+          return null;
+        }
+      })
+      .filter(Boolean)
+      .slice(-200);
+  } catch {
+    events = [];
+  }
+  // Roll up per-goal: latest event, PR (if any), attempt count.
+  const byGoal = new Map();
+  for (const ev of events) {
+    const g = ev.gid || "?";
+    const cur = byGoal.get(g) || { gid: g, dispatches: 0, pr: null, last: null, lastEvent: null, at: null };
+    if (ev.event === "codex_dispatch") cur.dispatches += 1;
+    if (ev.event === "pr_opened" && ev.pr) cur.pr = ev.pr;
+    cur.last = ev.event;
+    cur.lastEvent = ev;
+    cur.at = ev.ts || cur.at;
+    byGoal.set(g, cur);
+  }
+  const summary = Array.from(byGoal.values()).sort((a, b) => Date.parse(b.at || "") - Date.parse(a.at || ""));
+  await setStore("hermes-recovery", { events, summary, syncedAt });
+}
+
+
 async function failLegacyRequests() {
   await q(
     `UPDATE "AgentRequest"
@@ -415,6 +466,7 @@ async function mirrorTick() {
   try { await mirrorNative(); } catch (error) { log("native mirror failed:", error.message); }
   try { await mirrorCrons(); } catch (error) { log("cron mirror failed:", error.message); }
   try { await mirrorRuns(); } catch (error) { log("runs mirror failed:", error.message); }
+  try { await mirrorRecovery(); } catch (error) { log("recovery mirror failed:", error.message); }
 }
 
 async function main() {
