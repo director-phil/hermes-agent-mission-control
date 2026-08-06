@@ -45,6 +45,48 @@ interface RecoveryEvent {
   pr?: string;
 }
 
+interface ConveyorActive {
+  goalId: string;
+  live: boolean;
+  status: string | null;
+  rung: number | null;
+  attempts: number | null;
+  pr: string | null;
+}
+interface ConveyorUpNext {
+  goalId: string;
+  title: string;
+  specialist: string | null;
+}
+interface ConveyorBlocked {
+  goalId: string;
+  queueState: string;
+  blockedBy: string[];
+  failedDependencies: string[];
+}
+interface ConveyorBox {
+  label: string;
+  host: string;
+  reachable: boolean;
+  models: string[];
+}
+interface ConveyorState {
+  conveyorOn: boolean;
+  controllerPids: number[];
+  liveGoals: string[];
+  active: ConveyorActive[];
+  upNext: ConveyorUpNext[];
+  planRequired: { goalId: string; title: string }[];
+  blocked: ConveyorBlocked[];
+  counts: Record<string, number>;
+  focusPrefixes: string[];
+  message: string;
+  boxes: ConveyorBox[];
+  statusAgeSec: number | null;
+  statusMissing: boolean;
+  syncedAt: string | null;
+}
+
 interface RecoverySummary {
   gid: string;
   dispatches: number;
@@ -833,6 +875,120 @@ function FlowCanvas({ graph, loaded, selectedRun }: { graph: RunGraph | null; lo
   );
 }
 
+function ConveyorBar({ conveyor, onSelect }: { conveyor: ConveyorState | null; onSelect: (goal: string) => void }) {
+  if (!conveyor) return null;
+  const live = conveyor.active.filter((a) => a.live);
+  const upNext = conveyor.upNext;
+  const boxes = conveyor.boxes ?? [];
+  const coderModels = boxes.flatMap((b) => b.models).filter((m) => /qwen|coder/i.test(m));
+  const plannerModels = boxes.flatMap((b) => b.models).filter((m) => /ornith/i.test(m));
+
+  return (
+    <section className="hq-rise mt-6 grid grid-cols-1 gap-4 lg:grid-cols-3" style={rise(1)}>
+      {/* BUILDING NOW */}
+      <Panel>
+        <SectionHeader title="Building now" action={<span className="text-[10px] text-[var(--text-3)]">{conveyor.conveyorOn ? "conveyor on" : "conveyor off"}</span>} />
+        {live.length === 0 ? (
+          <EmptyState
+            title={conveyor.conveyorOn ? "Conveyor on — nothing dispatched yet" : "Conveyor off"}
+            hint={conveyor.message || (conveyor.conveyorOn ? "Waiting for a ready goal to promote." : "Start rt-goal-queue.timer to resume dispatch.")}
+          />
+        ) : (
+          <ul className="space-y-2">
+            {live.map((a) => (
+              <li key={a.goalId}>
+                <button
+                  onClick={() => onSelect(a.goalId)}
+                  className="w-full rounded-lg border border-[var(--line)] bg-[var(--surface-2)] px-3 py-2 text-left transition hover:border-[var(--accent)]"
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="truncate text-[12px] font-medium text-[var(--text)]">{a.goalId}</span>
+                    <Pill tone="accent" className="!py-0.5 !text-[10px]">live</Pill>
+                  </div>
+                  <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[10px] text-[var(--text-3)]">
+                    {a.status ? <span>status {a.status}</span> : null}
+                    {a.rung != null ? <span>· rung {a.rung}</span> : null}
+                    {a.attempts != null ? <span>· attempt {a.attempts}</span> : null}
+                    {a.pr ? <span>· PR {String(a.pr).replace(/^.*\//, "#")}</span> : null}
+                  </div>
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+        <div className="mt-3 flex flex-wrap gap-1.5 border-t border-[var(--line)] pt-3 text-[10px] text-[var(--text-3)]">
+          {boxes.map((b) => (
+            <Pill key={b.host} tone={b.reachable ? "up" : "down"} className="!py-0.5 !text-[10px]">
+              {b.label} {b.reachable ? "•" : "×"}
+            </Pill>
+          ))}
+          {plannerModels.length ? <span>planner: {plannerModels[0]}</span> : null}
+          {coderModels.length ? <span>· coder: {coderModels[0]}</span> : null}
+        </div>
+      </Panel>
+
+      {/* UP NEXT — genuinely dispatchable, in promote order */}
+      <Panel>
+        <SectionHeader title="Up next" action={<span className="text-[10px] text-[var(--text-3)]">{`${upNext.length} ready`}</span>} />
+        {upNext.length === 0 ? (
+          <EmptyState
+            title="Nothing ready to dispatch"
+            hint={
+              (conveyor.counts?.blocked ?? 0) > 0
+                ? `${conveyor.counts.blocked} goal(s) blocked on dependencies or approval — see Blocked.`
+                : "No staged goals are dependency-ready."
+            }
+          />
+        ) : (
+          <ol className="space-y-2">
+            {upNext.slice(0, 12).map((g, i) => (
+              <li key={g.goalId}>
+                <button
+                  onClick={() => onSelect(g.goalId)}
+                  className="w-full rounded-lg border border-[var(--line)] bg-[var(--surface-2)] px-3 py-2 text-left transition hover:border-[var(--accent)]"
+                >
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] tabular-nums text-[var(--text-3)]">{i + 1}</span>
+                    <span className="flex-1 truncate text-[12px] text-[var(--text)]">{g.title}</span>
+                    {g.specialist ? <Pill tone="neutral" className="!py-0.5 !text-[10px]">{g.specialist}</Pill> : null}
+                  </div>
+                  <div className="mt-0.5 truncate pl-5 text-[10px] text-[var(--text-3)]">{g.goalId}</div>
+                </button>
+              </li>
+            ))}
+          </ol>
+        )}
+      </Panel>
+
+      {/* BLOCKED — why the queue can't move */}
+      <Panel>
+        <SectionHeader title="Blocked" action={<span className="text-[10px] text-[var(--text-3)]">{`${conveyor.blocked.length} held`}</span>} />
+        {conveyor.blocked.length === 0 ? (
+          <EmptyState title="Nothing blocked" hint="All staged goals are ready or in flight." />
+        ) : (
+          <ul className="space-y-2">
+            {conveyor.blocked.slice(0, 12).map((b) => (
+              <li key={b.goalId} className="rounded-lg border border-[var(--line)] bg-[var(--surface-2)] px-3 py-2">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="truncate text-[12px] text-[var(--text)]">{b.goalId}</span>
+                  <Pill tone={b.queueState === "hard_stop" ? "down" : b.queueState === "invalid" ? "warn" : "neutral"} className="!py-0.5 !text-[10px]">
+                    {b.queueState}
+                  </Pill>
+                </div>
+                {b.blockedBy.length ? (
+                  <div className="mt-1 text-[10px] text-[var(--text-3)]">
+                    waiting on: {b.blockedBy.map((d) => (b.failedDependencies.includes(d) ? `${d} (failed)` : d)).join(", ")}
+                  </div>
+                ) : null}
+              </li>
+            ))}
+          </ul>
+        )}
+      </Panel>
+    </section>
+  );
+}
+
 export default function FloorPage() {
   const [runs, setRuns] = useState<RunIndex[]>([]);
   const [runsLoaded, setRunsLoaded] = useState(false);
@@ -840,6 +996,7 @@ export default function FloorPage() {
   const [graph, setGraph] = useState<RunGraph | null>(null);
   const [graphLoaded, setGraphLoaded] = useState(false);
   const [recovery, setRecovery] = useState<RecoveryEvent[]>([]);
+  const [conveyor, setConveyor] = useState<ConveyorState | null>(null);
   const runsRef = useRef<RunIndex[]>([]);
   const graphRunningRef = useRef(false);
 
@@ -860,6 +1017,8 @@ export default function FloorPage() {
     setRunsLoaded(true);
     const rec = await getJSON<{ events?: RecoveryEvent[] }>("/api/recovery");
     if (rec && Array.isArray(rec.events)) setRecovery(rec.events);
+    const conv = await getJSON<ConveyorState>("/api/conveyor");
+    if (conv) setConveyor(conv);
   }, []);
 
   const loadGraph = useCallback(async (goal: string) => {
@@ -889,8 +1048,14 @@ export default function FloorPage() {
     return () => clearInterval(interval);
   }, [loadGraph, runsLoaded, selectedGoal]);
 
-  const activeRuns = runs.filter(isTrulyRunning).length;
   const selectedRun = selectedGoal ? runs.find((run) => run.goal === selectedGoal) ?? null : null;
+
+  // Truthful conveyor derivations
+  const conveyorOn = conveyor?.conveyorOn ?? false;
+  const liveActive = (conveyor?.active ?? []).filter((a) => a.live);
+  const upNext = conveyor?.upNext ?? [];
+  const blockedCount = conveyor?.counts?.blocked ?? (conveyor?.blocked?.length ?? 0);
+  const statusStale = conveyor?.statusAgeSec != null && conveyor.statusAgeSec > 120;
 
   return (
     <div className="relative z-10 w-full mx-auto p-8 pb-16 text-[var(--text)]">
@@ -905,18 +1070,27 @@ export default function FloorPage() {
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <Pill tone={activeRuns ? "accent" : "neutral"}>
+          <Pill tone={conveyorOn ? "up" : "down"}>
             <Radio className="h-3 w-3" />
-            {activeRuns} running
+            {conveyorOn ? "Conveyor ON" : "Conveyor OFF"}
           </Pill>
-          <Pill tone="neutral">
+          <Pill tone={liveActive.length ? "accent" : "neutral"}>
+            {liveActive.length ? `${liveActive.length} building now` : "idle"}
+          </Pill>
+          <Pill tone={upNext.length ? "warn" : "neutral"}>
+            {upNext.length} up next
+          </Pill>
+          {blockedCount ? <Pill tone="neutral">{blockedCount} blocked</Pill> : null}
+          <Pill tone={statusStale ? "down" : "neutral"}>
             <RefreshCw className="h-3 w-3" />
-            4s poll
+            {conveyor?.statusAgeSec == null ? "no status" : statusStale ? `stale ${conveyor.statusAgeSec}s` : `${conveyor.statusAgeSec}s ago`}
           </Pill>
         </div>
       </div>
 
-      <section className="mt-10 grid grid-cols-1 gap-4 xl:grid-cols-[340px_minmax(0,1fr)_340px]">
+      <ConveyorBar conveyor={conveyor} onSelect={setSelectedGoal} />
+
+      <section className="mt-6 grid grid-cols-1 gap-4 xl:grid-cols-[340px_minmax(0,1fr)_340px]">
         <RunRail runs={runs} selected={selectedGoal} loaded={runsLoaded} onSelect={setSelectedGoal} recovery={recovery} />
         <FlowCanvas graph={graph} loaded={graphLoaded} selectedRun={selectedRun} />
         <LearningPanel graph={graph} />
