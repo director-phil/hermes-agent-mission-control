@@ -332,43 +332,51 @@ async function mirrorRecovery() {
   const syncedAt = new Date().toISOString();
   const ledgerPath = path.join(CONFIG.chatdevGoalStateDir, "cloud_recovery_ledger.jsonl");
   const secrets = knownSecrets();
+  const CAP = 400; // max chars per free-text field
   const redact = (s) => {
     let out = String(s == null ? "" : s);
     for (const sec of secrets) if (sec) out = out.split(sec).join("[redacted]");
-    return out;
+    return out.length > CAP ? out.slice(0, CAP) + "…" : out;
   };
+  // EXPLICIT sanitized event shape — drop ALL unknown fields so nothing raw is
+  // ever republished (Codex review finding). Only these keys leave the box.
+  const sanitize = (rec) => ({
+    ts: typeof rec.ts === "string" ? rec.ts.slice(0, 40) : null,
+    gid: typeof rec.gid === "string" ? rec.gid.slice(0, 200) : "?",
+    event: typeof rec.event === "string" ? rec.event.slice(0, 60) : "unknown",
+    reason: rec.reason != null ? redact(rec.reason) : undefined,
+    detail: rec.detail != null ? redact(rec.detail) : undefined,
+    // pr is shown as a link — keep only a well-formed https github URL
+    pr: typeof rec.pr === "string" && /^https:\/\/github\.com\/\S+$/.test(rec.pr.trim())
+      ? rec.pr.trim().slice(0, 300)
+      : undefined,
+  });
+
   let events = [];
   try {
     const raw = await fs.readFile(ledgerPath, "utf8");
-    events = raw
-      .split("\n")
-      .filter(Boolean)
-      .map((line) => {
-        try {
-          const rec = JSON.parse(line);
-          // redact any free-text tail/reason fields
-          for (const k of ["tail", "reason", "detail", "pr", "brief", "worktree"]) {
-            if (rec[k] != null) rec[k] = redact(rec[k]);
-          }
-          return rec;
-        } catch {
-          return null;
-        }
-      })
-      .filter(Boolean)
-      .slice(-200);
+    // Bound the read: take the last ~64KB of the file, then last 200 lines.
+    const tail = raw.length > 65536 ? raw.slice(-65536) : raw;
+    const lines = tail.split("\n").filter(Boolean).slice(-200);
+    for (const line of lines) {
+      try {
+        events.push(sanitize(JSON.parse(line)));
+      } catch {
+        /* skip malformed line */
+      }
+    }
   } catch {
     events = [];
   }
-  // Roll up per-goal: latest event, PR (if any), attempt count.
+  // Roll up per-goal: dispatch count, PR (if any), latest event label. Do NOT
+  // embed the full record — only scalar summary fields.
   const byGoal = new Map();
   for (const ev of events) {
     const g = ev.gid || "?";
-    const cur = byGoal.get(g) || { gid: g, dispatches: 0, pr: null, last: null, lastEvent: null, at: null };
+    const cur = byGoal.get(g) || { gid: g, dispatches: 0, pr: null, last: null, at: null };
     if (ev.event === "codex_dispatch") cur.dispatches += 1;
     if (ev.event === "pr_opened" && ev.pr) cur.pr = ev.pr;
     cur.last = ev.event;
-    cur.lastEvent = ev;
     cur.at = ev.ts || cur.at;
     byGoal.set(g, cur);
   }
