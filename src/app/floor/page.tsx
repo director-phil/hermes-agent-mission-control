@@ -15,7 +15,7 @@ import {
   type Node,
   type NodeProps,
 } from "@xyflow/react";
-import { Bot, FileCode2, GitBranch, Info, Radio, RefreshCw } from "lucide-react";
+import { Bot, Check, ExternalLink, FileCode2, GitBranch, Info, Radio, RefreshCw, X } from "lucide-react";
 import { EmptyState, Eyebrow, Panel, Pill, SectionHeader, Skeleton, rise } from "@/components/ui/kit";
 
 type RunStatusTone = "neutral" | "up" | "down" | "warn" | "accent";
@@ -25,11 +25,15 @@ interface RunIndex {
   goal: string;
   status: string;
   attempts: number;
-  rung: number | null;
+  liveController?: boolean;
+  traceRunning?: boolean;
+  rung?: number | null;
+  specialist?: string | null;
+  shipped_pr?: string | null;
+  preview_url?: string | null;
   lastActivity: string | null;
   nodeLabels: string[];
   filesTouched: number;
-  running: boolean;
 }
 
 interface RecoveryEvent {
@@ -149,12 +153,30 @@ async function getJSON<T>(url: string): Promise<T | null> {
   }
 }
 
-function statusTone(status: string, running: boolean): RunStatusTone {
-  const normalized = status.toLowerCase();
-  if (running || normalized === "running") return "accent";
-  if (["passed", "done", "complete", "completed", "success"].includes(normalized)) return "up";
-  if (["failed", "failure", "crash", "error"].includes(normalized)) return "down";
-  if (normalized.includes("fail") || normalized.includes("blocked")) return "warn";
+function isTrulyRunning(run: Pick<RunIndex, "liveController"> | null | undefined) {
+  return run?.liveController === true;
+}
+
+function normalizeStatus(status: string | null | undefined) {
+  return String(status || "").toLowerCase();
+}
+
+function isFailedStatus(status: string | null | undefined) {
+  const normalized = normalizeStatus(status);
+  return ["failed", "failure", "crash", "error"].includes(normalized) || normalized.includes("fail");
+}
+
+function isTerminalSuccessStatus(status: string | null | undefined) {
+  return ["done", "complete", "completed", "passed", "success", "shipped", "merged"].includes(normalizeStatus(status));
+}
+
+function statusTone(status: string, running = false): RunStatusTone {
+  const normalized = normalizeStatus(status);
+  if (running) return "accent";
+  if (isTerminalSuccessStatus(normalized)) return "up";
+  if (isFailedStatus(normalized)) return "down";
+  if (["shipping", "shipped", "deploying", "merged"].includes(normalized)) return "warn";
+  if (normalized.includes("blocked")) return "warn";
   return "neutral";
 }
 
@@ -363,14 +385,14 @@ function timelineText(item: TimelineEntry) {
 type RunBucket = "active" | "done" | "failed";
 
 function runBucket(run: RunIndex): RunBucket {
-  const s = (run.status || "").toLowerCase();
-  if (["failed", "failure", "crash", "error"].includes(s) || s.includes("fail")) return "failed";
+  const s = normalizeStatus(run.status);
+  if (isFailedStatus(s)) return "failed";
   if (
-    run.running ||
-    ["running", "pending", "staged", "ready", "blocked", "queued", "recovering", "external_recovery"].includes(s)
+    isTrulyRunning(run) ||
+    ["pending", "staged", "ready", "blocked", "queued", "recovering", "external_recovery"].includes(s)
   )
     return "active";
-  if (["done", "complete", "completed", "passed", "success", "shipped", "merged"].includes(s)) return "done";
+  if (isTerminalSuccessStatus(s)) return "done";
   // superseded / unknown are terminal, merit-neutral → Completed
   return "done";
 }
@@ -461,7 +483,7 @@ function RunRail({
     const groups: Record<RunBucket, RunIndex[]> = { active: [], done: [], failed: [] };
     for (const run of runs) groups[runBucket(run)].push(run);
     // active tab: running first, then most-recent
-    groups.active.sort((a, b) => Number(b.running) - Number(a.running) || Date.parse(b.lastActivity || "") - Date.parse(a.lastActivity || ""));
+    groups.active.sort((a, b) => Number(isTrulyRunning(b)) - Number(isTrulyRunning(a)) || Date.parse(b.lastActivity || "") - Date.parse(a.lastActivity || ""));
     return groups;
   }, [runs]);
 
@@ -472,7 +494,7 @@ function RunRail({
       <SectionHeader
         label="Runs"
         title="Live queue"
-        action={<Pill tone={runs.some((run) => run.running) ? "accent" : "neutral"}>{runs.length}</Pill>}
+        action={<Pill tone={runs.some(isTrulyRunning) ? "accent" : "neutral"}>{runs.length}</Pill>}
       />
       <div className="mb-3 grid grid-cols-3 gap-1 rounded-[var(--r-md)] border border-[var(--line)] bg-[var(--surface-1)] p-1">
         {RUN_TABS.map((entry) => {
@@ -512,40 +534,43 @@ function RunRail({
         />
       ) : (
         <div className="max-h-[calc(100vh-280px)] space-y-2 overflow-y-auto pr-1">
-          {visible.map((run) => (
-            <button
-              key={run.goal}
-              type="button"
-              onClick={() => onSelect(run.goal)}
-              className={`w-full rounded-[var(--r-md)] border p-3 text-left transition ${
-                selected === run.goal
-                  ? "border-[var(--line-strong)] bg-[var(--surface-2)]"
-                  : "border-[var(--line)] bg-transparent hover:bg-[var(--surface-1)]"
-              }`}
-            >
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <p className="truncate text-[12.5px] font-semibold text-[var(--text)]">{run.goal}</p>
-                  <p className="num mt-1 text-[10.5px] text-[var(--text-4)]">
-                    {fmtRelative(run.lastActivity)} · attempt {run.attempts}
-                  </p>
+          {visible.map((run) => {
+            const running = isTrulyRunning(run);
+            return (
+              <button
+                key={run.goal}
+                type="button"
+                onClick={() => onSelect(run.goal)}
+                className={`w-full rounded-[var(--r-md)] border p-3 text-left transition ${
+                  selected === run.goal
+                    ? "border-[var(--line-strong)] bg-[var(--surface-2)]"
+                    : "border-[var(--line)] bg-transparent hover:bg-[var(--surface-1)]"
+                }`}
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="truncate text-[12.5px] font-semibold text-[var(--text)]">{run.goal}</p>
+                    <p className="num mt-1 text-[10.5px] text-[var(--text-4)]">
+                      {fmtRelative(run.lastActivity)} · attempt {run.attempts}
+                    </p>
+                  </div>
+                  <Pill tone={statusTone(run.status, running)} className="!py-0.5 !text-[10px]">
+                    {running ? "running" : run.status}
+                  </Pill>
                 </div>
-                <Pill tone={statusTone(run.status, run.running)} className="!py-0.5 !text-[10px]">
-                  {run.running ? "running" : run.status}
-                </Pill>
-              </div>
-              <div className="mt-3 flex flex-wrap gap-1.5">
-                {run.nodeLabels.slice(0, 4).map((node) => (
-                  <span key={node} className="rounded-full border border-[var(--line)] px-2 py-1 text-[10.5px] text-[var(--text-3)]">
-                    {node}
+                <div className="mt-3 flex flex-wrap gap-1.5">
+                  {run.nodeLabels.slice(0, 4).map((node) => (
+                    <span key={node} className="rounded-full border border-[var(--line)] px-2 py-1 text-[10.5px] text-[var(--text-3)]">
+                      {node}
+                    </span>
+                  ))}
+                  <span className="rounded-full border border-[var(--line)] px-2 py-1 text-[10.5px] text-[var(--text-4)]">
+                    {run.filesTouched} files
                   </span>
-                ))}
-                <span className="rounded-full border border-[var(--line)] px-2 py-1 text-[10.5px] text-[var(--text-4)]">
-                  {run.filesTouched} files
-                </span>
-              </div>
-            </button>
-          ))}
+                </div>
+              </button>
+            );
+          })}
         </div>
       )}
       {tab === "failed" && (
@@ -596,13 +621,102 @@ function LearningPanel({ graph }: { graph: RunGraph | null }) {
   );
 }
 
-function FlowCanvas({ graph, loaded }: { graph: RunGraph | null; loaded: boolean }) {
+type PipelineStageState = "idle" | "active" | "ok" | "fail" | "building";
+
+function stageTone(state: PipelineStageState): RunStatusTone {
+  if (state === "ok") return "up";
+  if (state === "fail") return "down";
+  if (state === "active" || state === "building") return "accent";
+  return "neutral";
+}
+
+function stageIcon(state: PipelineStageState) {
+  if (state === "ok") return <Check className="h-3 w-3" />;
+  if (state === "fail") return <X className="h-3 w-3" />;
+  return null;
+}
+
+function PipelineStage({
+  label,
+  state,
+  href,
+}: {
+  label: string;
+  state: PipelineStageState;
+  href?: string | null;
+}) {
+  const className = `pipeline-stage ${state === "active" || state === "building" ? "pipeline-glow" : ""}`;
+  const pill = (
+    <Pill tone={stageTone(state)} className={className}>
+      {stageIcon(state)}
+      <span>{label}</span>
+      {href && <ExternalLink className="h-3 w-3" />}
+    </Pill>
+  );
+  return href ? (
+    <a href={href} target="_blank" rel="noreferrer" className="inline-flex">
+      {pill}
+    </a>
+  ) : pill;
+}
+
+function PipelineStrip({ run }: { run: RunIndex | null }) {
+  if (!run) return null;
+  const status = normalizeStatus(run.status);
+  const rung = run.rung ?? 0;
+  const running = isTrulyRunning(run);
+  const failed = isFailedStatus(status);
+  const terminalSuccess = isTerminalSuccessStatus(status);
+  const shipping = ["shipping", "deploying"].includes(status);
+  const productionBuilding = shipping;
+  const hasPr = Boolean(run.shipped_pr);
+  const hasPreview = Boolean(run.preview_url);
+  const productionOk = terminalSuccess && hasPr;
+
+  const localState: PipelineStageState =
+    failed && rung === 0 ? "fail"
+    : running && rung === 0 ? "active"
+    : rung > 0 || terminalSuccess || shipping ? "ok"
+    : "idle";
+  const cloudState: PipelineStageState =
+    failed && rung >= 1 ? "fail"
+    : running && rung >= 1 ? "active"
+    : rung >= 1 && (terminalSuccess || shipping) ? "ok"
+    : "idle";
+  const gateState: PipelineStageState =
+    failed ? "fail"
+    : terminalSuccess ? "ok"
+    : running ? "active"
+    : "idle";
+  const previewState: PipelineStageState =
+    hasPreview || (terminalSuccess && hasPr) ? "ok"
+    : hasPr && !productionOk ? "building"
+    : "idle";
+  const productionState: PipelineStageState =
+    productionOk ? "ok"
+    : productionBuilding ? "building"
+    : "idle";
+
+  return (
+    <div className="pipeline-strip mx-5 mt-3 flex min-w-0 flex-wrap items-center gap-2 rounded-[var(--r-md)] border border-[var(--line)] bg-[var(--surface-1)] px-3 py-2">
+      <PipelineStage label="Local" state={localState} />
+      <PipelineStage label="Cloud (Codex)" state={cloudState} />
+      <PipelineStage label="Gate" state={gateState} />
+      <PipelineStage label={previewState === "building" ? "Preview building" : "Preview"} state={previewState} href={run.preview_url} />
+      <PipelineStage label={productionState === "building" ? "Production building" : "Production"} state={productionState} />
+    </div>
+  );
+}
+
+function FlowCanvas({ graph, loaded, selectedRun }: { graph: RunGraph | null; loaded: boolean; selectedRun: RunIndex | null }) {
   const built = useMemo(() => graph ? buildGraph(graph) : { nodes: [], edges: [] }, [graph]);
   const [nodes, setNodes, onNodesChange] = useNodesState<FloorNode>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
   const flowRef = useRef<ReactFlowInstance<FloorNode, Edge> | null>(null);
   const fittedGoalRef = useRef<string | null>(null);
   const timeline = graph?.timeline?.slice(-15).reverse() ?? [];
+  const headerStatus = selectedRun?.status || graph?.status || "unknown";
+  const headerRunning = isTrulyRunning(selectedRun);
 
   useEffect(() => {
     if (!graph) {
@@ -634,11 +748,13 @@ function FlowCanvas({ graph, loaded }: { graph: RunGraph | null; loaded: boolean
           </h2>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          {graph && <Pill tone={statusTone(graph.status, graph.running)}>{graph.running ? "running" : graph.status}</Pill>}
+          {graph && <Pill tone={statusTone(headerStatus, headerRunning)}>{headerRunning ? "running" : headerStatus}</Pill>}
           {graph && <Pill tone="neutral">{graph.counts.toolCalls} tools</Pill>}
           {graph && <Pill tone="neutral">{graph.files.length} files</Pill>}
         </div>
       </div>
+
+      {graph && <PipelineStrip run={selectedRun} />}
 
       {graph && (
         <div className="floor-now-strip mx-5 mt-4 flex min-w-0 items-center gap-2 rounded-[var(--r-md)] border border-[var(--line)] bg-[var(--surface-1)] px-3 py-2 text-[12px] text-[var(--text-2)]">
@@ -752,12 +868,13 @@ export default function FloorPage() {
     void loadGraph(selectedGoal);
     const interval = setInterval(() => {
       const selectedRun = runsRef.current.find((run) => run.goal === selectedGoal);
-      if (selectedRun?.running || graphRunningRef.current) void loadGraph(selectedGoal);
+      if (selectedRun ? isTrulyRunning(selectedRun) : graphRunningRef.current) void loadGraph(selectedGoal);
     }, 4_000);
     return () => clearInterval(interval);
   }, [loadGraph, runsLoaded, selectedGoal]);
 
-  const activeRuns = runs.filter((run) => run.running).length;
+  const activeRuns = runs.filter(isTrulyRunning).length;
+  const selectedRun = selectedGoal ? runs.find((run) => run.goal === selectedGoal) ?? null : null;
 
   return (
     <div className="relative z-10 w-full mx-auto p-8 pb-16 text-[var(--text)]">
@@ -785,7 +902,7 @@ export default function FloorPage() {
 
       <section className="mt-10 grid grid-cols-1 gap-4 xl:grid-cols-[340px_minmax(0,1fr)_340px]">
         <RunRail runs={runs} selected={selectedGoal} loaded={runsLoaded} onSelect={setSelectedGoal} recovery={recovery} />
-        <FlowCanvas graph={graph} loaded={graphLoaded} />
+        <FlowCanvas graph={graph} loaded={graphLoaded} selectedRun={selectedRun} />
         <LearningPanel graph={graph} />
       </section>
     </div>

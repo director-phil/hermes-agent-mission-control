@@ -18,6 +18,8 @@ export const CONFIG = {
   maxPromptChars: safeNumber(process.env.BRIDGE_MAX_PROMPT_CHARS, 12000, 1, 50000),
   maxResultChars: safeNumber(process.env.BRIDGE_MAX_RESULT_CHARS, 8000, 1, 50000),
   maxEventDetailChars: 400,
+  maxLiveControllerPids: safeNumber(process.env.BRIDGE_MAX_LIVE_CONTROLLER_PIDS, 80, 1, 500),
+  chatdevBridgeDir: process.env.CHATDEV_BRIDGE_DIR || path.join(process.env.HOME || "", "ChatDev", "bridge"),
   chatdevRunsDir: process.env.CHATDEV_RUNS_DIR || path.join(process.env.HOME || "", "ChatDev", "runs"),
   chatdevGoalStateDir: process.env.CHATDEV_GOAL_STATE_DIR || path.join(process.env.HOME || "", "ChatDev", "goals", "state"),
 };
@@ -51,6 +53,9 @@ const pool = DB_URL
   : null;
 
 const log = (...args) => console.log(new Date().toISOString(), ...args.map(redact));
+const debug = (...args) => {
+  if (process.env.BRIDGE_DEBUG === "1") console.debug(new Date().toISOString(), ...args.map(redact));
+};
 const q = (text, params) => pool.query(text, params);
 
 export function hermesChat(prompt, config = CONFIG) {
@@ -106,6 +111,125 @@ export async function runBoundedProcess(command, args, stdinText, options) {
 
     child.stdin.end(stdinText, "utf8");
   });
+}
+
+export function parseLiveControllerGoals(argvInput, trustedBridgeDir, options = {}) {
+  const goals = new Set();
+  const argvRows = normalizeArgvRows(argvInput);
+  for (const argv of argvRows) {
+    if (argv.length < 4) continue;
+    if (!isPythonArgv0(argv[0])) continue;
+    if (typeof argv[1] !== "string" || argv[1].startsWith("-")) continue;
+    if (!isTrustedEscalateScript(argv[1], trustedBridgeDir, options.cwd)) continue;
+    if (argv[2] !== "run") continue;
+    if (!/^g[_-][A-Za-z0-9_.-]{1,240}$/.test(argv[3])) continue;
+    goals.add(argv[3]);
+  }
+  return goals;
+}
+
+export async function liveControllerGoals({
+  spawnFn = spawn,
+  timeoutMs = 2000,
+  procRoot = "/proc",
+  maxPids = CONFIG.maxLiveControllerPids,
+  trustedBridgeDir = CONFIG.chatdevBridgeDir,
+} = {}) {
+  return await new Promise((resolve) => {
+    let stdout = "";
+    let settled = false;
+    let child;
+    const finish = (goals) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(goals);
+    };
+    const timer = setTimeout(() => {
+      try {
+        if (child?.pid) child.kill("SIGKILL");
+      } catch {}
+      debug("live controller pgrep timed out");
+      finish(new Set());
+    }, timeoutMs);
+
+    try {
+      child = spawnFn("pgrep", ["-f", "escalate.py"], { stdio: ["ignore", "pipe", "ignore"] });
+    } catch (error) {
+      debug("live controller pgrep spawn failed:", error.message);
+      finish(new Set());
+      return;
+    }
+
+    child.stdout?.setEncoding?.("utf8");
+    child.stdout?.on?.("data", (chunk) => {
+      stdout = appendBounded(stdout, chunk, 20000);
+    });
+    child.on?.("error", (error) => {
+      debug("live controller pgrep failed:", error.message);
+      finish(new Set());
+    });
+    child.on?.("close", async (code) => {
+      if (code !== 0) {
+        debug("live controller pgrep exited:", String(code));
+        finish(new Set());
+        return;
+      }
+      const pids = parsePids(stdout).slice(0, maxPids);
+      const goals = new Set();
+      for (const pid of pids) {
+        if (settled) return;
+        try {
+          const procDir = path.join(procRoot, String(pid));
+          const cmdline = await fs.readFile(path.join(procDir, "cmdline"));
+          const cwd = await fs.readlink(path.join(procDir, "cwd"));
+          for (const goal of parseLiveControllerGoals(cmdline, trustedBridgeDir, { cwd })) goals.add(goal);
+        } catch {
+          // /proc entries are volatile and permission-dependent; fail closed per PID.
+        }
+      }
+      finish(goals);
+    });
+  });
+}
+
+function normalizeArgvRows(input) {
+  if (Buffer.isBuffer(input)) return [splitCmdline(input.toString("utf8"))];
+  if (Array.isArray(input)) {
+    if (input.every((item) => typeof item === "string")) return [input];
+    return input.filter(Array.isArray).map((argv) => argv.filter((item) => typeof item === "string"));
+  }
+  if (typeof input === "string" && input.includes("\u0000")) return [splitCmdline(input)];
+  return [];
+}
+
+function splitCmdline(text) {
+  return String(text || "").split("\u0000").filter(Boolean);
+}
+
+function isPythonArgv0(value) {
+  return /^python[0-9.]*$/.test(path.basename(String(value || "")));
+}
+
+function isTrustedEscalateScript(script, trustedBridgeDir, cwd) {
+  const bridgeDir = typeof trustedBridgeDir === "string" ? trustedBridgeDir.trim() : "";
+  if (!bridgeDir) return false;
+  if (typeof script !== "string" || path.basename(script) !== "escalate.py") return false;
+  if (!path.isAbsolute(script) && !cwd) return false;
+
+  const resolvedScript = path.isAbsolute(script) ? path.resolve(script) : path.resolve(cwd, script);
+  const normalizedBridgeDir = path.resolve(bridgeDir);
+  const scriptDir = path.dirname(resolvedScript);
+  return scriptDir === normalizedBridgeDir || scriptDir.startsWith(`${normalizedBridgeDir}${path.sep}`);
+}
+
+function parsePids(output) {
+  const pids = [];
+  for (const line of String(output || "").split(/\r?\n/)) {
+    const value = line.trim();
+    if (/^\d{1,10}$/.test(value)) pids.push(Number(value));
+  }
+  return pids;
 }
 
 export async function fetchNativeSnapshot(config = CONFIG) {
@@ -292,7 +416,9 @@ async function mirrorRuns() {
   }
 
   try {
-    const index = await listRuns(CONFIG.chatdevRunsDir, { goalStateDir: CONFIG.chatdevGoalStateDir, secrets });
+    const indexRows = await listRuns(CONFIG.chatdevRunsDir, { goalStateDir: CONFIG.chatdevGoalStateDir, secrets });
+    const live = await liveControllerGoals();
+    const index = indexRows.map((row) => ({ ...row, liveController: live.has(row.goal) }));
     const graphs = {};
     const maxPayloadBytes = 1_500_000;
     let payloadBytes = Buffer.byteLength(JSON.stringify({ index, graphs, syncedAt }));
