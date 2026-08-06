@@ -198,7 +198,7 @@ export async function listRuns(runsRoot = DEFAULT_RUNS_ROOT, options = {}) {
     const state = await readGoalState(entry.name, options.goalStateDir);
     const newest = attempts[0];
     const lite = await parseTraceLite(newest.path, { secrets: options.secrets });
-    rows.push({
+    const row = {
       goal: entry.name,
       status: safeStatus(state.status, secrets) || "unknown",
       attempts: safeInteger(state.attempts) ?? newest.attempt,
@@ -206,8 +206,15 @@ export async function listRuns(runsRoot = DEFAULT_RUNS_ROOT, options = {}) {
       lastActivity: newest.mtimeIso,
       nodeLabels: lite.nodeLabels,
       filesTouched: lite.filesTouched,
-      running: state.status === "running" || lite.running,
-    });
+      traceRunning: lite.running,
+    };
+    const specialist = safeSpecialist(state.specialist, secrets);
+    const shippedPr = safeGithubPrUrl(state.shipped_pr);
+    const previewUrl = safePreviewUrl(state.preview_url);
+    if (specialist) row.specialist = specialist;
+    if (shippedPr) row.shipped_pr = shippedPr;
+    if (previewUrl) row.preview_url = previewUrl;
+    rows.push(row);
   }
 
   return rows
@@ -495,6 +502,65 @@ function safeText(value, max, secrets = []) {
 
 function safeLabel(value, secrets = []) {
   return safeText(value, 120, secrets);
+}
+
+function safeSpecialist(value, secrets = []) {
+  if (typeof value !== "string" && typeof value !== "number") return null;
+  if (looksSecret(value)) return null;
+  const text = scrubTextPaths(redactText(String(value), secrets))
+    .replace(/[\u0000-\u001f\u007f]/g, "")
+    .trim();
+  return text ? text.slice(0, 120) : null;
+}
+
+function safeGithubPrUrl(value) {
+  const url = safeUrl(value, { requireHttps: true });
+  if (!url) return null;
+  if (url.hostname.toLowerCase() !== "github.com") return null;
+  if (!/^\/[^/]+\/[^/]+\/pull\/\d+\/?$/.test(url.pathname)) return null;
+  url.hash = "";
+  url.search = "";
+  return url.toString();
+}
+
+function safePreviewUrl(value) {
+  const url = safeUrl(value, { requireHttps: true });
+  if (!url) return null;
+  if (!looksLikePreviewHost(url.hostname)) return null;
+  return url.toString();
+}
+
+function safeUrl(value, { requireHttps = false } = {}) {
+  if (typeof value !== "string") return null;
+  if (!value || /[\u0000-\u001f\u007f]/.test(value) || /\s/.test(value)) return null;
+  let url;
+  try {
+    url = new URL(value);
+  } catch {
+    return null;
+  }
+  if (url.username || url.password) return null;
+  if (requireHttps ? url.protocol !== "https:" : !["http:", "https:"].includes(url.protocol)) return null;
+  if (!url.hostname || /[\u0000-\u001f\u007f]/.test(url.hostname)) return null;
+  return url;
+}
+
+function looksLikePreviewHost(hostname) {
+  const host = String(hostname || "").toLowerCase();
+  if (!host || host === "github.com") return false;
+  const previewDomains = [
+    "vercel.app",
+    "netlify.app",
+    "pages.dev",
+    "onrender.com",
+    "render.com",
+    "herokuapp.com",
+    "fly.dev",
+    "surge.sh",
+    "firebaseapp.com",
+    "web.app",
+  ];
+  return previewDomains.some((domain) => host === domain || host.endsWith(`.${domain}`)) || /(^|[-.])(deploy|preview)([-.]|$)/.test(host);
 }
 
 function safeStatus(value, secrets = []) {

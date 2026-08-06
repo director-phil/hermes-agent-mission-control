@@ -11,6 +11,7 @@ import {
   buildMirrorEnvelope,
   fetchNativeSnapshot,
   hermesChat,
+  parseLiveControllerGoals,
   requestKindsForPolicy,
   unsupportedRequestFailures,
   validateBridgeConfig,
@@ -223,6 +224,42 @@ test("unsupported requests have no environment opt-in path", () => {
   assert.equal(unsupportedRequestFailures({ unsupportedRequests: true }).length, 2);
   assert.equal(kinds.includes("briefing.generate"), false);
   assert.equal(kinds.includes("memory.write"), false);
+});
+
+test("live controller argv parser only trusts the ChatDev bridge controller", () => {
+  const bridgeDir = "/home/phillip_downs/ChatDev/bridge";
+  const python = "/x/.venv/bin/python3";
+  const script = path.join(bridgeDir, "escalate.py");
+
+  assert.deepEqual(
+    [...parseLiveControllerGoals([python, script, "run", "g_x"], bridgeDir)],
+    ["g_x"],
+  );
+
+  assert.deepEqual(
+    [...parseLiveControllerGoals(["python3", "-c", "import time;time.sleep(9)", script, "run", "g_fake"], bridgeDir)],
+    [],
+  );
+
+  assert.deepEqual(
+    [...parseLiveControllerGoals(["python3", "/tmp/escalate.py", "run", "g_x"], bridgeDir)],
+    [],
+  );
+
+  assert.deepEqual(
+    [...parseLiveControllerGoals(["sleep", "999", "/tmp/escalate.py", "run", "g_x"], bridgeDir)],
+    [],
+  );
+
+  assert.deepEqual(
+    [...parseLiveControllerGoals(["python3", script, "stop", "g_x"], bridgeDir)],
+    [],
+  );
+
+  assert.deepEqual(
+    [...parseLiveControllerGoals(["python3", script, "padding", "run", "g_x"], bridgeDir)],
+    [],
+  );
 });
 
 test("run trace parser bounds oversized lines and redacts scribe previews and display paths", async () => {
