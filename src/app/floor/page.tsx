@@ -348,9 +348,13 @@ type RunBucket = "active" | "done" | "failed";
 function runBucket(run: RunIndex): RunBucket {
   const s = (run.status || "").toLowerCase();
   if (["failed", "failure", "crash", "error"].includes(s) || s.includes("fail")) return "failed";
-  if (run.running || ["running", "pending", "staged", "ready", "blocked", "queued", "recovering"].includes(s)) return "active";
+  if (
+    run.running ||
+    ["running", "pending", "staged", "ready", "blocked", "queued", "recovering", "external_recovery"].includes(s)
+  )
+    return "active";
   if (["done", "complete", "completed", "passed", "success", "shipped", "merged"].includes(s)) return "done";
-  // unknown / superseded / external_recovery → treat merit-neutral as done unless still flagged running
+  // superseded / unknown are terminal, merit-neutral → Completed
   return "done";
 }
 
