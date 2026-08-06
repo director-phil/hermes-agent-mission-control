@@ -393,7 +393,8 @@ function runBucket(run: RunIndex): RunBucket {
   )
     return "active";
   if (isTerminalSuccessStatus(s) || s === "shipping") return "done";
-  return "active";
+  // superseded / unknown / any other terminal-ish status → Completed (not actionable, keep out of Up next)
+  return "done";
 }
 
 function hasSubstantiveGraph(run: RunIndex) {
@@ -401,7 +402,8 @@ function hasSubstantiveGraph(run: RunIndex) {
 }
 
 function defaultSelectedGoal(runs: RunIndex[]) {
-  return runs.find(hasSubstantiveGraph)?.goal ?? runs.find(isTrulyRunning)?.goal ?? runs[0]?.goal ?? null;
+  // Live floor: a truly-running controller wins, then the newest substantive graph, then newest overall.
+  return runs.find(isTrulyRunning)?.goal ?? runs.find(hasSubstantiveGraph)?.goal ?? runs[0]?.goal ?? null;
 }
 
 const RUN_TABS: Array<{ key: RunBucket; label: string }> = [
@@ -777,15 +779,15 @@ function FlowCanvas({ graph, loaded, selectedRun }: { graph: RunGraph | null; lo
           </div>
         ) : !graph ? (
           <EmptyState icon={<GitBranch className="h-6 w-6" />} title="No graph loaded" hint="Select a mirrored run from the rail." className="h-full" />
-        ) : nodes.length === 0 ? (
-          <EmptyState icon={<Bot className="h-6 w-6" />} title="Trace is empty" hint="The mirrored run has no agent or file events." className="h-full" />
-        ) : headerRunning && graph.files.length === 0 && graph.counts.toolCalls === 0 ? (
+        ) : headerRunning && graph.files.length === 0 && graph.counts.toolCalls === 0 && nodes.length <= 1 && edges.length === 0 ? (
           <EmptyState
             icon={<Radio className="h-6 w-6 animate-pulse" />}
             title="Planner starting — no steps yet"
             hint="The run just dispatched. Tool calls and touched files will appear here as the agent works."
             className="h-full"
           />
+        ) : nodes.length === 0 ? (
+          <EmptyState icon={<Bot className="h-6 w-6" />} title="Trace is empty" hint="The mirrored run has no agent or file events." className="h-full" />
         ) : (
           <ReactFlow<FloorNode, Edge>
             nodes={nodes}
