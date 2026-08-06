@@ -354,16 +354,27 @@ async function mirrorRecovery() {
 
   let events = [];
   try {
-    const raw = await fs.readFile(ledgerPath, "utf8");
-    // Bound the read: take the last ~64KB of the file, then last 200 lines.
-    const tail = raw.length > 65536 ? raw.slice(-65536) : raw;
-    const lines = tail.split("\n").filter(Boolean).slice(-200);
-    for (const line of lines) {
-      try {
-        events.push(sanitize(JSON.parse(line)));
-      } catch {
-        /* skip malformed line */
+    // Bound the READ itself: open the file and read only the last ~64KB from
+    // disk (not the whole ledger into memory), then take the last 200 lines.
+    const READ_BYTES = 65536;
+    const handle = await fs.open(ledgerPath, "r");
+    try {
+      const { size } = await handle.stat();
+      const start = size > READ_BYTES ? size - READ_BYTES : 0;
+      const length = size - start;
+      const buf = Buffer.alloc(length);
+      await handle.read(buf, 0, length, start);
+      const tail = buf.toString("utf8");
+      const lines = tail.split("\n").filter(Boolean).slice(-200);
+      for (const line of lines) {
+        try {
+          events.push(sanitize(JSON.parse(line)));
+        } catch {
+          /* skip malformed / partial first line */
+        }
       }
+    } finally {
+      await handle.close();
     }
   } catch {
     events = [];
