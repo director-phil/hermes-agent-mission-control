@@ -26,6 +26,13 @@ export const CONFIG = {
   chatdevRunsDir: process.env.CHATDEV_RUNS_DIR || path.join(process.env.HOME || "", "ChatDev", "runs"),
   chatdevGoalStateDir: process.env.CHATDEV_GOAL_STATE_DIR || path.join(process.env.HOME || "", "ChatDev", "goals", "state"),
   chatdevRunsDb: process.env.CHATDEV_RUNS_DB || path.join(process.env.HOME || "", "ChatDev", "goals", "state", "runs.db"),
+  chatdevQueueStatus: process.env.CHATDEV_QUEUE_STATUS || path.join(process.env.HOME || "", "ChatDev", "goals", "state", "queue-runner-status.json"),
+  chatdevQueueRunner: process.env.CHATDEV_QUEUE_RUNNER || path.join(process.env.HOME || "", "ChatDev", "scripts", "goal_queue_runner.py"),
+  chatdevPython: process.env.CHATDEV_PYTHON || path.join(process.env.HOME || "", "ChatDev", ".venv", "bin", "python3"),
+  refreshConveyorStatus: process.env.BRIDGE_REFRESH_CONVEYOR_STATUS !== "0",
+  // Comma-separated "label|host:port" LM boxes to probe for loaded models.
+  lmBoxes: (process.env.BRIDGE_LM_BOXES || "coder-box|127.0.0.1:1234,reviewer-box|10.0.0.150:1234")
+    .split(",").map((s) => s.trim()).filter(Boolean),
 };
 
 const CORE_REQUEST_KINDS = ["oneshot", "chat", "cron.create", "cron.run", "cron.pause", "cron.resume", "cron.remove", "cron.edit"];
@@ -456,6 +463,105 @@ async function mirrorRuns() {
   }
 }
 
+// Probe an LM box's /v1/models. Returns { label, host, reachable, models }.
+// The abort stays active through body parsing so a box that sends headers then
+// stalls (or streams an unbounded body) cannot hang the mirror loop.
+async function probeLmBox(spec) {
+  const [label, hostPort] = spec.includes("|") ? spec.split("|") : [spec, spec];
+  const url = `http://${hostPort.trim()}/v1/models`;
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), 3000);
+  try {
+    const res = await fetch(url, { signal: ctrl.signal });
+    if (!res.ok) return { label: label.trim(), host: hostPort.trim(), reachable: false, models: [] };
+    const body = await res.json(); // still under the same abort signal
+    const models = (Array.isArray(body?.data) ? body.data.map((m) => m.id).filter(Boolean) : []).slice(0, 40);
+    return { label: label.trim(), host: hostPort.trim(), reachable: true, models };
+  } catch {
+    return { label: label.trim(), host: hostPort.trim(), reachable: false, models: [] };
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+// Publish the truthful conveyor state: is it on, what is live right now, and
+// what is genuinely up next / blocked. Reads queue-runner-status.json (emitted
+// by the ChatDev queue runner) and probes the LM boxes. This is the surface the
+// Floor uses to answer "what are the locals doing" and "what is up next".
+async function mirrorConveyor() {
+  const syncedAt = new Date().toISOString();
+  // Refresh the status file truthfully first (never dispatches). Fail-open:
+  // if the runner isn't runnable, we fall back to the on-disk status file.
+  if (CONFIG.refreshConveyorStatus) {
+    try {
+      await runBoundedProcess(CONFIG.chatdevPython, [CONFIG.chatdevQueueRunner, "--status-only"], "", {
+        timeoutMs: 15000,
+        maxOutputChars: 2000,
+      });
+    } catch (error) {
+      log("conveyor status refresh skipped:", error.message);
+    }
+  }
+  let status = null;
+  try {
+    const raw = await fs.readFile(CONFIG.chatdevQueueStatus, "utf8");
+    status = JSON.parse(raw);
+  } catch (error) {
+    log("conveyor status read failed:", error.message);
+  }
+
+  const live = await liveControllerGoals().catch(() => new Set());
+  const boxes = await Promise.all(CONFIG.lmBoxes.map((b) => probeLmBox(b))).catch(() => []);
+
+  const statusAgeSec = status?.updated_at
+    ? Math.max(0, Math.round(Date.now() / 1000 - Number(status.updated_at)))
+    : null;
+
+  const activeDetail = Array.isArray(status?.active_detail) ? status.active_detail : [];
+  const activeGoals = Array.isArray(status?.active) ? status.active : [];
+  // A controller is truly live only if pgrep sees the process now.
+  const liveGoals = activeGoals.filter((g) => live.has(g));
+
+  const payload = {
+    conveyorOn: Boolean(status?.conveyor_on) || live.size > 0,
+    controllerPids: (Array.isArray(status?.controller_pids) ? status.controller_pids : []).slice(0, 50),
+    liveGoals: liveGoals.slice(0, 25),
+    active: activeGoals.slice(0, 25).map((gid) => {
+      const detail = activeDetail.find((d) => d.goal_id === gid) || {};
+      return {
+        goalId: gid,
+        live: live.has(gid),
+        status: detail.status ?? null,
+        rung: detail.rung ?? null,
+        attempts: detail.attempts ?? null,
+        pr: detail.pr ?? null,
+      };
+    }),
+    upNext: Array.isArray(status?.up_next) ? status.up_next.slice(0, 25).map((g) => ({
+      goalId: g.goal_id,
+      title: g.title || g.goal_id,
+      specialist: g.specialist ?? null,
+    })) : [],
+    planRequired: Array.isArray(status?.plan_required) ? status.plan_required.slice(0, 25).map((g) => ({
+      goalId: g.goal_id, title: g.title || g.goal_id,
+    })) : [],
+    blocked: Array.isArray(status?.blocked) ? status.blocked.slice(0, 50).map((b) => ({
+      goalId: b.goal_id,
+      queueState: b.queue_state,
+      blockedBy: (Array.isArray(b.blocked_by) ? b.blocked_by : []).slice(0, 12),
+      failedDependencies: (Array.isArray(b.failed_dependencies) ? b.failed_dependencies : []).slice(0, 12),
+    })) : [],
+    counts: status?.counts || {},
+    focusPrefixes: (Array.isArray(status?.focus_prefixes) ? status.focus_prefixes : []).slice(0, 12),
+    message: typeof status?.message === "string" ? status.message : "",
+    boxes,
+    statusAgeSec,
+    statusMissing: status === null,
+    syncedAt,
+  };
+  await setStore("hermes-conveyor", payload);
+}
+
 async function mirrorOversight() {
   const generatedAt = new Date().toISOString();
   let db = null;
@@ -637,6 +743,7 @@ async function mirrorTick() {
   try { await mirrorNative(); } catch (error) { log("native mirror failed:", error.message); }
   try { await mirrorCrons(); } catch (error) { log("cron mirror failed:", error.message); }
   try { await mirrorRuns(); } catch (error) { log("runs mirror failed:", error.message); }
+  try { await mirrorConveyor(); } catch (error) { log("conveyor mirror failed:", error.message); }
   try { await mirrorOversight(); } catch (error) { log("oversight mirror failed:", error.message); }
   try { await mirrorRecovery(); } catch (error) { log("recovery mirror failed:", error.message); }
 }
