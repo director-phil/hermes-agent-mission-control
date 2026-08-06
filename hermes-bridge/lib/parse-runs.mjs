@@ -192,6 +192,7 @@ export async function listRuns(runsRoot = DEFAULT_RUNS_ROOT, options = {}) {
   const rows = [];
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
+    if (entry.name.startsWith(".")) continue;
     const goalDir = path.join(runsRoot, entry.name);
     const attempts = await attemptFiles(goalDir);
     if (!attempts.length) continue;

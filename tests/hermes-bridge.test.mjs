@@ -5,7 +5,7 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { parseRunTrace, toDisplayPath, scrubTextPaths } from "../hermes-bridge/lib/parse-runs.mjs";
+import { listRuns, parseRunTrace, toDisplayPath, scrubTextPaths } from "../hermes-bridge/lib/parse-runs.mjs";
 import {
   buildNativeSnapshotRequest,
   buildMirrorEnvelope,
@@ -224,6 +224,24 @@ test("unsupported requests have no environment opt-in path", () => {
   assert.equal(unsupportedRequestFailures({ unsupportedRequests: true }).length, 2);
   assert.equal(kinds.includes("briefing.generate"), false);
   assert.equal(kinds.includes("memory.write"), false);
+});
+
+test("listRuns excludes dot-prefixed run directories", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "hermes-runs-"));
+  try {
+    const normalDir = path.join(root, "g_normal");
+    const supersededDir = path.join(root, ".superseded-foo");
+    await fs.mkdir(normalDir, { recursive: true });
+    await fs.mkdir(supersededDir, { recursive: true });
+    await fs.writeFile(path.join(normalDir, "attempt-1-events.jsonl"), `${JSON.stringify({ data: { event_type: "NODE_START", node_id: "Planner" } })}\n`, "utf8");
+    await fs.writeFile(path.join(supersededDir, "attempt-1-events.jsonl"), `${JSON.stringify({ data: { event_type: "NODE_START", node_id: "Planner" } })}\n`, "utf8");
+
+    const rows = await listRuns(root, { goalStateDir: path.join(root, "state") });
+
+    assert.deepEqual(rows.map((row) => row.goal), ["g_normal"]);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
 });
 
 test("live controller argv parser only trusts the ChatDev bridge controller", () => {
