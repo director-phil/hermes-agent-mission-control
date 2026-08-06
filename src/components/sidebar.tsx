@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import { useState, useEffect } from "react";
 import {
   Activity,
+  ChartNoAxesCombined,
   Home,
   Twitter,
   Play,
@@ -51,6 +52,7 @@ const navGroups = [
     items: [
       { href: "/floor", label: "Floor", icon: Network },
       { href: "/observability", label: "Observability", icon: Activity },
+      { href: "/oversight", label: "Oversight", icon: ChartNoAxesCombined },
       { href: "/agents", label: "Agents", icon: Bot },
       { href: "/memory-wiki", label: "Memory Wiki", icon: BookOpen },
       { href: "/ideas", label: "Ideas", icon: Lightbulb },
