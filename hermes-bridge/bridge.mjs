@@ -326,6 +326,76 @@ async function mirrorRuns() {
   }
 }
 
+// Publish the cloud-recovery correction ledger so the Floor can show every
+// Codex correction of a failed goal (dispatch, scope gate, acceptance, PR).
+async function mirrorRecovery() {
+  const syncedAt = new Date().toISOString();
+  const ledgerPath = path.join(CONFIG.chatdevGoalStateDir, "cloud_recovery_ledger.jsonl");
+  const secrets = knownSecrets();
+  const CAP = 400; // max chars per free-text field
+  const redact = (s) => {
+    let out = String(s == null ? "" : s);
+    for (const sec of secrets) if (sec) out = out.split(sec).join("[redacted]");
+    return out.length > CAP ? out.slice(0, CAP) + "…" : out;
+  };
+  // EXPLICIT sanitized event shape — drop ALL unknown fields so nothing raw is
+  // ever republished (Codex review finding). Only these keys leave the box.
+  const sanitize = (rec) => ({
+    ts: typeof rec.ts === "string" ? rec.ts.slice(0, 40) : null,
+    gid: typeof rec.gid === "string" ? rec.gid.slice(0, 200) : "?",
+    event: typeof rec.event === "string" ? rec.event.slice(0, 60) : "unknown",
+    reason: rec.reason != null ? redact(rec.reason) : undefined,
+    detail: rec.detail != null ? redact(rec.detail) : undefined,
+    // pr is shown as a link — keep only a well-formed https github URL
+    pr: typeof rec.pr === "string" && /^https:\/\/github\.com\/\S+$/.test(rec.pr.trim())
+      ? rec.pr.trim().slice(0, 300)
+      : undefined,
+  });
+
+  let events = [];
+  try {
+    // Bound the READ itself: open the file and read only the last ~64KB from
+    // disk (not the whole ledger into memory), then take the last 200 lines.
+    const READ_BYTES = 65536;
+    const handle = await fs.open(ledgerPath, "r");
+    try {
+      const { size } = await handle.stat();
+      const start = size > READ_BYTES ? size - READ_BYTES : 0;
+      const length = size - start;
+      const buf = Buffer.alloc(length);
+      await handle.read(buf, 0, length, start);
+      const tail = buf.toString("utf8");
+      const lines = tail.split("\n").filter(Boolean).slice(-200);
+      for (const line of lines) {
+        try {
+          events.push(sanitize(JSON.parse(line)));
+        } catch {
+          /* skip malformed / partial first line */
+        }
+      }
+    } finally {
+      await handle.close();
+    }
+  } catch {
+    events = [];
+  }
+  // Roll up per-goal: dispatch count, PR (if any), latest event label. Do NOT
+  // embed the full record — only scalar summary fields.
+  const byGoal = new Map();
+  for (const ev of events) {
+    const g = ev.gid || "?";
+    const cur = byGoal.get(g) || { gid: g, dispatches: 0, pr: null, last: null, at: null };
+    if (ev.event === "codex_dispatch") cur.dispatches += 1;
+    if (ev.event === "pr_opened" && ev.pr) cur.pr = ev.pr;
+    cur.last = ev.event;
+    cur.at = ev.ts || cur.at;
+    byGoal.set(g, cur);
+  }
+  const summary = Array.from(byGoal.values()).sort((a, b) => Date.parse(b.at || "") - Date.parse(a.at || ""));
+  await setStore("hermes-recovery", { events, summary, syncedAt });
+}
+
+
 async function failLegacyRequests() {
   await q(
     `UPDATE "AgentRequest"
@@ -415,6 +485,7 @@ async function mirrorTick() {
   try { await mirrorNative(); } catch (error) { log("native mirror failed:", error.message); }
   try { await mirrorCrons(); } catch (error) { log("cron mirror failed:", error.message); }
   try { await mirrorRuns(); } catch (error) { log("runs mirror failed:", error.message); }
+  try { await mirrorRecovery(); } catch (error) { log("recovery mirror failed:", error.message); }
 }
 
 async function main() {
