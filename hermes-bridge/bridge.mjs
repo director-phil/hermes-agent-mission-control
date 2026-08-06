@@ -552,7 +552,7 @@ async function mirrorConveyor() {
       failedDependencies: (Array.isArray(b.failed_dependencies) ? b.failed_dependencies : []).slice(0, 12),
     })) : [],
     counts: status?.counts || {},
-    focusPrefixes: Array.isArray(status?.focus_prefixes) ? status.focus_prefixes : [],
+    focusPrefixes: (Array.isArray(status?.focus_prefixes) ? status.focus_prefixes : []).slice(0, 12),
     message: typeof status?.message === "string" ? status.message : "",
     boxes,
     statusAgeSec,
