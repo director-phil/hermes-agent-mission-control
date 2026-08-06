@@ -343,6 +343,27 @@ function timelineText(item: TimelineEntry) {
   return item.file ? item.node + " → " + action + " " + shortPath(item.file) : item.node + " → " + action;
 }
 
+type RunBucket = "active" | "done" | "failed";
+
+function runBucket(run: RunIndex): RunBucket {
+  const s = (run.status || "").toLowerCase();
+  if (["failed", "failure", "crash", "error"].includes(s) || s.includes("fail")) return "failed";
+  if (
+    run.running ||
+    ["running", "pending", "staged", "ready", "blocked", "queued", "recovering", "external_recovery"].includes(s)
+  )
+    return "active";
+  if (["done", "complete", "completed", "passed", "success", "shipped", "merged"].includes(s)) return "done";
+  // superseded / unknown are terminal, merit-neutral → Completed
+  return "done";
+}
+
+const RUN_TABS: Array<{ key: RunBucket; label: string }> = [
+  { key: "active", label: "Up next + running" },
+  { key: "done", label: "Completed" },
+  { key: "failed", label: "Failed" },
+];
+
 function RunRail({
   runs,
   selected,
@@ -354,6 +375,18 @@ function RunRail({
   loaded: boolean;
   onSelect: (goal: string) => void;
 }) {
+  const [tab, setTab] = useState<RunBucket>("active");
+
+  const buckets = useMemo(() => {
+    const groups: Record<RunBucket, RunIndex[]> = { active: [], done: [], failed: [] };
+    for (const run of runs) groups[runBucket(run)].push(run);
+    // active tab: running first, then most-recent
+    groups.active.sort((a, b) => Number(b.running) - Number(a.running) || Date.parse(b.lastActivity || "") - Date.parse(a.lastActivity || ""));
+    return groups;
+  }, [runs]);
+
+  const visible = buckets[tab];
+
   return (
     <Panel className="h-full min-h-[620px] overflow-hidden p-3">
       <SectionHeader
@@ -361,15 +394,45 @@ function RunRail({
         title="Live queue"
         action={<Pill tone={runs.some((run) => run.running) ? "accent" : "neutral"}>{runs.length}</Pill>}
       />
+      <div className="mb-3 grid grid-cols-3 gap-1 rounded-[var(--r-md)] border border-[var(--line)] bg-[var(--surface-1)] p-1">
+        {RUN_TABS.map((entry) => {
+          const count = buckets[entry.key].length;
+          const isActive = tab === entry.key;
+          const tone = entry.key === "failed" && count > 0 ? "var(--down)" : entry.key === "active" ? "var(--accent)" : "var(--up)";
+          return (
+            <button
+              key={entry.key}
+              type="button"
+              onClick={() => setTab(entry.key)}
+              className={`flex flex-col items-center gap-0.5 rounded-[var(--r-sm)] px-2 py-1.5 text-[11px] font-medium transition ${
+                isActive ? "bg-[var(--surface-2)] text-[var(--text)]" : "text-[var(--text-3)] hover:text-[var(--text-2)]"
+              }`}
+            >
+              <span className="flex items-center gap-1.5">
+                {entry.label}
+                <span className="num rounded-full px-1.5 text-[10px]" style={{ color: count > 0 ? tone : "var(--text-4)" }}>
+                  {count}
+                </span>
+              </span>
+            </button>
+          );
+        })}
+      </div>
       {!loaded ? (
         <div className="space-y-2">
           {[0, 1, 2, 3, 4].map((item) => <Skeleton key={item} className="h-24" />)}
         </div>
       ) : runs.length === 0 ? (
         <EmptyState icon={<GitBranch className="h-6 w-6" />} title="No mirrored runs" hint="The local bridge has not published run traces yet." />
+      ) : visible.length === 0 ? (
+        <EmptyState
+          icon={<GitBranch className="h-6 w-6" />}
+          title={tab === "failed" ? "No failures" : tab === "done" ? "Nothing completed yet" : "Nothing queued or running"}
+          hint={tab === "failed" ? "Failed goals will surface here for the Codex recovery lane." : "Runs appear as the conveyor dispatches them."}
+        />
       ) : (
-        <div className="max-h-[calc(100vh-230px)] space-y-2 overflow-y-auto pr-1">
-          {runs.map((run) => (
+        <div className="max-h-[calc(100vh-280px)] space-y-2 overflow-y-auto pr-1">
+          {visible.map((run) => (
             <button
               key={run.goal}
               type="button"
