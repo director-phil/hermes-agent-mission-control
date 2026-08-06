@@ -1,10 +1,12 @@
 #!/usr/bin/env node
 import pg from "pg";
+import Database from "better-sqlite3";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { listRuns, parseRunTrace } from "./lib/parse-runs.mjs";
+import { computeOversight } from "./lib/oversight.mjs";
 import { redactText } from "./lib/redact.mjs";
 
 export const CONFIG = {
@@ -19,9 +21,11 @@ export const CONFIG = {
   maxResultChars: safeNumber(process.env.BRIDGE_MAX_RESULT_CHARS, 8000, 1, 50000),
   maxEventDetailChars: 400,
   maxLiveControllerPids: safeNumber(process.env.BRIDGE_MAX_LIVE_CONTROLLER_PIDS, 80, 1, 500),
+  chatdevOversightRowCap: safeNumber(process.env.BRIDGE_OVERSIGHT_ROW_CAP, 5000, 1, 50000),
   chatdevBridgeDir: process.env.CHATDEV_BRIDGE_DIR || path.join(process.env.HOME || "", "ChatDev", "bridge"),
   chatdevRunsDir: process.env.CHATDEV_RUNS_DIR || path.join(process.env.HOME || "", "ChatDev", "runs"),
   chatdevGoalStateDir: process.env.CHATDEV_GOAL_STATE_DIR || path.join(process.env.HOME || "", "ChatDev", "goals", "state"),
+  chatdevRunsDb: process.env.CHATDEV_RUNS_DB || path.join(process.env.HOME || "", "ChatDev", "goals", "state", "runs.db"),
 };
 
 const CORE_REQUEST_KINDS = ["oneshot", "chat", "cron.create", "cron.run", "cron.pause", "cron.resume", "cron.remove", "cron.edit"];
@@ -452,6 +456,28 @@ async function mirrorRuns() {
   }
 }
 
+async function mirrorOversight() {
+  const generatedAt = new Date().toISOString();
+  let db = null;
+  try {
+    db = new Database(CONFIG.chatdevRunsDb, { readonly: true, fileMustExist: true });
+    const rows = db
+      .prepare(
+        `SELECT ts, goal_id, rung, attempt, model, failure_kind, outcome, wall_s, diff_files, notes
+         FROM runs
+         ORDER BY ts DESC
+         LIMIT ?`,
+      )
+      .all(CONFIG.chatdevOversightRowCap);
+    await setStore("hermes-oversight", computeOversight(rows, new Date(generatedAt)));
+  } catch (error) {
+    debug("oversight mirror failed:", error.message);
+    await setStore("hermes-oversight", { generatedAt, empty: true });
+  } finally {
+    try { db?.close(); } catch {}
+  }
+}
+
 // Publish the cloud-recovery correction ledger so the Floor can show every
 // Codex correction of a failed goal (dispatch, scope gate, acceptance, PR).
 async function mirrorRecovery() {
@@ -611,6 +637,7 @@ async function mirrorTick() {
   try { await mirrorNative(); } catch (error) { log("native mirror failed:", error.message); }
   try { await mirrorCrons(); } catch (error) { log("cron mirror failed:", error.message); }
   try { await mirrorRuns(); } catch (error) { log("runs mirror failed:", error.message); }
+  try { await mirrorOversight(); } catch (error) { log("oversight mirror failed:", error.message); }
   try { await mirrorRecovery(); } catch (error) { log("recovery mirror failed:", error.message); }
 }
 
