@@ -1321,7 +1321,14 @@ function mtokCost(tokens: number, pricePerMTok: number) {
 
 function isClaudeOpus46(model: string | null, metadata: Record<string, unknown>) {
   const text = `${model ?? ""} ${safeText(metadata.model) ?? ""} ${safeText(metadata.model_name) ?? ""}`.toLowerCase();
-  return /\bclaude[-_ ]opus[-_ ]4[-_. ]?6\b/.test(text);
+  // Match the ENTIRE current Opus family, not just 4.6. Opus 4.5, 4.6, 4.7,
+  // 4.8 and Opus 5 all share identical pricing ($5 in / $6.25 5m-cache-write /
+  // $10 1h-cache-write / $0.50 cache-read / $25 out — Anthropic pricing page,
+  // verified 2026-08-07). Hard-coding 4.6 left opus-4-8 (this deployment's
+  // model) falling through to reported_only_unknown_cloud with a ZERO estimate,
+  // which is why the anthropic cost read impossibly low. Retired Opus 4/4.1
+  // ($15/$75) is deliberately excluded — different price, no longer served.
+  return /\bclaude[-_ ]opus[-_ ](?:4[-_. ]?[5-9]|5)\b/.test(text);
 }
 
 function mergeCostFields(target: ModelAggregate | ProviderAggregate, cost: CostFields) {
