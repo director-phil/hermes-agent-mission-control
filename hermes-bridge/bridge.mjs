@@ -569,6 +569,9 @@ async function mirrorConveyor() {
       goalId: g.goal_id,
       title: g.title || g.goal_id,
       specialist: g.specialist ?? null,
+      dependencyReady: g.dependency_ready ?? true,
+      planRequired: g.plan_required ?? false,
+      waitingOn: (Array.isArray(g.waiting_on) ? g.waiting_on : []).slice(0, 12),
     })) : [],
     planRequired: Array.isArray(status?.plan_required) ? status.plan_required.slice(0, 25).map((g) => ({
       goalId: g.goal_id, title: g.title || g.goal_id,

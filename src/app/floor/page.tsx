@@ -57,6 +57,9 @@ interface ConveyorUpNext {
   goalId: string;
   title: string;
   specialist: string | null;
+  dependencyReady?: boolean;
+  planRequired?: boolean;
+  waitingOn?: string[];
 }
 interface ConveyorBlocked {
   goalId: string;
@@ -927,32 +930,55 @@ function ConveyorBar({ conveyor, onSelect }: { conveyor: ConveyorState | null; o
         </div>
       </Panel>
 
-      {/* UP NEXT — genuinely dispatchable, in promote order */}
+      {/* UP NEXT — full staged pipeline in promote order (ready at top) */}
       <Panel>
-        <SectionHeader title="Up next" action={<span className="text-[10px] text-[var(--text-3)]">{`${upNext.length} ready`}</span>} />
+        <SectionHeader
+          title="Up next"
+          action={
+            <span className="text-[10px] text-[var(--text-3)]">
+              {`${upNext.filter((g) => g.dependencyReady).length} ready · ${upNext.length} staged`}
+            </span>
+          }
+        />
         {upNext.length === 0 ? (
           <EmptyState
-            title="Nothing ready to dispatch"
+            title="Nothing staged"
             hint={
               (conveyor.counts?.blocked ?? 0) > 0
-                ? `${conveyor.counts.blocked} goal(s) blocked on dependencies or approval — see Blocked.`
-                : "No staged goals are dependency-ready."
+                ? `${conveyor.counts.blocked} goal(s) held on failed deps or approval — see Blocked.`
+                : "No staged goals in the pipeline."
             }
           />
         ) : (
           <ol className="space-y-2">
-            {upNext.slice(0, 12).map((g, i) => (
+            {upNext.slice(0, 25).map((g, i) => (
               <li key={g.goalId}>
                 <button
                   onClick={() => onSelect(g.goalId)}
-                  className="w-full rounded-lg border border-[var(--line)] bg-[var(--surface-2)] px-3 py-2 text-left transition hover:border-[var(--accent)]"
+                  className={`w-full rounded-lg border px-3 py-2 text-left transition hover:border-[var(--accent)] ${
+                    g.dependencyReady
+                      ? "border-[var(--accent)]/40 bg-[var(--surface-2)]"
+                      : "border-[var(--line)] bg-[var(--surface-2)] opacity-70"
+                  }`}
                 >
                   <div className="flex items-center gap-2">
                     <span className="text-[10px] tabular-nums text-[var(--text-3)]">{i + 1}</span>
                     <span className="flex-1 truncate text-[12px] text-[var(--text)]">{g.title}</span>
+                    {g.dependencyReady ? (
+                      <Pill tone="up" className="!py-0.5 !text-[10px]">ready</Pill>
+                    ) : g.planRequired ? (
+                      <Pill tone="warn" className="!py-0.5 !text-[10px]">plan</Pill>
+                    ) : (
+                      <Pill tone="neutral" className="!py-0.5 !text-[10px]">waiting</Pill>
+                    )}
                     {g.specialist ? <Pill tone="neutral" className="!py-0.5 !text-[10px]">{g.specialist}</Pill> : null}
                   </div>
                   <div className="mt-0.5 truncate pl-5 text-[10px] text-[var(--text-3)]">{g.goalId}</div>
+                  {!g.dependencyReady && g.waitingOn && g.waitingOn.length ? (
+                    <div className="mt-0.5 truncate pl-5 text-[10px] text-[var(--text-3)]">
+                      waiting on: {g.waitingOn.join(", ")}
+                    </div>
+                  ) : null}
                 </button>
               </li>
             ))}
