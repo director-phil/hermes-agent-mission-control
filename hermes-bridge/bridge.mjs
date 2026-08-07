@@ -141,7 +141,7 @@ export function parseLiveControllerGoals(argvInput, trustedBridgeDir, options = 
 
 export async function liveControllerGoals({
   spawnFn = spawn,
-  timeoutMs = 2000,
+  timeoutMs = 4000,
   procRoot = "/proc",
   maxPids = CONFIG.maxLiveControllerPids,
   trustedBridgeDir = CONFIG.chatdevBridgeDir,
@@ -149,19 +149,31 @@ export async function liveControllerGoals({
   return await new Promise((resolve) => {
     let stdout = "";
     let settled = false;
+    let readingProc = false;
     let child;
-    const finish = (goals) => {
+    // Goals accumulate as /proc entries are parsed. If the watchdog fires
+    // mid-read (loaded box), we resolve with what we already collected rather
+    // than discarding a real live controller (the 2026-08-07 settle-race bug:
+    // a saturated coder-box made the /proc reads outlast the old 2s timeout,
+    // so the Floor showed "0 building" while a controller was demonstrably up).
+    const goals = new Set();
+    const finish = (result) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      resolve(goals);
+      resolve(result);
     };
     const timer = setTimeout(() => {
-      try {
-        if (child?.pid) child.kill("SIGKILL");
-      } catch {}
-      debug("live controller pgrep timed out");
-      finish(new Set());
+      // Only kill the child if pgrep itself hasn't returned yet. Once we're
+      // reading /proc, the pids are in hand — let the reads finish; the loop's
+      // per-iteration settled-check will still bail if it truly overruns, but
+      // we resolve with the goals gathered so far, never an empty set that
+      // erases a live controller.
+      if (!readingProc) {
+        try { if (child?.pid) child.kill("SIGKILL"); } catch {}
+      }
+      debug("live controller lookup timed out; resolving with", goals.size, "goal(s)");
+      finish(new Set(goals));
     }, timeoutMs);
 
     try {
@@ -182,24 +194,40 @@ export async function liveControllerGoals({
     });
     child.on?.("close", async (code) => {
       if (code !== 0) {
+        // pgrep exits 1 when there are no matches — that is a legitimate
+        // "nothing live" answer, not an error.
         debug("live controller pgrep exited:", String(code));
         finish(new Set());
         return;
       }
+      readingProc = true;
       const pids = parsePids(stdout).slice(0, maxPids);
-      const goals = new Set();
+      debug("live controller pids:", JSON.stringify(pids));
       for (const pid of pids) {
-        if (settled) return;
+        if (settled) break;
         try {
           const procDir = path.join(procRoot, String(pid));
           const cmdline = await fs.readFile(path.join(procDir, "cmdline"));
-          const cwd = await fs.readlink(path.join(procDir, "cwd"));
-          for (const goal of parseLiveControllerGoals(cmdline, trustedBridgeDir, { cwd })) goals.add(goal);
+          // cwd is only needed to resolve a RELATIVE script path. Under a
+          // hardened service (ProtectProc/hidepid) readlink(/proc/<pid>/cwd)
+          // can throw EACCES for processes we don't own — that must NOT abort
+          // the whole pid, because the live controller runs with an ABSOLUTE
+          // escalate.py path that needs no cwd. Read cwd best-effort only.
+          // (2026-08-07: EACCES on cwd was silently zeroing every live goal,
+          // so the Floor showed "0 building" with a controller demonstrably up.)
+          let cwd;
+          try {
+            cwd = await fs.readlink(path.join(procDir, "cwd"));
+          } catch {
+            cwd = undefined;
+          }
+          const parsed = [...parseLiveControllerGoals(cmdline, trustedBridgeDir, { cwd })];
+          for (const goal of parsed) goals.add(goal);
         } catch {
           // /proc entries are volatile and permission-dependent; fail closed per PID.
         }
       }
-      finish(goals);
+      finish(new Set(goals));
     });
   });
 }
