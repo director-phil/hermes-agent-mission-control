@@ -215,6 +215,126 @@ function isTerminalSuccessStatus(status: string | null | undefined) {
   return ["done", "complete", "completed", "passed", "success", "shipped", "merged"].includes(normalizeStatus(status));
 }
 
+function isRecoveringActive(active: ConveyorActive) {
+  if (active.live) return false;
+  const status = normalizeStatus(active.status);
+  return status === "running" || status === "recovering" || status === "external_recovery" || status.includes("recover");
+}
+
+type ConveyorFloorMode = "loading" | "live" | "recovering" | "on-idle" | "off";
+
+export function getConveyorFloorView(conveyor: ConveyorState | null): {
+  mode: ConveyorFloorMode;
+  liveActive: ConveyorActive[];
+  recoveringActive: ConveyorActive[];
+  buildingNow: ConveyorActive[];
+  headerConveyorLabel: string;
+  headerConveyorTone: RunStatusTone;
+  headerCountLabel: string;
+  headerCountTone: RunStatusTone;
+  headerStatusLabel: string;
+  headerStatusTone: RunStatusTone;
+  buildingActionLabel: string;
+  emptyTitle: string;
+  emptyHint: string;
+} {
+  if (!conveyor) {
+    return {
+      mode: "loading",
+      liveActive: [],
+      recoveringActive: [],
+      buildingNow: [],
+      headerConveyorLabel: "Syncing conveyor",
+      headerConveyorTone: "neutral",
+      headerCountLabel: "checking active goal",
+      headerCountTone: "neutral",
+      headerStatusLabel: "syncing status",
+      headerStatusTone: "neutral",
+      buildingActionLabel: "syncing conveyor",
+      emptyTitle: "Syncing conveyor",
+      emptyHint: "checking active goal",
+    };
+  }
+
+  const liveActive = conveyor.active.filter((active) => active.live);
+  const recoveringActive = conveyor.active.filter(isRecoveringActive);
+  const buildingNow = [...liveActive, ...recoveringActive];
+  const statusStale = conveyor.statusAgeSec != null && conveyor.statusAgeSec > 120;
+  const headerStatusLabel =
+    conveyor.statusAgeSec == null ? "no status" : statusStale ? `stale ${conveyor.statusAgeSec}s` : `${conveyor.statusAgeSec}s ago`;
+  const headerStatusTone: RunStatusTone = statusStale ? "down" : "neutral";
+
+  if (liveActive.length > 0) {
+    return {
+      mode: "live",
+      liveActive,
+      recoveringActive,
+      buildingNow,
+      headerConveyorLabel: "Conveyor ON",
+      headerConveyorTone: "up",
+      headerCountLabel: `${liveActive.length} building now`,
+      headerCountTone: "accent",
+      headerStatusLabel,
+      headerStatusTone,
+      buildingActionLabel: "conveyor on",
+      emptyTitle: "Conveyor on — nothing dispatched yet",
+      emptyHint: conveyor.message || "Waiting for a ready goal to promote.",
+    };
+  }
+
+  if (recoveringActive.length > 0) {
+    return {
+      mode: "recovering",
+      liveActive,
+      recoveringActive,
+      buildingNow,
+      headerConveyorLabel: "Conveyor recovering",
+      headerConveyorTone: "warn",
+      headerCountLabel: `${recoveringActive.length} recovering`,
+      headerCountTone: "warn",
+      headerStatusLabel,
+      headerStatusTone,
+      buildingActionLabel: "recovering",
+      emptyTitle: "Conveyor recovering",
+      emptyHint: conveyor.message || "Waiting for the queue timer to restart the controller.",
+    };
+  }
+
+  if (conveyor.conveyorOn) {
+    return {
+      mode: "on-idle",
+      liveActive,
+      recoveringActive,
+      buildingNow,
+      headerConveyorLabel: "Conveyor ON",
+      headerConveyorTone: "up",
+      headerCountLabel: "idle",
+      headerCountTone: "neutral",
+      headerStatusLabel,
+      headerStatusTone,
+      buildingActionLabel: "conveyor on",
+      emptyTitle: "Conveyor on — nothing dispatched yet",
+      emptyHint: conveyor.message || "Waiting for a ready goal to promote.",
+    };
+  }
+
+  return {
+    mode: "off",
+    liveActive,
+    recoveringActive,
+    buildingNow,
+    headerConveyorLabel: "Conveyor OFF",
+    headerConveyorTone: "down",
+    headerCountLabel: "idle",
+    headerCountTone: "neutral",
+    headerStatusLabel,
+    headerStatusTone,
+    buildingActionLabel: "conveyor off",
+    emptyTitle: "Conveyor off",
+    emptyHint: conveyor.message || "Start rt-goal-queue.timer to resume dispatch.",
+  };
+}
+
 function statusTone(status: string, running = false): RunStatusTone {
   const normalized = normalizeStatus(status);
   if (running) return "accent";
@@ -879,10 +999,12 @@ function FlowCanvas({ graph, loaded, selectedRun }: { graph: RunGraph | null; lo
 }
 
 function ConveyorBar({ conveyor, onSelect }: { conveyor: ConveyorState | null; onSelect: (goal: string) => void }) {
-  if (!conveyor) return null;
-  const live = conveyor.active.filter((a) => a.live);
-  const upNext = conveyor.upNext;
-  const boxes = conveyor.boxes ?? [];
+  const view = getConveyorFloorView(conveyor);
+  const buildingNow = view.buildingNow;
+  const upNext = conveyor?.upNext ?? [];
+  const blocked = conveyor?.blocked ?? [];
+  const blockedCount = conveyor?.counts?.blocked ?? blocked.length;
+  const boxes = conveyor?.boxes ?? [];
   const coderModels = boxes.flatMap((b) => b.models).filter((m) => /qwen|coder/i.test(m));
   const plannerModels = boxes.flatMap((b) => b.models).filter((m) => /ornith/i.test(m));
 
@@ -890,15 +1012,17 @@ function ConveyorBar({ conveyor, onSelect }: { conveyor: ConveyorState | null; o
     <section className="hq-rise mt-6 grid grid-cols-1 gap-4 lg:grid-cols-3" style={rise(1)}>
       {/* BUILDING NOW */}
       <Panel>
-        <SectionHeader title="Building now" action={<span className="text-[10px] text-[var(--text-3)]">{conveyor.conveyorOn ? "conveyor on" : "conveyor off"}</span>} />
-        {live.length === 0 ? (
+        <SectionHeader title="Building now" action={<span className="text-[10px] text-[var(--text-3)]">{view.buildingActionLabel}</span>} />
+        {buildingNow.length === 0 ? (
           <EmptyState
-            title={conveyor.conveyorOn ? "Conveyor on — nothing dispatched yet" : "Conveyor off"}
-            hint={conveyor.message || (conveyor.conveyorOn ? "Waiting for a ready goal to promote." : "Start rt-goal-queue.timer to resume dispatch.")}
+            title={view.emptyTitle}
+            hint={view.emptyHint}
           />
         ) : (
           <ul className="space-y-2">
-            {live.map((a) => (
+            {buildingNow.map((a) => {
+              const recovering = isRecoveringActive(a);
+              return (
               <li key={a.goalId}>
                 <button
                   onClick={() => onSelect(a.goalId)}
@@ -906,7 +1030,9 @@ function ConveyorBar({ conveyor, onSelect }: { conveyor: ConveyorState | null; o
                 >
                   <div className="flex items-center justify-between gap-2">
                     <span className="truncate text-[12px] font-medium text-[var(--text)]">{a.goalId}</span>
-                    <Pill tone="accent" className="!py-0.5 !text-[10px]">live</Pill>
+                    <Pill tone={recovering ? "warn" : "accent"} className="!py-0.5 !text-[10px]">
+                      {recovering ? "recovering" : "live"}
+                    </Pill>
                   </div>
                   <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[10px] text-[var(--text-3)]">
                     {a.status ? <span>status {a.status}</span> : null}
@@ -916,7 +1042,8 @@ function ConveyorBar({ conveyor, onSelect }: { conveyor: ConveyorState | null; o
                   </div>
                 </button>
               </li>
-            ))}
+            );
+            })}
           </ul>
         )}
         <div className="mt-3 flex flex-wrap gap-1.5 border-t border-[var(--line)] pt-3 text-[10px] text-[var(--text-3)]">
@@ -944,8 +1071,8 @@ function ConveyorBar({ conveyor, onSelect }: { conveyor: ConveyorState | null; o
           <EmptyState
             title="Nothing staged"
             hint={
-              (conveyor.counts?.blocked ?? 0) > 0
-                ? `${conveyor.counts.blocked} goal(s) held on failed deps or approval — see Blocked.`
+              blockedCount > 0
+                ? `${blockedCount} goal(s) held on failed deps or approval — see Blocked.`
                 : "No staged goals in the pipeline."
             }
           />
@@ -988,12 +1115,12 @@ function ConveyorBar({ conveyor, onSelect }: { conveyor: ConveyorState | null; o
 
       {/* BLOCKED — why the queue can't move */}
       <Panel>
-        <SectionHeader title="Blocked" action={<span className="text-[10px] text-[var(--text-3)]">{`${conveyor.blocked.length} held`}</span>} />
-        {conveyor.blocked.length === 0 ? (
+        <SectionHeader title="Blocked" action={<span className="text-[10px] text-[var(--text-3)]">{`${blocked.length} held`}</span>} />
+        {blocked.length === 0 ? (
           <EmptyState title="Nothing blocked" hint="All staged goals are ready or in flight." />
         ) : (
           <ul className="space-y-2">
-            {conveyor.blocked.slice(0, 12).map((b) => (
+            {blocked.slice(0, 12).map((b) => (
               <li key={b.goalId} className="rounded-lg border border-[var(--line)] bg-[var(--surface-2)] px-3 py-2">
                 <div className="flex items-center justify-between gap-2">
                   <span className="truncate text-[12px] text-[var(--text)]">{b.goalId}</span>
@@ -1076,12 +1203,9 @@ export default function FloorPage() {
 
   const selectedRun = selectedGoal ? runs.find((run) => run.goal === selectedGoal) ?? null : null;
 
-  // Truthful conveyor derivations
-  const conveyorOn = conveyor?.conveyorOn ?? false;
-  const liveActive = (conveyor?.active ?? []).filter((a) => a.live);
+  const conveyorView = getConveyorFloorView(conveyor);
   const upNext = conveyor?.upNext ?? [];
   const blockedCount = conveyor?.counts?.blocked ?? (conveyor?.blocked?.length ?? 0);
-  const statusStale = conveyor?.statusAgeSec != null && conveyor.statusAgeSec > 120;
 
   return (
     <div className="relative z-10 w-full mx-auto p-8 pb-16 text-[var(--text)]">
@@ -1096,20 +1220,20 @@ export default function FloorPage() {
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <Pill tone={conveyorOn ? "up" : "down"}>
+          <Pill tone={conveyorView.headerConveyorTone}>
             <Radio className="h-3 w-3" />
-            {conveyorOn ? "Conveyor ON" : "Conveyor OFF"}
+            {conveyorView.headerConveyorLabel}
           </Pill>
-          <Pill tone={liveActive.length ? "accent" : "neutral"}>
-            {liveActive.length ? `${liveActive.length} building now` : "idle"}
+          <Pill tone={conveyorView.headerCountTone}>
+            {conveyorView.headerCountLabel}
           </Pill>
           <Pill tone={upNext.length ? "warn" : "neutral"}>
             {upNext.length} up next
           </Pill>
           {blockedCount ? <Pill tone="neutral">{blockedCount} blocked</Pill> : null}
-          <Pill tone={statusStale ? "down" : "neutral"}>
+          <Pill tone={conveyorView.headerStatusTone}>
             <RefreshCw className="h-3 w-3" />
-            {conveyor?.statusAgeSec == null ? "no status" : statusStale ? `stale ${conveyor.statusAgeSec}s` : `${conveyor.statusAgeSec}s ago`}
+            {conveyorView.headerStatusLabel}
           </Pill>
         </div>
       </div>
