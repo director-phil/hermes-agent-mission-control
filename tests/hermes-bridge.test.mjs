@@ -11,6 +11,7 @@ import {
   buildMirrorEnvelope,
   fetchNativeSnapshot,
   hermesChat,
+  liveControllerGoals,
   parseLiveControllerGoals,
   requestKindsForPolicy,
   unsupportedRequestFailures,
@@ -278,6 +279,41 @@ test("live controller argv parser only trusts the ChatDev bridge controller", ()
     [...parseLiveControllerGoals(["python3", script, "padding", "run", "g_x"], bridgeDir)],
     [],
   );
+});
+
+test("liveControllerGoals resolves absolute-path goals even when /proc/<pid>/cwd is unreadable (EACCES under hardened service)", async () => {
+  const bridgeDir = "/home/phillip_downs/ChatDev/bridge";
+  const script = path.join(bridgeDir, "escalate.py");
+  // Fake pgrep child that emits one pid then exits 0.
+  const fakeSpawn = () => {
+    const listeners = {};
+    const child = {
+      pid: 4242,
+      stdout: {
+        setEncoding() {},
+        on(event, cb) { if (event === "data") cb("4242\n"); },
+      },
+      on(event, cb) { listeners[event] = cb; if (event === "close") queueMicrotask(() => cb(0)); return child; },
+      kill() {},
+    };
+    return child;
+  };
+  // Fake /proc where cmdline has an ABSOLUTE escalate.py path and cwd readlink throws EACCES.
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "hermes-proc-"));
+  const procDir = path.join(root, "4242");
+  await fs.mkdir(procDir, { recursive: true });
+  const argv = ["/x/.venv/bin/python3", script, "run", "g_live_abs"].join("\u0000") + "\u0000";
+  await fs.writeFile(path.join(procDir, "cmdline"), argv);
+  // Do NOT create a "cwd" symlink → readlink throws ENOENT/EACCES-like failure,
+  // which must NOT prevent the absolute-path goal from being reported.
+  const goals = await liveControllerGoals({
+    spawnFn: fakeSpawn,
+    procRoot: root,
+    trustedBridgeDir: bridgeDir,
+    timeoutMs: 2000,
+  });
+  assert.deepEqual([...goals], ["g_live_abs"]);
+  await fs.rm(root, { recursive: true, force: true });
 });
 
 test("run trace parser bounds oversized lines and redacts scribe previews and display paths", async () => {
