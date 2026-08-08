@@ -219,6 +219,35 @@ export interface OperationAggregate {
   durationMs: number | null;
   latestTimestamp: string | null;
   status: "ok" | "error";
+  cohort: "graft" | "baseline";
+}
+
+export interface CohortSummary {
+  operationCount: number;
+  totalTokens: number;
+  toolCalls: number;
+  generationCalls: number;
+  effectiveCost: number;
+  avgTokensPerOperation: number | null;
+  avgToolCallsPerOperation: number | null;
+}
+
+export interface CohortDelta {
+  totalTokens: number;
+  toolCalls: number;
+  generationCalls: number;
+  effectiveCost: number;
+  avgTokensPerOperation: number | null;
+  avgToolCallsPerOperation: number | null;
+}
+
+export interface GraftCohortLens {
+  status: "observed" | "missing";
+  signalObservations: number;
+  signalOperations: number;
+  graft: CohortSummary;
+  baseline: CohortSummary;
+  delta: CohortDelta;
 }
 
 export interface AccountingSummary {
@@ -285,6 +314,7 @@ export interface HermesObservability {
   correlationCoverage: CorrelationCoverage;
   operations: OperationAggregate[];
   accounting: AccountingSummary;
+  graftCohort: GraftCohortLens;
   workflow: WorkflowSummary | null;
   amplification: AmplificationMetrics | null;
   sessions: SessionTraceAggregate[];
@@ -408,6 +438,7 @@ interface OperationWork {
   hasEstimatedCostRange: boolean;
   toolCalls: number;
   errors: number;
+  hasGraftSignal: boolean;
   startMs: number | null;
   endMs: number | null;
   latestMs: number | null;
@@ -659,6 +690,7 @@ function aggregateObservations(
   let withStageId = 0;
   let invalidIdentifierObservations = 0;
   let fullyCorrelatedObservations = 0;
+  let graftSignalObservations = 0;
 
   for (const obs of pageResult.observations) {
     if (isSyntheticObservation(obs)) {
@@ -683,6 +715,7 @@ function aggregateObservations(
     });
     const cost = costFields.effectiveCost;
     const tool = classifyToolObservation(obs, type);
+    const hasGraftSignal = isGraftSignal(obs, tool?.name ?? null);
     const isError = isErrorObservation(obs);
     const latencyMs = latencyToMs(obs.latency);
     const correlation = extractCorrelationIds(obs.metadata);
@@ -740,6 +773,7 @@ function aggregateObservations(
     }
     if (type === "GENERATION") totals.generationCalls += 1;
     if (tool) totals.toolCalls += tool.count;
+    if (hasGraftSignal) graftSignalObservations += 1;
     if (isError) totals.errors += 1;
     if (obs.traceId) traces.add(obs.traceId);
     if (obs.sessionId) sessions.add(obs.sessionId);
@@ -844,6 +878,7 @@ function aggregateObservations(
 
     if (correlation.operationId) {
       const operation = getOperationWork(operationMap, correlation.operationId);
+      if (hasGraftSignal) operation.hasGraftSignal = true;
       addOptional(operation.goalIds, correlation.goalId);
       addOptional(operation.runIds, correlation.runId);
       addOptional(operation.stageIds, correlation.stageId);
@@ -947,6 +982,7 @@ function aggregateObservations(
     operations: allOperationRows,
   });
   const accounting = buildAccountingSummary(allOperationRows, operationRows.length, correlationCoverage);
+  const graftCohort = buildGraftCohortLens(allOperationRows, graftSignalObservations);
 
   const warning = pageResult.truncated
     ? "Langfuse row safety cap reached; showing the newest bounded sample."
@@ -982,6 +1018,7 @@ function aggregateObservations(
     correlationCoverage,
     operations: operationRows,
     accounting,
+    graftCohort,
     workflow,
     amplification,
     sessions: sessionRows,
@@ -1524,6 +1561,7 @@ function getOperationWork(operationMap: Map<string, OperationWork>, operationId:
     hasEstimatedCostRange: false,
     toolCalls: 0,
     errors: 0,
+    hasGraftSignal: false,
     startMs: null,
     endMs: null,
     latestMs: null,
@@ -1576,6 +1614,7 @@ function finalizeOperation(work: OperationWork): OperationAggregate {
     durationMs,
     latestTimestamp: isoOrNull(work.latestMs),
     status: work.errors > 0 ? "error" : "ok",
+    cohort: work.hasGraftSignal ? "graft" : "baseline",
   };
 }
 
@@ -1724,6 +1763,90 @@ function emptyAccountingSummary(): AccountingSummary {
     costBasis: "reported_only_unknown",
     reconciliation: "missing",
     warnings: ["Langfuse observations were unavailable; no operation accounting was inferred."],
+  };
+}
+
+function summarizeCohort(rows: OperationAggregate[]): CohortSummary {
+  let totalTokens = 0;
+  let toolCalls = 0;
+  let generationCalls = 0;
+  let effectiveCost = 0;
+
+  for (const row of rows) {
+    totalTokens += row.totalTokens;
+    toolCalls += row.toolCalls;
+    generationCalls += row.generationCalls;
+    effectiveCost += row.effectiveCost;
+  }
+
+  const operationCount = rows.length;
+  return {
+    operationCount,
+    totalTokens: Math.round(totalTokens),
+    toolCalls: Math.round(toolCalls),
+    generationCalls: Math.round(generationCalls),
+    effectiveCost: roundMoney(effectiveCost),
+    avgTokensPerOperation: operationCount > 0 ? roundMoney(totalTokens / operationCount) : null,
+    avgToolCallsPerOperation: operationCount > 0 ? roundMoney(toolCalls / operationCount) : null,
+  };
+}
+
+function emptyCohortSummary(): CohortSummary {
+  return {
+    operationCount: 0,
+    totalTokens: 0,
+    toolCalls: 0,
+    generationCalls: 0,
+    effectiveCost: 0,
+    avgTokensPerOperation: null,
+    avgToolCallsPerOperation: null,
+  };
+}
+
+function buildGraftCohortLens(allOperationRows: OperationAggregate[], signalObservations: number): GraftCohortLens {
+  const graftRows = allOperationRows.filter((row) => row.cohort === "graft");
+  const baselineRows = allOperationRows.filter((row) => row.cohort === "baseline");
+  const graft = summarizeCohort(graftRows);
+  const baseline = summarizeCohort(baselineRows);
+
+  return {
+    status: graft.operationCount > 0 ? "observed" : "missing",
+    signalObservations,
+    signalOperations: graft.operationCount,
+    graft,
+    baseline,
+    delta: {
+      totalTokens: graft.totalTokens - baseline.totalTokens,
+      toolCalls: graft.toolCalls - baseline.toolCalls,
+      generationCalls: graft.generationCalls - baseline.generationCalls,
+      effectiveCost: roundMoney(graft.effectiveCost - baseline.effectiveCost),
+      avgTokensPerOperation:
+        graft.avgTokensPerOperation == null || baseline.avgTokensPerOperation == null
+          ? null
+          : roundMoney(graft.avgTokensPerOperation - baseline.avgTokensPerOperation),
+      avgToolCallsPerOperation:
+        graft.avgToolCallsPerOperation == null || baseline.avgToolCallsPerOperation == null
+          ? null
+          : roundMoney(graft.avgToolCallsPerOperation - baseline.avgToolCallsPerOperation),
+    },
+  };
+}
+
+function emptyGraftCohortLens(): GraftCohortLens {
+  return {
+    status: "missing",
+    signalObservations: 0,
+    signalOperations: 0,
+    graft: emptyCohortSummary(),
+    baseline: emptyCohortSummary(),
+    delta: {
+      totalTokens: 0,
+      toolCalls: 0,
+      generationCalls: 0,
+      effectiveCost: 0,
+      avgTokensPerOperation: null,
+      avgToolCallsPerOperation: null,
+    },
   };
 }
 
@@ -1912,6 +2035,7 @@ function failurePayload(
     correlationCoverage: emptyCorrelationCoverage(),
     operations: [],
     accounting: emptyAccountingSummary(),
+    graftCohort: emptyGraftCohortLens(),
     workflow: null,
     amplification: null,
     sessions: [],
@@ -2006,6 +2130,18 @@ function classifyToolObservation(obs: Observation, type: string): { name: string
     name: metadataToolName ?? nameToolName ?? safeToolName(obs.name),
     count: metadataToolCallCount ?? 1,
   };
+}
+
+function isGraftSignal(obs: Observation, toolName: string | null) {
+  const markers = [
+    toolName,
+    safeText(obs.name),
+    safeText(obs.metadata.tool_name),
+    safeText(obs.metadata.command),
+    safeText(obs.metadata.command_name),
+    safeText(obs.metadata.toolset),
+  ];
+  return markers.some((value) => !!value && /\b(graft|graphify)\b/i.test(value));
 }
 
 function latencyToMs(value: number | null) {

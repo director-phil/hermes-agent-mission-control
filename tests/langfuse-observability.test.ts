@@ -237,6 +237,8 @@ test("collects paginated Langfuse observations into safe aggregates", async () =
     ],
   );
   assert.equal(result.tools.recent.some((tool) => tool.name === "should-not-count"), false);
+  assert.equal(result.graftCohort.status, "missing");
+  assert.equal(result.graftCohort.signalOperations, 0);
   assert.equal(result.wasteFlags.some((flag) => flag.kind === "largest_token_session"), true);
   assert.equal(result.wasteFlags.some((flag) => flag.kind === "high_input_output_ratio"), true);
   assert.equal(result.topLargeTraces[0].totalTokens, 1200);
@@ -1410,6 +1412,7 @@ test("returns failure health without fake totals when Langfuse fails", async () 
   assert.equal(result.correlationCoverage.eligibleObservations, 0);
   assert.deepEqual(result.operations, []);
   assert.equal(result.accounting.reconciliation, "missing");
+  assert.equal(result.graftCohort.status, "missing");
   assert.equal(result.workflow, null);
   assert.equal(result.amplification, null);
   assert.deepEqual(result.recommendations, []);
@@ -1422,4 +1425,80 @@ test("validates supported observability windows", () => {
   assert.equal(parseObservabilityWindow("7d"), "7d");
   assert.equal(parseObservabilityWindow("30d"), null);
   assert.equal(parseObservabilityWindow(null), null);
+});
+
+test("builds graft cohort lens from operation-tagged tool activity", async () => {
+  setLangfuseEnv();
+  const page = {
+    data: [
+      {
+        id: "gen-a",
+        traceId: "trace-a",
+        sessionId: "session-a",
+        startTime: "2026-08-05T11:30:00.000Z",
+        endTime: "2026-08-05T11:30:01.000Z",
+        type: "GENERATION",
+        providedModelName: "gpt-5",
+        usageDetails: { input: 200, output: 100, total: 300 },
+        metadata: { provider: "openai", operation_id: "op-a", goal_id: "g-a", run_id: "r-a", stage_id: "s-a" },
+      },
+      {
+        id: "tool-a",
+        traceId: "trace-a",
+        sessionId: "session-a",
+        startTime: "2026-08-05T11:30:02.000Z",
+        endTime: "2026-08-05T11:30:03.000Z",
+        type: "TOOL",
+        name: "graft.ask",
+        metadata: { tool_name: "graft.ask", operation_id: "op-a", goal_id: "g-a", run_id: "r-a", stage_id: "s-a" },
+      },
+      {
+        id: "gen-b",
+        traceId: "trace-b",
+        sessionId: "session-b",
+        startTime: "2026-08-05T11:40:00.000Z",
+        endTime: "2026-08-05T11:40:01.000Z",
+        type: "GENERATION",
+        providedModelName: "gpt-5",
+        usageDetails: { input: 100, output: 50, total: 150 },
+        metadata: { provider: "openai", operation_id: "op-b", goal_id: "g-b", run_id: "r-b", stage_id: "s-b" },
+      },
+      {
+        id: "tool-b",
+        traceId: "trace-b",
+        sessionId: "session-b",
+        startTime: "2026-08-05T11:40:02.000Z",
+        endTime: "2026-08-05T11:40:03.000Z",
+        type: "TOOL",
+        name: "web.run",
+        metadata: { tool_name: "web.run", operation_id: "op-b", goal_id: "g-b", run_id: "r-b", stage_id: "s-b" },
+      },
+    ],
+  };
+
+  const fetchImpl: typeof fetch = async () =>
+    new Response(JSON.stringify(page), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+
+  const result = await collectHermesObservability("24h", {
+    now: NOW,
+    fetchImpl,
+  });
+
+  assert.equal(result.graftCohort.status, "observed");
+  assert.equal(result.graftCohort.signalOperations, 1);
+  assert.equal(result.graftCohort.graft.operationCount, 1);
+  assert.equal(result.graftCohort.baseline.operationCount, 1);
+  assert.equal(result.graftCohort.graft.totalTokens, 300);
+  assert.equal(result.graftCohort.baseline.totalTokens, 150);
+  assert.equal(result.graftCohort.delta.totalTokens, 150);
+  assert.equal(result.graftCohort.graft.toolCalls, 1);
+  assert.equal(result.graftCohort.baseline.toolCalls, 1);
+
+  const opA = result.operations.find((operation) => operation.operationId === "op-a");
+  const opB = result.operations.find((operation) => operation.operationId === "op-b");
+  assert.equal(opA?.cohort, "graft");
+  assert.equal(opB?.cohort, "baseline");
 });

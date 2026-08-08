@@ -32,6 +32,7 @@ import type {
   AccountingSummary,
   AmplificationMetrics,
   CorrelationCoverage,
+  GraftCohortLens,
   HermesObservability,
   ModelAggregate,
   ObservabilityCompleteness,
@@ -740,6 +741,62 @@ function TopTracesPanel({ large, expensive }: { large: SessionTraceAggregate[]; 
   );
 }
 
+function GraftCohortPanel({ cohort }: { cohort: GraftCohortLens }) {
+  const observed = cohort.status === "observed";
+  return (
+    <Panel className="mt-8 p-5">
+      <SectionHeader
+        label="Graft cohort lens"
+        title="Graft-signaled operations vs baseline"
+        action={
+          <Pill tone={observed ? "accent" : "neutral"}>
+            <Layers3 className="h-3 w-3" />
+            {cohort.status}
+          </Pill>
+        }
+      />
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+        <div className="rounded-[var(--r-md)] border border-[var(--line)] bg-[var(--surface-1)] p-4">
+          <Eyebrow>Graft cohort</Eyebrow>
+          <div className="mt-3 grid grid-cols-2 gap-3">
+            <StatCell label="Operations" value={String(cohort.graft.operationCount)} />
+            <StatCell label="Tokens" value={fmtTokens(cohort.graft.totalTokens)} />
+            <StatCell label="Tool calls" value={String(cohort.graft.toolCalls)} />
+            <StatCell label="Effective cost" value={fmtUsd(cohort.graft.effectiveCost)} />
+          </div>
+          <p className="mt-3 text-[11.5px] text-[var(--text-3)]">
+            Avg <span className="num">{cohort.graft.avgTokensPerOperation == null ? "—" : fmtTokens(cohort.graft.avgTokensPerOperation)}</span> tokens/op ·
+            <span className="num"> {cohort.graft.avgToolCallsPerOperation == null ? "—" : cohort.graft.avgToolCallsPerOperation.toFixed(2)}</span> tool calls/op
+          </p>
+        </div>
+        <div className="rounded-[var(--r-md)] border border-[var(--line)] bg-[var(--surface-1)] p-4">
+          <Eyebrow>Baseline cohort</Eyebrow>
+          <div className="mt-3 grid grid-cols-2 gap-3">
+            <StatCell label="Operations" value={String(cohort.baseline.operationCount)} />
+            <StatCell label="Tokens" value={fmtTokens(cohort.baseline.totalTokens)} />
+            <StatCell label="Tool calls" value={String(cohort.baseline.toolCalls)} />
+            <StatCell label="Effective cost" value={fmtUsd(cohort.baseline.effectiveCost)} />
+          </div>
+          <p className="mt-3 text-[11.5px] text-[var(--text-3)]">
+            Avg <span className="num">{cohort.baseline.avgTokensPerOperation == null ? "—" : fmtTokens(cohort.baseline.avgTokensPerOperation)}</span> tokens/op ·
+            <span className="num"> {cohort.baseline.avgToolCallsPerOperation == null ? "—" : cohort.baseline.avgToolCallsPerOperation.toFixed(2)}</span> tool calls/op
+          </p>
+        </div>
+      </div>
+      <div className="mt-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
+        <StatCell label="Delta tokens" value={fmtTokens(cohort.delta.totalTokens)} sub="graft - baseline" />
+        <StatCell label="Delta tools" value={String(cohort.delta.toolCalls)} sub="graft - baseline" />
+        <StatCell label="Delta generations" value={String(cohort.delta.generationCalls)} sub="graft - baseline" />
+        <StatCell label="Delta cost" value={fmtUsd(cohort.delta.effectiveCost)} sub="graft - baseline" />
+      </div>
+      <p className="mt-3 text-[11.5px] text-[var(--text-3)]">
+        Signal observations <span className="num">{cohort.signalObservations}</span> · signal operations <span className="num">{cohort.signalOperations}</span>.
+        Use this lens to compare token/tool pressure before promoting Graft-first routing as default.
+      </p>
+    </Panel>
+  );
+}
+
 function OperationsPanel({
   operations,
   accounting,
@@ -788,6 +845,7 @@ function OperationsPanel({
                 <th className="px-3 py-2 text-right font-semibold">Tools</th>
                 <th className="px-3 py-2 text-right font-semibold">Tokens</th>
                 <th className="px-3 py-2 text-right font-semibold">Cost</th>
+                <th className="px-3 py-2 text-right font-semibold">Cohort</th>
                 <th className="py-2 pl-3 text-right font-semibold">Status</th>
               </tr>
             </thead>
@@ -805,6 +863,9 @@ function OperationsPanel({
                   <td className="num px-3 py-3 text-right">{operation.toolCalls}</td>
                   <td className="num px-3 py-3 text-right text-[var(--text)]">{fmtTokens(operation.totalTokens)}</td>
                   <td className="num px-3 py-3 text-right">{fmtUsd(operation.effectiveCost)}</td>
+                  <td className="py-3 px-3 text-right">
+                    <Pill tone={operation.cohort === "graft" ? "accent" : "neutral"} className="!py-0.5 !text-[10px]">{operation.cohort}</Pill>
+                  </td>
                   <td className="py-3 pl-3 text-right">
                     <Pill tone={operation.status === "ok" ? "up" : "down"} className="!py-0.5 !text-[10px]">{operation.status}</Pill>
                   </td>
@@ -943,6 +1004,7 @@ export default function ObservabilityPage() {
           <AmplificationPanel amplification={data.amplification ?? null} />
           <WasteFlagsPanel flags={data.wasteFlags ?? []} />
           <TopTracesPanel large={data.topLargeTraces ?? []} expensive={data.topExpensiveTraces ?? []} />
+          <GraftCohortPanel cohort={data.graftCohort} />
           <OperationsPanel operations={data.operations ?? []} accounting={data.accounting} coverage={data.correlationCoverage} />
           <ToolsPanel recent={data.tools?.recent ?? []} repeated={data.tools?.repeated ?? []} />
           <RecommendationsPanel recommendations={data.recommendations ?? []} />
