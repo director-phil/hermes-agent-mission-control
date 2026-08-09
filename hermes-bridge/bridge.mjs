@@ -20,6 +20,7 @@ export const CONFIG = {
   maxPromptChars: safeNumber(process.env.BRIDGE_MAX_PROMPT_CHARS, 12000, 1, 50000),
   maxResultChars: safeNumber(process.env.BRIDGE_MAX_RESULT_CHARS, 8000, 1, 50000),
   maxEventDetailChars: 400,
+  runsMaxPayloadBytes: safeNumber(process.env.BRIDGE_RUNS_MAX_PAYLOAD_BYTES, 8_000_000, 500_000, 25_000_000),
   maxLiveControllerPids: safeNumber(process.env.BRIDGE_MAX_LIVE_CONTROLLER_PIDS, 80, 1, 500),
   chatdevOversightRowCap: safeNumber(process.env.BRIDGE_OVERSIGHT_ROW_CAP, 5000, 1, 50000),
   chatdevBridgeDir: process.env.CHATDEV_BRIDGE_DIR || path.join(process.env.HOME || "", "ChatDev", "bridge"),
@@ -459,13 +460,13 @@ async function mirrorRuns() {
     const live = await liveControllerGoals();
     const index = indexRows.map((row) => ({ ...row, liveController: live.has(row.goal) }));
     const graphs = {};
-    const maxPayloadBytes = 1_500_000;
+    const maxPayloadBytes = CONFIG.runsMaxPayloadBytes;
     let payloadBytes = Buffer.byteLength(JSON.stringify({ index, graphs, syncedAt }));
-    // Build graphs for every non-trivial run in the index (top 12 by recency).
+    // Build graphs for all indexed runs in recency order.
     // Do NOT filter by an allow-list of statuses: the conveyor emits many
     // statuses (shipping, blocked, materializing, recovered, ...) and any run
     // present in the index should have a resolvable graph, else /api/runs/[goal] 404s.
-    const candidates = index.slice(0, 12);
+    const candidates = index;
 
     for (const run of candidates) {
       try {
