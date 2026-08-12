@@ -18,9 +18,9 @@ const WINDOW_CONFIG: Record<ObservabilityWindow, {
     maxRows: 5000,      // Limit to 5000 rows
   },
   "7d": {
-    timeoutMs: 8000,    // 8s for 7d: much faster, bounded collection
-    maxPages: 3,        // Aggressive limit: 3 pages max
-    maxRows: 3000,      // Aggressive limit: 3000 rows max
+    timeoutMs: 5000,    // 5s for 7d: ultra-fast collection with safety margin
+    maxPages: 1,        // Single page only: no pagination overhead
+    maxRows: 1000,      // Minimal rows: 1000 max for fast aggregation
   },
 };
 
@@ -101,7 +101,7 @@ export async function GET(req: Request) {
       
       // Return a partial/degraded response that still provides structure
       const now_iso = new Date().toISOString();
-      const degradedPayload: HermesObservability = ({
+      const degradedPayload: HermesObservability = (({
         status: "partial",
         error: errorMessage,
         source: {
@@ -169,7 +169,7 @@ export async function GET(req: Request) {
         // Mark as partial so consumers know this is degraded
         isPartial: true,
         partialReason: "Collection timeout - returning empty set",
-      } as any);
+      } as any)) as HermesObservability;
       
       return NextResponse.json(degradedPayload, { status: 200, headers: CORS_HEADERS });
     }
