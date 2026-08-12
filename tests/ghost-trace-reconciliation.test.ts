@@ -1,6 +1,19 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
-import type { RunIndex } from "../src/app/floor/page.tsx";
+interface RunIndex {
+  goal: string;
+  status: string;
+  attempts: number;
+  liveController?: boolean;
+  traceRunning?: boolean;
+  rung?: number | null;
+  specialist?: string | null;
+  shipped_pr?: string | null;
+  preview_url?: string | null;
+  lastActivity: string | null;
+  nodeLabels: string[];
+  filesTouched: number;
+}
 
 /**
  * Ghost Trace Reconciliation Tests
