@@ -19,6 +19,10 @@ const SCRIBE_FULL = process.env.CONVEYOR_MIRROR_SCRIBE_FULL === "1";
 const DEFAULT_RUNS_ROOT = path.join(process.env.HOME || "", "ChatDev", "runs");
 const DEFAULT_STATE_ROOT = path.join(process.env.HOME || "", "ChatDev", "goals", "state");
 
+// Liveness detection constants
+const LIVE_HEARTBEAT_THRESHOLD_MS = 5 * 60 * 1000; // 5 minutes: if no recent activity, mark as not live
+const CONSIDER_RECENT_MS = 2 * 60 * 1000; // 2 minutes: activity within 2min is considered very recent
+
 const OP_BY_TOOL = new Map([
   ["read_repo_file", "read"],
   ["list_allowed_directory", "read"],
@@ -190,6 +194,8 @@ export async function listRuns(runsRoot = DEFAULT_RUNS_ROOT, options = {}) {
   }
 
   const rows = [];
+  const now = Date.now();
+  
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
     if (entry.name.startsWith(".")) continue;
@@ -199,6 +205,13 @@ export async function listRuns(runsRoot = DEFAULT_RUNS_ROOT, options = {}) {
     const state = await readGoalState(entry.name, options.goalStateDir);
     const newest = attempts[0];
     const lite = await parseTraceLite(newest.path, { secrets: options.secrets });
+    
+    // Determine liveController: true if trace has recent activity AND workflow is not complete
+    // Recent = within LIVE_HEARTBEAT_THRESHOLD_MS (5 min), not dead trace
+    const lastActivityTime = newest.mtimeMs || 0;
+    const timeSinceActivity = now - lastActivityTime;
+    const isLiveController = lite.running && timeSinceActivity < LIVE_HEARTBEAT_THRESHOLD_MS;
+    
     const row = {
       goal: entry.name,
       status: safeStatus(state.status, secrets) || "unknown",
@@ -208,6 +221,7 @@ export async function listRuns(runsRoot = DEFAULT_RUNS_ROOT, options = {}) {
       nodeLabels: lite.nodeLabels,
       filesTouched: lite.filesTouched,
       traceRunning: lite.running,
+      liveController: isLiveController,
     };
     const specialist = safeSpecialist(state.specialist, secrets);
     const shippedPr = safeGithubPrUrl(state.shipped_pr);
@@ -700,7 +714,7 @@ export function scrubTextPaths(text) {
       toDisplayPath(match) || match.split("/").filter(Boolean).pop() || match,
     )
     // Windows drive path (e.g. C:\Users\... or C:/Users/...)
-    .replace(/\b[A-Za-z]:[\\/][^\s"'`)*\]]+/g, (match) =>
-      toDisplayPath(match) || match.split(/[\\/]/).filter(Boolean).pop() || match,
+    .replace(/\b[A-Za-z]:[\\\/][^\s"'`)*\]]+/g, (match) =>
+      toDisplayPath(match) || match.split(/[\\\/]/).filter(Boolean).pop() || match,
     );
 }
