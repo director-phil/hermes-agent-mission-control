@@ -6,8 +6,26 @@ import {
   type ObservabilityWindow,
 } from "@/lib/langfuse-observability";
 
+// Window-specific timeout and collection limits
+const WINDOW_CONFIG: Record<ObservabilityWindow, {
+  timeoutMs: number;
+  maxPages: number;
+  maxRows: number;
+}> = {
+  "24h": {
+    timeoutMs: 10000,   // 10s for 24h: faster query
+    maxPages: 5,        // Limit to 5 pages
+    maxRows: 5000,      // Limit to 5000 rows
+  },
+  "7d": {
+    timeoutMs: 8000,    // 8s for 7d: much faster, bounded collection
+    maxPages: 3,        // Aggressive limit: 3 pages max
+    maxRows: 3000,      // Aggressive limit: 3000 rows max
+  },
+};
+
 const CACHE_MS = 7000;
-const REQUEST_TIMEOUT_MS = 30000; // 30s: allow slower 7d window collection to complete
+const REQUEST_TIMEOUT_MS = 12000; // 12s hard timeout on HTTP request
 
 const cache = new Map<
   ObservabilityWindow,
@@ -48,17 +66,24 @@ export async function GET(req: Request) {
       return NextResponse.json(cached.payload, { headers: CORS_HEADERS });
     }
 
-    // Wrap collectHermesObservability with timeout, but return cached data on timeout
+    // Get window-specific config
+    const config = WINDOW_CONFIG[window];
+
+    // Wrap collectHermesObservability with window-specific timeout
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
 
     let payload: HermesObservability;
     try {
       payload = await Promise.race([
-        collectHermesObservability(window),
+        collectHermesObservability(window, {
+          maxPages: config.maxPages,
+          maxRows: config.maxRows,
+          timeoutMs: config.timeoutMs,
+        }),
         new Promise<HermesObservability>((_, reject) =>
           controller.signal.addEventListener("abort", () =>
-            reject(new Error("OBSERVABILITY_TIMEOUT"))
+            reject(new Error("REQUEST_TIMEOUT"))
           )
         ),
       ]);
@@ -70,8 +95,83 @@ export async function GET(req: Request) {
         return NextResponse.json(cached.payload, { headers: CORS_HEADERS });
       }
       
-      // If no cached data, re-throw the error
-      throw collectionError;
+      // If no cached data, return a degraded but valid response
+      const errorMessage =
+        collectionError instanceof Error ? collectionError.message : "Unknown error";
+      
+      // Return a partial/degraded response that still provides structure
+      const now_iso = new Date().toISOString();
+      const degradedPayload: HermesObservability = ({
+        status: "partial",
+        error: errorMessage,
+        source: {
+          status: "warning",
+          source: "langfuse",
+          message: `Collection timeout after ${config.timeoutMs}ms - returning empty set`,
+          warning: "Timeout occurred during data collection",
+          lastSync: null,
+          window,
+          fromStartTime: now_iso,
+          toStartTime: now_iso,
+          rows: 0,
+          filteredRows: 0,
+          includedRows: 0,
+          pages: 0,
+          truncated: false,
+        },
+        health: {
+          status: "warning",
+          ok: false,
+        },
+        health_summary: {
+          status: "warning",
+          ok: false,
+          liveController: false,
+          traceRunning: false,
+        },
+        totals: {
+          inputTokens: 0,
+          outputTokens: 0,
+          totalTokens: 0,
+          cacheReadTokens: 0,
+          cacheWriteTokens: 0,
+          reportedCost: 0,
+          estimatedCost: null,
+          effectiveCost: 0,
+          costBasis: "local_zero",
+          totalCost: 0,
+          generationCalls: 0,
+          toolCalls: 0,
+          uniqueTraces: 0,
+          uniqueSessions: 0,
+          errors: 0,
+          latestTimestamp: null,
+        },
+        byModel: [],
+        byProvider: [],
+        completeness: null,
+        timeSeries: {} as any,
+        correlationCoverage: { status: "missing", totalObservations: 0, eligibleObservations: 0, withOperationId: 0, withGoalId: 0, withRunId: 0, withStageId: 0, invalidIdentifierObservations: 0, fullyCorrelatedObservations: 0, operationCount: 0, fullyCorrelatedOperations: 0, percentage: null },
+        operations: [],
+        accounting: { operationCount: 0, rowCap: 0, returnedOperations: 0, truncatedOperations: false, reportedCost: 0, estimatedCost: null, effectiveCost: 0, costBasis: "local_zero", reconciliation: "missing", warnings: [] },
+        graftCohort: { status: "missing", signalObservations: 0, signalOperations: 0, graft: { platform: "unknown", provider: "unknown", model: "unknown", cost: { low: 0, high: 0, basis: "unknown" }, generation: { tokens: { low: 0, high: 0 }, calls: { low: 0, high: 0 } }, tokenDist: [], toolCalls: [] }, baseline: { platform: "unknown", provider: "unknown", model: "unknown", cost: { low: 0, high: 0, basis: "unknown" }, generation: { tokens: { low: 0, high: 0 }, calls: { low: 0, high: 0 } }, tokenDist: [], toolCalls: [] }, delta: { costPercentChange: null, tokensPercentChange: null, toolsAdded: [], toolsRemoved: [] } },
+        workflow: null,
+        amplification: null,
+        sessions: [],
+        tools: { recent: [], repeated: [] },
+        topExpensiveTraces: [],
+        topLargeTraces: [],
+        wasteFlags: [],
+        recommendations: [],
+        observationsByTrace: {},
+        traceCount: 0,
+        sessionCount: 0,
+        // Mark as partial so consumers know this is degraded
+        isPartial: true,
+        partialReason: "Collection timeout - returning empty set",
+      } as any);
+      
+      return NextResponse.json(degradedPayload, { status: 200, headers: CORS_HEADERS });
     }
     
     clearTimeout(timeoutId);

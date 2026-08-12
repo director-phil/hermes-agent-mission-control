@@ -326,6 +326,22 @@ export interface HermesObservability {
   topLargeTraces: SessionTraceAggregate[];
   wasteFlags: WasteFlag[];
   recommendations: string[];
+  // Optional fields for degraded/partial responses
+  status?: "ok" | "partial" | "error";
+  error?: string;
+  isPartial?: boolean;
+  partialReason?: string;
+  health?: {
+    status: string;
+    ok?: boolean;
+    message?: string;
+  };
+  health_summary?: {
+    status: string;
+    ok: boolean;
+    liveController?: boolean;
+    traceRunning?: boolean;
+  };
 }
 
 interface CollectOptions {
