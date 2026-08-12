@@ -13,7 +13,8 @@ const CORS_HEADERS = {
 
 /**
  * Classifies whether a trace should be considered "stale" based on its age.
- * A trace older than 30 minutes is considered stale and not active in self-heal logic.
+ * A trace older than 30 minutes is considered stale for observability/analytics purposes.
+ * This does NOT affect liveness judgment - the bridge's liveController is authoritative.
  * Uses lastActivity (preferred for bridge-mirrored runs) or falls back to startTime/createdAt.
  */
 function classifyTraceAsStale(run: Record<string, unknown>): boolean {
@@ -56,26 +57,17 @@ export async function GET() {
       return NextResponse.json([], { headers: CORS_HEADERS });
     }
 
-    // Enrich runs with stale classification and clear liveness for stale traces
+    // Add stale classification to each run, but preserve all bridge-derived fields
+    // The bridge's liveController field is authoritative and reflects actual controller heartbeat
     const enrichedRuns = payload.index.map((run) => {
       const runObj = run as Record<string, unknown>;
       const isStale = classifyTraceAsStale(runObj);
 
-      // For stale traces, clear all liveness fields
-      // Even if the bridge published them as live, they're old snapshots and should not be active
-      if (isStale) {
-        return {
-          ...runObj,
-          isStale: true,
-          liveController: false,  // Clear stale live-controller markers
-          traceRunning: false,    // Clear stale running markers
-        } as Record<string, unknown>;
-      }
-
-      // For recent traces, preserve all bridge-derived fields
+      // Simply add isStale marker; DO NOT modify liveness fields
+      // Liveness is determined by the bridge with its own heartbeat logic
       return {
         ...runObj,
-        isStale: false,
+        isStale,
       } as Record<string, unknown>;
     });
 
