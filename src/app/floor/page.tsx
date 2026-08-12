@@ -21,7 +21,7 @@ import { EmptyState, Eyebrow, Panel, Pill, SectionHeader, Skeleton, rise } from 
 type RunStatusTone = "neutral" | "up" | "down" | "warn" | "accent";
 type FileOp = "read" | "patch" | "write" | "delete";
 
-interface RunIndex {
+export interface RunIndex {
   goal: string;
   status: string;
   attempts: number;
@@ -151,6 +151,7 @@ interface RunGraph {
   goal: string;
   attempt: number;
   status: string;
+  hasSubstantiveContent?: boolean;
   startedAt: string | null;
   endedAt: string | null;
   running: boolean;
@@ -167,7 +168,7 @@ interface RunGraph {
 
 type AgentNodeData = {
   agent: AgentTrace;
-  running: boolean;
+  live: boolean;
 };
 
 type FileNodeData = {
@@ -198,8 +199,15 @@ async function getJSON<T>(url: string): Promise<T | null> {
   }
 }
 
-function isTrulyRunning(run: Pick<RunIndex, "liveController"> | null | undefined) {
+export function isTrulyRunning(run: Pick<RunIndex, "liveController"> | null | undefined) {
   return run?.liveController === true;
+}
+
+export function getRunLiveBadge(run: Pick<RunIndex, "liveController" | "traceRunning"> | null | undefined): {
+  tone: RunStatusTone;
+  label: "live" | "seen";
+} {
+  return isTrulyRunning(run) ? { tone: "accent", label: "live" } : { tone: "neutral", label: "seen" };
 }
 
 function normalizeStatus(status: string | null | undefined) {
@@ -374,8 +382,9 @@ function safeId(prefix: string, value: string) {
 
 function AgentTraceNode({ data }: NodeProps<AgentNode>) {
   const toolEntries = Object.entries(data.agent.tools).sort((a, b) => b[1] - a[1]).slice(0, 3);
+  const liveBadge = getRunLiveBadge({ liveController: data.live });
   return (
-    <div className={`floor-node floor-node-agent ${data.running ? "is-running" : ""}`}>
+    <div className={`floor-node floor-node-agent ${data.live ? "is-running" : ""}`}>
       <Handle type="target" position={Position.Left} className="floor-handle" />
       <Handle type="source" position={Position.Right} className="floor-handle" />
       <div className="flex items-start justify-between gap-3">
@@ -386,8 +395,8 @@ function AgentTraceNode({ data }: NodeProps<AgentNode>) {
           </div>
           <p className="mt-1 truncate text-[11.5px] text-[var(--text-3)]">{data.agent.model || "model pending"}</p>
         </div>
-        <Pill tone={data.running ? "accent" : "neutral"} className="!py-0.5 !text-[10px]">
-          {data.running ? "live" : "seen"}
+        <Pill tone={liveBadge.tone} className="!py-0.5 !text-[10px]">
+          {liveBadge.label}
         </Pill>
       </div>
       <div className="mt-4 grid grid-cols-2 gap-2">
@@ -443,19 +452,19 @@ const nodeTypes = {
   file: FileTraceNode,
 };
 
-function buildGraph(graph: RunGraph): { nodes: FloorNode[]; edges: Edge[] } {
+function buildGraph(graph: RunGraph, liveController: boolean): { nodes: FloorNode[]; edges: Edge[] } {
   const agentByLabel = new Map(graph.agents.map((agent) => [agent.label, agent]));
   const fileIdByPath = new Map(graph.files.map((file) => [file.path, safeId("file", file.path)]));
   const nodes: FloorNode[] = [];
   const edges: Edge[] = [];
 
   graph.agents.forEach((agent, index) => {
-    const running = graph.currentAgent ? agent.label === graph.currentAgent : graph.running && !agent.endedAt;
+    const live = liveController && (graph.currentAgent ? agent.label === graph.currentAgent : graph.running && !agent.endedAt);
     nodes.push({
       id: safeId("agent", agent.label),
       type: "agent",
       position: { x: 0, y: index * 168 },
-      data: { agent, running },
+      data: { agent, live },
     });
   });
 
@@ -547,19 +556,27 @@ function timelineText(item: TimelineEntry) {
   return item.file ? item.node + " → " + action + " " + shortPath(item.file) : item.node + " → " + action;
 }
 
-type RunBucket = "active" | "done" | "failed";
+export type RunTab = "queued" | "running" | "done" | "failed";
 
-function runBucket(run: RunIndex): RunBucket {
+export type TabCounts = Record<RunTab, number>;
+
+export function runTab(run: RunIndex): RunTab {
   const s = normalizeStatus(run.status);
   if (isFailedStatus(s)) return "failed";
-  if (
-    isTrulyRunning(run) ||
-    ["pending", "staged", "ready", "blocked", "queued", "recovering", "external_recovery"].includes(s)
-  )
-    return "active";
+  if (s === "running" || isTrulyRunning(run)) return "running";
+  if (s === "queued" || ["pending", "staged", "ready", "blocked", "recovering", "external_recovery"].includes(s)) {
+    return "queued";
+  }
   if (isTerminalSuccessStatus(s) || s === "shipping") return "done";
-  // superseded / unknown / any other terminal-ish status → Completed (not actionable, keep out of Up next)
+  // Superseded / unknown / any other terminal-ish status remains visible under Done,
+  // so the four tab counts still account for the full /api/runs dataset.
   return "done";
+}
+
+export function computeTabCounts(runs: RunIndex[]): TabCounts {
+  const counts: TabCounts = { queued: 0, running: 0, done: 0, failed: 0 };
+  for (const run of runs) counts[runTab(run)] += 1;
+  return counts;
 }
 
 function hasSubstantiveGraph(run: RunIndex) {
@@ -571,8 +588,9 @@ function defaultSelectedGoal(runs: RunIndex[]) {
   return runs.find(isTrulyRunning)?.goal ?? runs.find(hasSubstantiveGraph)?.goal ?? runs[0]?.goal ?? null;
 }
 
-const RUN_TABS: Array<{ key: RunBucket; label: string }> = [
-  { key: "active", label: "Up next + running" },
+const RUN_TABS: Array<{ key: RunTab; label: string }> = [
+  { key: "queued", label: "Queued" },
+  { key: "running", label: "Running" },
   { key: "done", label: "Completed" },
   { key: "failed", label: "Failed" },
 ];
@@ -651,17 +669,18 @@ function RunRail({
   onSelect: (goal: string) => void;
   recovery: RecoveryEvent[];
 }) {
-  const [tab, setTab] = useState<RunBucket>("active");
+  const [tab, setTab] = useState<RunTab>("queued");
 
-  const buckets = useMemo(() => {
-    const groups: Record<RunBucket, RunIndex[]> = { active: [], done: [], failed: [] };
-    for (const run of runs) groups[runBucket(run)].push(run);
-    // active tab: running first, then most-recent
-    groups.active.sort((a, b) => Number(isTrulyRunning(b)) - Number(isTrulyRunning(a)) || Date.parse(b.lastActivity || "") - Date.parse(a.lastActivity || ""));
+  const tabCounts = useMemo(() => computeTabCounts(runs), [runs]);
+  const tabRows = useMemo(() => {
+    const groups: Record<RunTab, RunIndex[]> = { queued: [], running: [], done: [], failed: [] };
+    for (const run of runs) groups[runTab(run)].push(run);
+    groups.queued.sort((a, b) => Date.parse(b.lastActivity || "") - Date.parse(a.lastActivity || ""));
+    groups.running.sort((a, b) => Number(isTrulyRunning(b)) - Number(isTrulyRunning(a)) || Date.parse(b.lastActivity || "") - Date.parse(a.lastActivity || ""));
     return groups;
   }, [runs]);
 
-  const visible = buckets[tab];
+  const visible = tabRows[tab];
 
   return (
     <Panel className="h-full min-h-[620px] overflow-hidden p-3">
@@ -670,11 +689,11 @@ function RunRail({
         title="Live queue"
         action={<Pill tone={runs.some(isTrulyRunning) ? "accent" : "neutral"}>{runs.length}</Pill>}
       />
-      <div className="mb-3 grid grid-cols-3 gap-1 rounded-[var(--r-md)] border border-[var(--line)] bg-[var(--surface-1)] p-1">
+      <div className="mb-3 grid grid-cols-4 gap-1 rounded-[var(--r-md)] border border-[var(--line)] bg-[var(--surface-1)] p-1">
         {RUN_TABS.map((entry) => {
-          const count = buckets[entry.key].length;
+          const count = tabCounts[entry.key];
           const isActive = tab === entry.key;
-          const tone = entry.key === "failed" && count > 0 ? "var(--down)" : entry.key === "active" ? "var(--accent)" : "var(--up)";
+          const tone = entry.key === "failed" && count > 0 ? "var(--down)" : entry.key === "running" ? "var(--accent)" : entry.key === "done" ? "var(--up)" : "var(--text-2)";
           return (
             <button
               key={entry.key}
@@ -703,7 +722,7 @@ function RunRail({
       ) : visible.length === 0 ? (
         <EmptyState
           icon={<GitBranch className="h-6 w-6" />}
-          title={tab === "failed" ? "No failures" : tab === "done" ? "Nothing completed yet" : "Nothing queued or running"}
+          title={tab === "failed" ? "No failures" : tab === "done" ? "Nothing completed yet" : tab === "running" ? "Nothing running" : "Nothing queued"}
           hint={tab === "failed" ? "Failed goals will surface here for the Codex recovery lane." : "Runs appear as the conveyor dispatches them."}
         />
       ) : (
@@ -748,7 +767,7 @@ function RunRail({
         </div>
       )}
       {tab === "failed" && (
-        <RecoveryLog events={recovery} forGoal={selected && buckets.failed.some((r) => r.goal === selected) ? selected : null} />
+        <RecoveryLog events={recovery} forGoal={selected && tabRows.failed.some((r) => r.goal === selected) ? selected : null} />
       )}
     </Panel>
   );
@@ -882,15 +901,23 @@ function PipelineStrip({ run }: { run: RunIndex | null }) {
   );
 }
 
+function graphHasSubstantiveContent(graph: RunGraph, nodeCount: number) {
+  if (nodeCount === 0) return false;
+  if (graph.hasSubstantiveContent === false) return false;
+  return true;
+}
+
 function FlowCanvas({ graph, loaded, selectedRun }: { graph: RunGraph | null; loaded: boolean; selectedRun: RunIndex | null }) {
-  const built = useMemo(() => graph ? buildGraph(graph) : { nodes: [], edges: [] }, [graph]);
+  const selectedRunIsLive = isTrulyRunning(selectedRun);
+  const built = useMemo(() => graph ? buildGraph(graph, selectedRunIsLive) : { nodes: [], edges: [] }, [graph, selectedRunIsLive]);
   const [nodes, setNodes, onNodesChange] = useNodesState<FloorNode>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
   const flowRef = useRef<ReactFlowInstance<FloorNode, Edge> | null>(null);
   const fittedGoalRef = useRef<string | null>(null);
   const timeline = graph?.timeline?.slice(-15).reverse() ?? [];
   const headerStatus = selectedRun?.status || graph?.status || "unknown";
-  const headerRunning = isTrulyRunning(selectedRun);
+  const headerRunning = selectedRunIsLive;
+  const hasGraphContent = graph ? graphHasSubstantiveContent(graph, built.nodes.length) : false;
 
   useEffect(() => {
     if (!graph) {
@@ -944,6 +971,13 @@ function FlowCanvas({ graph, loaded, selectedRun }: { graph: RunGraph | null; lo
           </div>
         ) : !graph ? (
           <EmptyState icon={<GitBranch className="h-6 w-6" />} title="No graph loaded" hint="Select a mirrored run from the rail." className="h-full" />
+        ) : !hasGraphContent ? (
+          <EmptyState
+            icon={<Info className="h-6 w-6" />}
+            title="No graph data"
+            hint="This run has not yet produced a graph. Check back after the run progresses."
+            className="h-full"
+          />
         ) : headerRunning && graph.files.length === 0 && graph.counts.toolCalls === 0 && nodes.length <= 1 && edges.length === 0 ? (
           <EmptyState
             icon={<Radio className="h-6 w-6 animate-pulse" />}

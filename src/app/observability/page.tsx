@@ -49,14 +49,23 @@ import type {
 } from "@/lib/langfuse-observability";
 
 type Tone = "neutral" | "up" | "down" | "warn" | "accent";
+type JSONResult<T> = [data: T | null, error: string | null, dataAge: number | null, stale: boolean];
 
-async function getJSON<T>(url: string): Promise<T | null> {
+export async function getJSON<T>(url: string): Promise<JSONResult<T>> {
   try {
     const response = await fetch(url);
-    if (!response.ok) return null;
-    return (await response.json()) as T;
-  } catch {
-    return null;
+    const cacheAgeHeader = response.headers.get("x-cache-age");
+    const cacheErrorHeader = response.headers.get("x-cache-error");
+    const dataAge = cacheAgeHeader == null ? null : Number(cacheAgeHeader);
+    const safeDataAge = Number.isFinite(dataAge) ? dataAge : null;
+    const stale = response.headers.get("x-cache-stale") === "1";
+    const body = await response.json().catch(() => null) as (T & { error?: string; lastGoodSnapshot?: T | null }) | null;
+    if (!response.ok) {
+      return [body?.lastGoodSnapshot ?? null, body?.error ?? `Request failed with ${response.status}`, safeDataAge, true];
+    }
+    return [body as T, stale ? cacheErrorHeader ?? "Data is stale." : null, safeDataAge, stale];
+  } catch (error) {
+    return [null, error instanceof Error && error.message ? error.message : "Network request failed.", null, true];
   }
 }
 
@@ -80,6 +89,16 @@ function timeAgo(d: string | null): string {
   const hours = Math.floor(mins / 60);
   if (hours < 24) return `${hours}h ago`;
   return `${Math.floor(hours / 24)}d ago`;
+}
+
+function fmtDataAge(value: number | null): string {
+  if (value == null || !Number.isFinite(value)) return "unknown age";
+  const mins = Math.max(0, Math.floor(value / 60000));
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins} min ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours} hr ago`;
+  return `${Math.floor(hours / 24)} d ago`;
 }
 
 function fmtRatio(value: number | null | undefined): string {
@@ -237,6 +256,49 @@ function HeaderHero({
           </p>
         )}
       </div>
+    </div>
+  );
+}
+
+function DataFreshnessBanner({
+  error,
+  dataAge,
+  isStale,
+  onRetry,
+}: {
+  error: string | null;
+  dataAge: number | null;
+  isStale: boolean;
+  onRetry: () => void;
+}) {
+  const old = dataAge != null && dataAge > 10 * 60_000;
+  if (!error && !old) return null;
+  const warn = Boolean(error) || isStale;
+  return (
+    <div
+      className={`mb-5 flex flex-wrap items-center justify-between gap-3 rounded-[8px] border px-4 py-3 text-[12.5px] ${
+        warn
+          ? "border-[color-mix(in_srgb,var(--warn)_28%,transparent)] bg-[color-mix(in_srgb,var(--warn)_9%,transparent)] text-[var(--text-2)]"
+          : "border-[color-mix(in_srgb,var(--accent)_24%,transparent)] bg-[color-mix(in_srgb,var(--accent)_7%,transparent)] text-[var(--text-2)]"
+      }`}
+    >
+      <div className="flex min-w-0 items-start gap-2">
+        {warn ? (
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-[var(--warn)]" />
+        ) : (
+          <RefreshCw className="mt-0.5 h-4 w-4 shrink-0 text-[var(--accent)]" />
+        )}
+        <div className="min-w-0">
+          <p className="font-medium text-[var(--text)]">
+            {warn ? `Data is stale (last updated ${fmtDataAge(dataAge)})` : `Last updated ${fmtDataAge(dataAge)}`}
+          </p>
+          {error && <p className="mt-0.5 truncate text-[11.5px] text-[var(--text-3)]">{error}</p>}
+        </div>
+      </div>
+      <Button size="sm" variant="ghost" onClick={onRetry}>
+        <RefreshCw className="h-3.5 w-3.5" />
+        Retry
+      </Button>
     </div>
   );
 }
@@ -960,11 +1022,17 @@ function CompletenessFooter({
 export default function ObservabilityPage() {
   const [window, setWindow] = useState<ObservabilityWindow>("24h");
   const [data, setData] = useState<HermesObservability | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [dataAge, setDataAge] = useState<number | null>(null);
+  const [isStale, setIsStale] = useState(false);
   const [loaded, setLoaded] = useState(false);
 
   const load = useCallback(async () => {
-    const observability = await getJSON<HermesObservability>(`/api/hermes/observability?window=${window}`);
+    const [observability, fetchError, age, stale] = await getJSON<HermesObservability>(`/api/hermes/observability?window=${window}`);
     if (observability) setData(observability);
+    setError(fetchError);
+    setDataAge(age);
+    setIsStale(stale || Boolean(fetchError) || (age != null && age > 10 * 60_000));
     setLoaded(true);
   }, [window]);
 
@@ -983,6 +1051,7 @@ export default function ObservabilityPage() {
   return (
     <div className="relative z-10 w-full mx-auto pb-16">
       <HeaderHero data={data} window={window} onWindowChange={setWindow} />
+      <DataFreshnessBanner error={error} dataAge={dataAge} isStale={isStale} onRetry={load} />
 
       {!loaded ? (
         <div className="grid grid-cols-1 gap-5 lg:grid-cols-4">
@@ -993,7 +1062,12 @@ export default function ObservabilityPage() {
         </div>
       ) : !data ? (
         <Panel className="p-5">
-          <EmptyState icon={<AlertTriangle className="h-6 w-6" />} title="Observability unavailable" hint="The Langfuse observability endpoint did not return a payload." />
+          <EmptyState
+            icon={<AlertTriangle className="h-6 w-6" />}
+            title="Observability unavailable"
+            hint={error ?? "The Langfuse observability endpoint did not return a payload."}
+            action={<Button size="sm" variant="ghost" onClick={load}>Retry</Button>}
+          />
         </Panel>
       ) : (
         <>

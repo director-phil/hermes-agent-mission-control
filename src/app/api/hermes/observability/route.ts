@@ -13,8 +13,20 @@ const cache = new Map<
   {
     expiresAt: number;
     payload: HermesObservability;
+    cachedAt: number;
   }
 >();
+
+function errorMessage(error: unknown) {
+  return error instanceof Error && error.message ? error.message : "Failed to collect Hermes observability.";
+}
+
+function cacheHeaders(cachedAt: number | null, extra?: HeadersInit) {
+  return {
+    ...(extra ?? {}),
+    "X-Cache-Age": cachedAt == null ? "0" : String(Math.max(0, Date.now() - cachedAt)),
+  };
+}
 
 export async function GET(req: Request) {
   const url = new URL(req.url);
@@ -30,14 +42,43 @@ export async function GET(req: Request) {
   const now = Date.now();
   const cached = cache.get(window);
   if (cached && cached.expiresAt > now) {
-    return NextResponse.json(cached.payload);
+    return NextResponse.json(cached.payload, {
+      headers: cacheHeaders(cached.cachedAt),
+    });
   }
 
-  const payload = await collectHermesObservability(window);
-  cache.set(window, {
-    expiresAt: now + CACHE_MS,
-    payload,
-  });
+  try {
+    const payload = await collectHermesObservability(window);
+    const cachedAt = Date.now();
+    cache.set(window, {
+      expiresAt: cachedAt + CACHE_MS,
+      payload,
+      cachedAt,
+    });
 
-  return NextResponse.json(payload);
+    return NextResponse.json(payload, {
+      headers: cacheHeaders(cachedAt),
+    });
+  } catch (error) {
+    const message = errorMessage(error);
+    if (cached) {
+      return NextResponse.json(cached.payload, {
+        headers: cacheHeaders(cached.cachedAt, {
+          "X-Cache-Stale": "1",
+          "X-Cache-Error": message,
+        }),
+      });
+    }
+
+    return NextResponse.json(
+      {
+        error: message,
+        lastGoodSnapshot: null,
+      },
+      {
+        status: 502,
+        headers: cacheHeaders(null),
+      },
+    );
+  }
 }
