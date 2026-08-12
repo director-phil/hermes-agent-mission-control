@@ -7,7 +7,7 @@ import {
 } from "@/lib/langfuse-observability";
 
 const CACHE_MS = 7000;
-const REQUEST_TIMEOUT_MS = 15000;
+const REQUEST_TIMEOUT_MS = 30000; // 30s: allow slower 7d window collection to complete
 
 const cache = new Map<
   ObservabilityWindow,
@@ -48,7 +48,7 @@ export async function GET(req: Request) {
       return NextResponse.json(cached.payload, { headers: CORS_HEADERS });
     }
 
-    // Wrap collectHermesObservability with timeout
+    // Wrap collectHermesObservability with timeout, but return cached data on timeout
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
 
@@ -62,9 +62,19 @@ export async function GET(req: Request) {
           )
         ),
       ]);
-    } finally {
+    } catch (collectionError) {
       clearTimeout(timeoutId);
+      
+      // If we have stale cached data, return it instead of failing
+      if (cached && cached.expiresAt <= now) {
+        return NextResponse.json(cached.payload, { headers: CORS_HEADERS });
+      }
+      
+      // If no cached data, re-throw the error
+      throw collectionError;
     }
+    
+    clearTimeout(timeoutId);
 
     cache.set(window, {
       expiresAt: now + CACHE_MS,
