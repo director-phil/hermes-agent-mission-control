@@ -2029,9 +2029,9 @@ function failurePayload(
 ): HermesObservability {
   return {
     source: {
-      status: "error",
+      status: "warning",
       source: "langfuse",
-      message: "Langfuse unavailable",
+      message: "Langfuse temporarily unavailable or credentials not configured",
       warning,
       lastSync: null,
       window,
