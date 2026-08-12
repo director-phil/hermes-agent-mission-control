@@ -42,27 +42,6 @@ function classifyTraceAsStale(run: Record<string, unknown>): boolean {
   return ageMs > STALE_THRESHOLD_MS;
 }
 
-/**
- * Determines if a trace is actively running based on status and recency.
- */
-function isTraceRunning(run: Record<string, unknown>, isStale: boolean): boolean {
-  // Stale traces are never running (for self-heal purposes)
-  if (isStale) return false;
-
-  // Check status field if present
-  const status = typeof run.status === "string" ? run.status.toLowerCase() : null;
-  if (
-    status === "completed" ||
-    status === "failed" ||
-    status === "cancelled"
-  ) {
-    return false;
-  }
-
-  // Default: active if not stale and no terminal status
-  return true;
-}
-
 export async function OPTIONS() {
   return NextResponse.json({}, { headers: CORS_HEADERS });
 }
@@ -77,72 +56,23 @@ export async function GET() {
       return NextResponse.json([], { headers: CORS_HEADERS });
     }
 
-    // Enrich runs with stale classification and trace status
+    // Enrich runs with stale classification only, preserving all bridge-derived fields
     const enrichedRuns = payload.index.map((run) => {
       const runObj = run as Record<string, unknown>;
       const isStale = classifyTraceAsStale(runObj);
-      const traceRunning = isTraceRunning(runObj, isStale);
 
+      // Add isStale field for self-heal logic to use when filtering active traces
+      // but DO NOT modify traceRunning or other bridge fields
       return {
         ...runObj,
         isStale,
-        traceRunning,
       } as Record<string, unknown>;
     });
 
-    // Count live controller instances (non-stale, explicitly marked)
-    const liveControllerCount = enrichedRuns.filter(
-      (r) => r["liveController"] === true && !r["isStale"]
-    ).length;
-
-    // Count ghost traces (stale runs that should not be in active metrics)
-    const ghostTraceCount = enrichedRuns.filter((r) => r["isStale"]).length;
-
-    // Count actively running traces (non-stale and in running state)
-    const traceRunningCount = enrichedRuns.filter(
-      (r) => r["traceRunning"] === true
-    ).length;
-
-    // Return the enriched runs array directly for backward compatibility
-    // (clients expect RunIndex[], not an object). Attach metadata as properties.
-    const response = enrichedRuns as unknown[];
-    
-    // Attach summary metadata as properties (non-enumerable to avoid breaking array iteration)
-    Object.defineProperties(response, {
-      summary: {
-        value: {
-          totalRuns: enrichedRuns.length,
-          liveControllerInstances: liveControllerCount,
-          ghostTraces: ghostTraceCount,
-          activeTraces: traceRunningCount,
-          stalePeriodMs: 30 * 60 * 1000,
-        },
-        enumerable: false,
-      },
-      liveController: {
-        value: liveControllerCount,
-        enumerable: false,
-      },
-      liveControllerTrue: {
-        value: liveControllerCount,
-        enumerable: false,
-      },
-      ghost: {
-        value: ghostTraceCount,
-        enumerable: false,
-      },
-      traceRunning: {
-        value: traceRunningCount,
-        enumerable: false,
-      },
-    });
-
-    return NextResponse.json(response, { headers: CORS_HEADERS });
+    // Return the enriched array directly (preserves backward compatibility)
+    return NextResponse.json(enrichedRuns, { headers: CORS_HEADERS });
   } catch (error) {
     console.error("[runs] Error reading runs:", error);
-    return NextResponse.json(
-      [],
-      { headers: CORS_HEADERS }
-    );
+    return NextResponse.json([], { headers: CORS_HEADERS });
   }
 }
