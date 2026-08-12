@@ -56,16 +56,25 @@ export async function GET() {
       return NextResponse.json([], { headers: CORS_HEADERS });
     }
 
-    // Enrich runs with stale classification only, preserving all bridge-derived fields
+    // Enrich runs with stale classification and clear liveness for old traces
     const enrichedRuns = payload.index.map((run) => {
       const runObj = run as Record<string, unknown>;
       const isStale = classifyTraceAsStale(runObj);
 
-      // Add isStale field for self-heal logic to use when filtering active traces
-      // but DO NOT modify traceRunning or other bridge fields
+      // For stale traces, clear the liveness signals so consumers don't show them as active
+      if (isStale) {
+        return {
+          ...runObj,
+          isStale: true,
+          liveController: false,  // Clear live controller for old traces
+          traceRunning: false,    // Clear trace running for old traces
+        } as Record<string, unknown>;
+      }
+
+      // For recent traces, preserve all fields as-is and just mark them not-stale
       return {
         ...runObj,
-        isStale,
+        isStale: false,
       } as Record<string, unknown>;
     });
 
