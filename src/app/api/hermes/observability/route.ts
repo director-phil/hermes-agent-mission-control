@@ -13,12 +13,12 @@ const WINDOW_CONFIG: Record<ObservabilityWindow, {
   maxRows: number;
 }> = {
   "24h": {
-    timeoutMs: 10000,   // 10s for 24h: faster query
+    timeoutMs: 9000,    // 9s for 24h: fast, leaves 3s margin for processing
     maxPages: 5,        // Limit to 5 pages
     maxRows: 5000,      // Limit to 5000 rows
   },
   "7d": {
-    timeoutMs: 5000,    // 5s for 7d: ultra-fast collection with safety margin
+    timeoutMs: 8000,    // 8s for 7d: ultra-fast collection, leaves 4s margin
     maxPages: 1,        // Single page only: no pagination overhead
     maxRows: 1000,      // Minimal rows: 1000 max for fast aggregation
   },
@@ -46,6 +46,29 @@ export async function OPTIONS() {
   return NextResponse.json({}, { headers: CORS_HEADERS });
 }
 
+/**
+ * Wraps a promise with a hard timeout.
+ * Rejects with "TIMEOUT" error if promise doesn't settle within timeoutMs.
+ */
+async function withTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number
+): Promise<T> {
+  let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+  
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeoutHandle = setTimeout(() => {
+      reject(new Error("TIMEOUT"));
+    }, timeoutMs);
+  });
+
+  try {
+    return await Promise.race([promise, timeoutPromise]);
+  } finally {
+    if (timeoutHandle) clearTimeout(timeoutHandle);
+  }
+}
+
 export async function GET(req: Request) {
   try {
     const url = new URL(req.url);
@@ -69,45 +92,36 @@ export async function GET(req: Request) {
     // Get window-specific config
     const config = WINDOW_CONFIG[window];
 
-    // Wrap collectHermesObservability with window-specific timeout
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-
+    // Wrap collectHermesObservability with hard timeout
     let payload: HermesObservability;
     try {
-      payload = await Promise.race([
+      payload = await withTimeout(
         collectHermesObservability(window, {
           maxPages: config.maxPages,
           maxRows: config.maxRows,
           timeoutMs: config.timeoutMs,
         }),
-        new Promise<HermesObservability>((_, reject) =>
-          controller.signal.addEventListener("abort", () =>
-            reject(new Error("REQUEST_TIMEOUT"))
-          )
-        ),
-      ]);
+        REQUEST_TIMEOUT_MS
+      );
     } catch (collectionError) {
-      clearTimeout(timeoutId);
-      
       // If we have stale cached data, return it instead of failing
       if (cached && cached.expiresAt <= now) {
         return NextResponse.json(cached.payload, { headers: CORS_HEADERS });
       }
-      
+
       // If no cached data, return a degraded but valid response
       const errorMessage =
         collectionError instanceof Error ? collectionError.message : "Unknown error";
-      
+
       // Return a partial/degraded response that still provides structure
       const now_iso = new Date().toISOString();
-      const degradedPayload: HermesObservability = (({
+      const degradedPayload: HermesObservability = ({
         status: "partial",
         error: errorMessage,
         source: {
           status: "warning",
           source: "langfuse",
-          message: `Collection timeout after ${config.timeoutMs}ms - returning empty set`,
+          message: `Collection timeout - returning empty set`,
           warning: "Timeout occurred during data collection",
           lastSync: null,
           window,
@@ -169,12 +183,10 @@ export async function GET(req: Request) {
         // Mark as partial so consumers know this is degraded
         isPartial: true,
         partialReason: "Collection timeout - returning empty set",
-      } as any)) as HermesObservability;
-      
+      } as any) as HermesObservability;
+
       return NextResponse.json(degradedPayload, { status: 200, headers: CORS_HEADERS });
     }
-    
-    clearTimeout(timeoutId);
 
     cache.set(window, {
       expiresAt: now + CACHE_MS,
