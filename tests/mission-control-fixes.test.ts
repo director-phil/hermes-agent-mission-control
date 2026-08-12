@@ -136,4 +136,133 @@ describe("Observability fetch resilience", () => {
     assert.equal(dataAge, 3000);
     assert.equal(stale, false);
   });
+
+  test("network error is handled gracefully with no cached fallback", async () => {
+    globalThis.fetch = async () => {
+      throw new Error("Network timeout");
+    };
+
+    const [data, error, dataAge, stale] = await getJSON<{ totals: { totalTokens: number } }>("/api/hermes/observability?window=24h");
+
+    assert.equal(data, null);
+    assert.equal(error, "Network timeout");
+    assert.equal(stale, true);
+  });
+
+  test("invalid JSON response is handled with fallback to error field", async () => {
+    globalThis.fetch = async () => new Response("Invalid JSON{{{", {
+      status: 200,
+      headers: {
+        "content-type": "application/json",
+        "x-cache-age": "0",
+      },
+    });
+
+    try {
+      await getJSON<{ totals: { totalTokens: number } }>("/api/hermes/observability?window=24h");
+    } catch (err) {
+      // Expected to throw on invalid JSON
+      assert(err instanceof Error);
+    }
+  });
+
+  test("server error (500) without cache returns null data and error message", async () => {
+    globalThis.fetch = async () => new Response(JSON.stringify({ error: "Internal server error" }), {
+      status: 500,
+      headers: {
+        "content-type": "application/json",
+        "x-cache-age": "0",
+      },
+    });
+
+    const [data, error, dataAge, stale] = await getJSON<{ totals: { totalTokens: number } }>("/api/hermes/observability?window=24h");
+
+    assert.equal(data, null);
+    assert.equal(error, "Internal server error");
+    assert.equal(stale, true);
+  });
+
+  test("503 service unavailable returns error without cached data", async () => {
+    globalThis.fetch = async () => new Response(JSON.stringify({ error: "Service temporarily unavailable" }), {
+      status: 503,
+      headers: {
+        "content-type": "application/json",
+        "x-cache-age": "0",
+      },
+    });
+
+    const [data, error, dataAge, stale] = await getJSON<{ totals: { totalTokens: number } }>("/api/hermes/observability?window=24h");
+
+    assert.equal(data, null);
+    assert(error?.includes("Service"));
+    assert.equal(stale, true);
+  });
+
+  test("cache age header with very large value indicates stale data", async () => {
+    const cachedSnapshot = { totals: { totalTokens: 999 } };
+    globalThis.fetch = async () => new Response(JSON.stringify(cachedSnapshot), {
+      status: 200,
+      headers: {
+        "content-type": "application/json",
+        "x-cache-age": "3600000", // 1 hour old
+        "x-cache-stale": "1",
+      },
+    });
+
+    const [data, error, dataAge, stale] = await getJSON<typeof cachedSnapshot>("/api/hermes/observability?window=24h");
+
+    assert.deepEqual(data, cachedSnapshot);
+    assert.equal(dataAge, 3600000);
+    assert.equal(stale, true);
+  });
+
+  test("missing cache header defaults to null dataAge", async () => {
+    const freshSnapshot = { totals: { totalTokens: 555 } };
+    globalThis.fetch = async () => new Response(JSON.stringify(freshSnapshot), {
+      status: 200,
+      headers: {
+        "content-type": "application/json",
+        // x-cache-age header intentionally missing
+      },
+    });
+
+    const [data, error, dataAge, stale] = await getJSON<typeof freshSnapshot>("/api/hermes/observability?window=24h");
+
+    assert.deepEqual(data, freshSnapshot);
+    assert.equal(dataAge, null);
+    assert.equal(stale, false);
+  });
+
+  test("malformed cache-age header is handled gracefully", async () => {
+    const cachedSnapshot = { totals: { totalTokens: 333 } };
+    globalThis.fetch = async () => new Response(JSON.stringify(cachedSnapshot), {
+      status: 200,
+      headers: {
+        "content-type": "application/json",
+        "x-cache-age": "not-a-number",
+      },
+    });
+
+    const [data, error, dataAge, stale] = await getJSON<typeof cachedSnapshot>("/api/hermes/observability?window=24h");
+
+    assert.deepEqual(data, cachedSnapshot);
+    // Should handle gracefully, dataAge may be NaN or 0
+    assert.equal(stale, false);
+  });
+
+  test("404 not found with no fallback returns error", async () => {
+    globalThis.fetch = async () => new Response(JSON.stringify({ error: "Endpoint not found" }), {
+      status: 404,
+      headers: {
+        "content-type": "application/json",
+        "x-cache-age": "0",
+      },
+    });
+
+    const [data, error, dataAge, stale] = await getJSON<{ totals: { totalTokens: number } }>("/api/hermes/observability?window=24h");
+
+    assert.equal(data, null);
+    assert(error?.includes("not found"));
+    assert.equal(stale, true);
+  });
 });

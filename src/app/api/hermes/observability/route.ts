@@ -28,6 +28,22 @@ function cacheHeaders(cachedAt: number | null, extra?: HeadersInit) {
   };
 }
 
+/**
+ * GET /api/hermes/observability
+ * 
+ * Query params:
+ *   - window: "24h" or "7d" (default: "24h")
+ * 
+ * Response headers:
+ *   - X-Cache-Age: milliseconds since cached snapshot was created
+ *   - X-Cache-Stale: "1" if data is older than CACHE_MS and being served from fallback
+ *   - X-Cache-Error: error message that caused fallback to cached data
+ * 
+ * Resilience strategy:
+ *   1. Return fresh data if available and within CACHE_MS
+ *   2. On collection error, return stale cached data (if available) with X-Cache-Stale header
+ *   3. If no cached data exists, return 502 with error details and optional lastGoodSnapshot field
+ */
 export async function GET(req: Request) {
   const url = new URL(req.url);
   const window = parseObservabilityWindow(url.searchParams.get("window") ?? "24h");
@@ -41,6 +57,8 @@ export async function GET(req: Request) {
 
   const now = Date.now();
   const cached = cache.get(window);
+  
+  // Return cached data if still within TTL
   if (cached && cached.expiresAt > now) {
     return NextResponse.json(cached.payload, {
       headers: cacheHeaders(cached.cachedAt),
@@ -48,8 +66,11 @@ export async function GET(req: Request) {
   }
 
   try {
+    // Attempt fresh collection
     const payload = await collectHermesObservability(window);
     const cachedAt = Date.now();
+    
+    // Update cache with new snapshot
     cache.set(window, {
       expiresAt: cachedAt + CACHE_MS,
       payload,
@@ -60,8 +81,11 @@ export async function GET(req: Request) {
       headers: cacheHeaders(cachedAt),
     });
   } catch (error) {
+    // Collection failed — fallback to stale cache or error response
     const message = errorMessage(error);
+    
     if (cached) {
+      // Fallback: return stale cached data with warning headers
       return NextResponse.json(cached.payload, {
         headers: cacheHeaders(cached.cachedAt, {
           "X-Cache-Stale": "1",
@@ -70,6 +94,7 @@ export async function GET(req: Request) {
       });
     }
 
+    // No fallback available — return error with optional lastGoodSnapshot
     return NextResponse.json(
       {
         error: message,
