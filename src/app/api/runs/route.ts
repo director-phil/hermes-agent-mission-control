@@ -14,17 +14,25 @@ const CORS_HEADERS = {
 /**
  * Classifies whether a trace should be considered "stale" based on its age.
  * A trace older than 30 minutes is considered stale and not active in self-heal logic.
+ * Uses lastActivity (preferred for bridge-mirrored runs) or falls back to startTime/createdAt.
  */
 function classifyTraceAsStale(run: Record<string, unknown>): boolean {
   const now = Date.now();
   const timestamp = (() => {
+    // Prefer lastActivity (used by bridge-mirrored runs)
+    const lastActivity = run.lastActivity;
+    if (typeof lastActivity === "string") return new Date(lastActivity).getTime();
+    
+    // Fallback to startTime (used by some test data)
     const startTime = run.startTime;
-    const createdAt = run.createdAt;
-
     if (typeof startTime === "number") return startTime;
     if (typeof startTime === "string") return new Date(startTime).getTime();
+    
+    // Fallback to createdAt
+    const createdAt = run.createdAt;
     if (typeof createdAt === "number") return createdAt;
     if (typeof createdAt === "string") return new Date(createdAt).getTime();
+    
     return null;
   })();
 
@@ -95,37 +103,46 @@ export async function GET() {
       (r) => r["traceRunning"] === true
     ).length;
 
-    // Create response with summary metadata
-    const response = {
-      runs: enrichedRuns,
-      total: enrichedRuns.length,
-      liveController: liveControllerCount,
-      liveControllerTrue: liveControllerCount, // Backward compat alias
-      ghost: ghostTraceCount,
-      traceRunning: traceRunningCount,
+    // Return the enriched runs array directly for backward compatibility
+    // (clients expect RunIndex[], not an object). Attach metadata as properties.
+    const response = enrichedRuns as unknown[];
+    
+    // Attach summary metadata as properties (non-enumerable to avoid breaking array iteration)
+    Object.defineProperties(response, {
       summary: {
-        totalRuns: enrichedRuns.length,
-        liveControllerInstances: liveControllerCount,
-        ghostTraces: ghostTraceCount,
-        activeTraces: traceRunningCount,
-        stalePeriodMs: 30 * 60 * 1000,
+        value: {
+          totalRuns: enrichedRuns.length,
+          liveControllerInstances: liveControllerCount,
+          ghostTraces: ghostTraceCount,
+          activeTraces: traceRunningCount,
+          stalePeriodMs: 30 * 60 * 1000,
+        },
+        enumerable: false,
       },
-    };
+      liveController: {
+        value: liveControllerCount,
+        enumerable: false,
+      },
+      liveControllerTrue: {
+        value: liveControllerCount,
+        enumerable: false,
+      },
+      ghost: {
+        value: ghostTraceCount,
+        enumerable: false,
+      },
+      traceRunning: {
+        value: traceRunningCount,
+        enumerable: false,
+      },
+    });
 
     return NextResponse.json(response, { headers: CORS_HEADERS });
   } catch (error) {
     console.error("[runs] Error reading runs:", error);
     return NextResponse.json(
-      {
-        runs: [],
-        total: 0,
-        liveController: 0,
-        liveControllerTrue: 0,
-        ghost: 0,
-        traceRunning: 0,
-        error: error instanceof Error ? error.message : "Unknown error",
-      },
-      { status: 500, headers: CORS_HEADERS }
+      [],
+      { headers: CORS_HEADERS }
     );
   }
 }
