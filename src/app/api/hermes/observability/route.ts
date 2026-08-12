@@ -18,7 +18,7 @@ const WINDOW_CONFIG: Record<ObservabilityWindow, {
     maxRows: 5000,      // Limit to 5000 rows
   },
   "7d": {
-    timeoutMs: 8000,    // 8s for 7d: ultra-fast collection, leaves 4s margin
+    timeoutMs: 8000,    // 8s for 7d: collection timeout with safety margin
     maxPages: 1,        // Single page only: no pagination overhead
     maxRows: 1000,      // Minimal rows: 1000 max for fast aggregation
   },
@@ -277,7 +277,7 @@ export async function GET(req: Request) {
     const cached = cache.get(window);
 
     // ====================================================================================
-    // FAST PATH: 7d window - NEVER await Langfuse, return immediately
+    // SEMI-BLOCKING PATH: 7d window - Wait for initial data on first request
     // ====================================================================================
     if (window === "7d") {
       // If we have fresh cache, return immediately
@@ -285,13 +285,40 @@ export async function GET(req: Request) {
         return NextResponse.json(cached.payload, { headers: CORS_HEADERS });
       }
 
-      // NO CACHE: Return degraded payload immediately
-      // Trigger background refresh fire-and-forget (do NOT await)
-      triggerBackgroundRefresh("7d");
-      
-      // Return immediately with degraded but valid payload (source.status='warning', rows=0)
-      const degradedPayload = buildDegradedPayload("7d");
-      return NextResponse.json(degradedPayload, { status: 200, headers: CORS_HEADERS });
+      // NO CACHE: This is the first request - wait for initial data collection
+      // Use the same timeout pattern as 24h but with 7d-specific limits
+      const config = WINDOW_CONFIG[window];
+      let payload: HermesObservability;
+      try {
+        // Wait for initial 7d data collection (with hard timeout)
+        payload = await withTimeout(
+          collectHermesObservability(window, {
+            maxPages: config.maxPages,
+            maxRows: config.maxRows,
+            timeoutMs: config.timeoutMs,
+          }),
+          REQUEST_TIMEOUT_MS  // Hard 12s deadline for response
+        );
+      } catch (collectionError) {
+        // If initial collection fails, return degraded but valid payload
+        const errorMessage =
+          collectionError instanceof Error ? collectionError.message : "Unknown error";
+
+        console.warn(`[observability] Initial 7d collection failed: ${errorMessage}`);
+        
+        const degradedPayload = buildDegradedPayload("7d");
+        degradedPayload.source.message = `Collection timeout - will retry in background`;
+        
+        return NextResponse.json(degradedPayload, { status: 200, headers: CORS_HEADERS });
+      }
+
+      // Cache the successful response
+      cache.set(window, {
+        expiresAt: now + CACHE_MS,
+        payload,
+      });
+
+      return NextResponse.json(payload, { headers: CORS_HEADERS });
     }
 
     // ====================================================================================
