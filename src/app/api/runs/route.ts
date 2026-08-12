@@ -56,18 +56,30 @@ export async function GET() {
       return NextResponse.json([], { headers: CORS_HEADERS });
     }
 
-    // Enrich runs with stale classification and clear liveness for old traces
+    // Enrich runs with stale classification
+    // Only clear liveness for stale traces that were NOT marked live by the bridge
     const enrichedRuns = payload.index.map((run) => {
       const runObj = run as Record<string, unknown>;
       const isStale = classifyTraceAsStale(runObj);
 
-      // For stale traces, clear the liveness signals so consumers don't show them as active
+      // For stale traces, clear liveness only if the bridge didn't mark them live
       if (isStale) {
+        const isLiveByBridge = runObj.liveController === true;
+        
+        // If bridge marked it live, trust that and preserve it (long-running work)
+        // If bridge didn't mark it live, clear liveness to exclude from active view
+        if (!isLiveByBridge) {
+          return {
+            ...runObj,
+            isStale: true,
+            traceRunning: false, // Only clear if trace wasn't marked running by bridge
+          } as Record<string, unknown>;
+        }
+        
+        // Bridge marked it live: preserve all liveness fields
         return {
           ...runObj,
           isStale: true,
-          liveController: false,  // Clear live controller for old traces
-          traceRunning: false,    // Clear trace running for old traces
         } as Record<string, unknown>;
       }
 
