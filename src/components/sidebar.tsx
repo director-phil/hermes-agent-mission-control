@@ -21,6 +21,7 @@ import {
   Workflow,
   Menu,
   X,
+  CircuitBoard,
 } from "lucide-react";
 
 const navGroups = [
@@ -53,6 +54,7 @@ const navGroups = [
       { href: "/floor", label: "Floor", icon: Network },
       { href: "/observability", label: "Observability", icon: Activity },
       { href: "/oversight", label: "Oversight", icon: ChartNoAxesCombined },
+      { href: "/conveyor-ops", label: "Conveyor Ops", icon: CircuitBoard },
       { href: "/agents", label: "Agents", icon: Bot },
       { href: "/memory-wiki", label: "Memory Wiki", icon: BookOpen },
       { href: "/ideas", label: "Ideas", icon: Lightbulb },
