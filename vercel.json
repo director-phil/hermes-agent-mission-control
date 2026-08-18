@@ -7,6 +7,5 @@
       "path": "/api/cron/x-stats",
       "schedule": "0 8 * * *"
     }
-  ],
-  "installCommand": "npm install --force"
+  ]
 }
