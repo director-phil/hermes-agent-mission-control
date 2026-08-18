@@ -478,10 +478,62 @@ textarea, input {
   50% { box-shadow: 0 0 0 5px color-mix(in srgb, var(--accent) 0%, transparent); }
 }
 
+.ops-node {
+  width: 260px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: color-mix(in srgb, var(--surface-1) 88%, transparent);
+  padding: 12px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+  backdrop-filter: blur(16px);
+}
+
+.ops-node.is-current {
+  border-color: color-mix(in srgb, var(--accent) 44%, transparent);
+  animation: floor-node-pulse 1.6s var(--ease-inout) infinite;
+}
+
+.ops-node.is-idle {
+  opacity: 0.55;
+}
+
+.ops-file-node {
+  width: 220px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: color-mix(in srgb, var(--surface-1) 88%, transparent);
+  padding: 8px 10px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+  backdrop-filter: blur(16px);
+}
+
+.ops-handle {
+  width: 8px !important;
+  height: 8px !important;
+  border: 1px solid var(--line-strong) !important;
+  background: var(--surface-3) !important;
+}
+
+.ops-now-strip {
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+}
+
+.ops-now-dot {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 auto;
+  border-radius: 999px;
+  background: var(--accent);
+  box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 35%, transparent);
+  animation: floor-now-pulse 1.25s var(--ease-inout) infinite;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .hq-rise { animation: none; opacity: 1; }
   .floor-node-agent.is-running,
   .floor-now-dot,
+  .ops-node.is-current,
+  .ops-now-dot,
   .pipeline-glow { animation: none; }
   .hq-ambient::before { animation: none; }
   .panel-interactive:hover { transform: none; }

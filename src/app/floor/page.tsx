@@ -190,7 +190,9 @@ const FLOW_COLOR = "color-mix(in srgb, var(--accent) 70%, var(--text) 30%)";
 
 async function getJSON<T>(url: string): Promise<T | null> {
   try {
-    const response = await fetch(url, { cache: "no-store" });
+    const bust = `ts=${Date.now()}`;
+    const urlWithBust = url.includes("?") ? `${url}&${bust}` : `${url}?${bust}`;
+    const response = await fetch(urlWithBust, { cache: "no-store" });
     if (!response.ok) return null;
     return (await response.json()) as T;
   } catch {
@@ -566,6 +568,38 @@ function hasSubstantiveGraph(run: RunIndex) {
   return run.filesTouched > 0 || run.nodeLabels.length > 1;
 }
 
+
+
+function conveyorFallbackFromRuns(runs: RunIndex[]): ConveyorState {
+  const liveRuns = runs.filter((run) => isTrulyRunning(run));
+  return {
+    conveyorOn: liveRuns.length > 0,
+    controllerPids: [],
+    liveGoals: liveRuns.map((run) => run.goal),
+    active: liveRuns.map((run) => ({
+      goalId: run.goal,
+      live: true,
+      status: "running",
+      rung: typeof run.rung === "number" ? run.rung : null,
+      attempts: typeof run.attempts === "number" ? run.attempts : null,
+      pr: typeof run.shipped_pr === "string" ? run.shipped_pr : null,
+    })),
+    upNext: [],
+    planRequired: [],
+    blocked: [],
+    counts: {
+      active: liveRuns.length,
+      blocked: 0,
+      up_next: 0,
+    },
+    focusPrefixes: [],
+    message: liveRuns.length > 0 ? "fallback: inferred from /api/runs liveController" : "fallback: no live controller in /api/runs",
+    boxes: [],
+    statusAgeSec: null,
+    statusMissing: true,
+    syncedAt: new Date().toISOString(),
+  };
+}
 function defaultSelectedGoal(runs: RunIndex[]) {
   // Live floor: a truly-running controller wins, then the newest substantive graph, then newest overall.
   return runs.find(isTrulyRunning)?.goal ?? runs.find(hasSubstantiveGraph)?.goal ?? runs[0]?.goal ?? null;
@@ -1171,7 +1205,11 @@ export default function FloorPage() {
     const rec = await getJSON<{ events?: RecoveryEvent[] }>("/api/recovery");
     if (rec && Array.isArray(rec.events)) setRecovery(rec.events);
     const conv = await getJSON<ConveyorState>("/api/conveyor");
-    if (conv) setConveyor(conv);
+    if (conv) {
+      setConveyor(conv);
+    } else if (data) {
+      setConveyor(conveyorFallbackFromRuns(data));
+    }
   }, []);
 
   const loadGraph = useCallback(async (goal: string) => {

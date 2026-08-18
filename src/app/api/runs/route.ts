@@ -11,35 +11,35 @@ const CORS_HEADERS = {
   "Cache-Control": "no-store, no-cache, must-revalidate",
 };
 
+type ConveyorPayload = {
+  active?: Array<{ goalId?: string; live?: boolean; status?: string | null }>;
+};
+
 /**
  * Classifies whether a trace should be considered "stale" based on its age.
  * A trace older than 30 minutes is considered stale for observability/analytics purposes.
- * This does NOT affect liveness judgment - the bridge's liveController is authoritative.
- * Uses lastActivity (preferred for bridge-mirrored runs) or falls back to startTime/createdAt.
+ * This does NOT affect liveness judgment - conveyor/live-controller truth is authoritative.
  */
 function classifyTraceAsStale(run: Record<string, unknown>): boolean {
   const now = Date.now();
   const timestamp = (() => {
-    // Prefer lastActivity (used by bridge-mirrored runs)
     const lastActivity = run.lastActivity;
     if (typeof lastActivity === "string") return new Date(lastActivity).getTime();
-    
-    // Fallback to startTime (used by some test data)
+
     const startTime = run.startTime;
     if (typeof startTime === "number") return startTime;
     if (typeof startTime === "string") return new Date(startTime).getTime();
-    
-    // Fallback to createdAt
+
     const createdAt = run.createdAt;
     if (typeof createdAt === "number") return createdAt;
     if (typeof createdAt === "string") return new Date(createdAt).getTime();
-    
+
     return null;
   })();
 
-  if (timestamp === null) return false; // Unknown timestamp: not stale
+  if (timestamp === null) return false;
   const ageMs = now - timestamp;
-  const STALE_THRESHOLD_MS = 30 * 60 * 1000; // 30 minutes
+  const STALE_THRESHOLD_MS = 30 * 60 * 1000;
   return ageMs > STALE_THRESHOLD_MS;
 }
 
@@ -49,29 +49,58 @@ export async function OPTIONS() {
 
 export async function GET() {
   try {
-    const payload = await readDataStore<{ index?: unknown[] }>(
-      "hermes-runs"
-    ).catch(() => null);
+    const [runsPayload, conveyorPayload] = await Promise.all([
+      readDataStore<{ index?: unknown[] }>("hermes-runs").catch(() => null),
+      readDataStore<ConveyorPayload>("hermes-conveyor").catch(() => null),
+    ]);
 
-    if (!Array.isArray(payload?.index)) {
-      return NextResponse.json([], { headers: CORS_HEADERS });
-    }
+    const baseRuns = Array.isArray(runsPayload?.index) ? runsPayload.index : [];
+    const liveGoals = new Set(
+      (Array.isArray(conveyorPayload?.active) ? conveyorPayload?.active : [])
+        .filter((item) => item?.live === true && typeof item.goalId === "string")
+        .map((item) => item.goalId as string),
+    );
 
-    // Add stale classification to each run, but preserve all bridge-derived fields
-    // The bridge's liveController field is authoritative and reflects actual controller heartbeat
-    const enrichedRuns = payload.index.map((run) => {
+    const nowIso = new Date().toISOString();
+    const seen = new Set<string>();
+
+    const enrichedRuns = baseRuns.map((run) => {
       const runObj = run as Record<string, unknown>;
-      const isStale = classifyTraceAsStale(runObj);
+      const goal = typeof runObj.goal === "string" ? runObj.goal : null;
+      if (goal) seen.add(goal);
+      const isLive = goal ? liveGoals.has(goal) : false;
 
-      // Simply add isStale marker; DO NOT modify liveness fields
-      // Liveness is determined by the bridge with its own heartbeat logic
       return {
         ...runObj,
-        isStale,
+        status: isLive ? "running" : runObj.status,
+        liveController: isLive ? true : runObj.liveController,
+        traceRunning: isLive ? true : runObj.traceRunning,
+        lastActivity: isLive ? nowIso : runObj.lastActivity,
+        isStale: isLive ? false : classifyTraceAsStale(runObj),
       } as Record<string, unknown>;
     });
 
-    // Return the enriched array directly (preserves backward compatibility)
+    // If conveyor reports a live goal not present in runs index yet, add a synthetic row.
+    for (const goalId of liveGoals) {
+      if (seen.has(goalId)) continue;
+      enrichedRuns.unshift({
+        goal: goalId,
+        status: "running",
+        attempts: 0,
+        rung: null,
+        specialist: null,
+        shipped_pr: null,
+        preview_url: null,
+        lastActivity: nowIso,
+        nodeLabels: [],
+        filesTouched: 0,
+        traceRunning: true,
+        liveController: true,
+        isSynthetic: true,
+        isStale: false,
+      });
+    }
+
     return NextResponse.json(enrichedRuns, { headers: CORS_HEADERS });
   } catch (error) {
     console.error("[runs] Error reading runs:", error);

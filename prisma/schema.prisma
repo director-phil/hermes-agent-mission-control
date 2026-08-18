@@ -518,3 +518,26 @@ model HermesMemory {
   @@index([type])
   @@index([status])
 }
+
+// ─── Conveyor Goal Lifecycle Events (webhook-driven) ────────────
+model ConveyorEvent {
+  id          String   @id @default(cuid())
+  goalId      String
+  goalTitle   String?
+  event       String   // "started" | "gate_pass" | "gate_fail" | "repair" | "done" | "failed" | "restaged"
+  rung        Int?
+  attempt     Int?
+  kind        String?  // failure kind: "tsc_error" | "scope_violation" | "no_diff" | "timeout" | etc
+  detail      String?  @db.Text
+  model       String?  // which model ran this rung
+  wallSec     Int?
+  recoverable Boolean  @default(false)
+  recovered   Boolean  @default(false)
+  prUrl       String?
+  createdAt   DateTime @default(now())
+
+  @@index([goalId])
+  @@index([event])
+  @@index([createdAt])
+  @@index([recoverable, recovered])
+}

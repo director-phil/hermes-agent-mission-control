@@ -125,6 +125,24 @@ interface NativeSnapshot {
   };
 }
 
+interface ToolingSnapshot {
+  checkedAt: string;
+  overallStatus: "ok" | "warning" | "error";
+  gitnexus: {
+    api: { ok: boolean; status: number | null; latencyMs: number | null; error: string | null };
+    proxy: { ok: boolean; status: number | null; latencyMs: number | null; error: string | null };
+    reposCount: number;
+    repos: Array<{ name: string; path: string | null }>;
+  };
+  openhands: {
+    status: "ok" | "missing";
+    installed: boolean;
+    version: string | null;
+    recommendation: string;
+  };
+}
+
+
 // ── Helpers ───────────────────────────────────────────────
 function timeAgo(d: string | null): string {
   if (!d) return "—";
@@ -573,6 +591,80 @@ function NativeWorkPanel({ snapshot }: { snapshot: NativeSnapshot | null }) {
   );
 }
 
+
+function ToolingPanel({ snapshot }: { snapshot: ToolingSnapshot | null }) {
+  const gitnexusApi = snapshot?.gitnexus.api;
+  const gitnexusProxy = snapshot?.gitnexus.proxy;
+  const openhands = snapshot?.openhands;
+  const hasGitnexus = Boolean(gitnexusApi?.ok && gitnexusProxy?.ok);
+
+  return (
+    <>
+      <SectionHeader
+        label="AI tooling"
+        title="GitNexus + OpenHands"
+        action={
+          <span className="num text-[11px] text-[var(--text-3)]">
+            checked {timeAgo(snapshot?.checkedAt ?? null)}
+          </span>
+        }
+      />
+      <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
+        <Panel className="p-5">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <Eyebrow>GitNexus runtime</Eyebrow>
+              <h3 className="mt-1 text-[16px] font-semibold text-[var(--text)]">Explorer + API</h3>
+            </div>
+            <Pill tone={hasGitnexus ? "up" : "warn"}>{hasGitnexus ? "online" : "degraded"}</Pill>
+          </div>
+          <div className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-2">
+            <div className="rounded-[10px] border border-[var(--line)] bg-[var(--surface-2)] p-3">
+              <Eyebrow>API :4747</Eyebrow>
+              <p className="mt-1 text-[13px] text-[var(--text-2)]">
+                {gitnexusApi?.ok ? `OK · ${gitnexusApi.status} · ${gitnexusApi.latencyMs ?? "?"}ms` : (gitnexusApi?.error ?? "unavailable")}
+              </p>
+            </div>
+            <div className="rounded-[10px] border border-[var(--line)] bg-[var(--surface-2)] p-3">
+              <Eyebrow>UI proxy :8888</Eyebrow>
+              <p className="mt-1 text-[13px] text-[var(--text-2)]">
+                {gitnexusProxy?.ok ? `OK · ${gitnexusProxy.status} · ${gitnexusProxy.latencyMs ?? "?"}ms` : (gitnexusProxy?.error ?? "unavailable")}
+              </p>
+            </div>
+          </div>
+          <p className="mt-3 text-[12px] text-[var(--text-3)]">
+            Indexed repos: <span className="num">{snapshot?.gitnexus.reposCount ?? 0}</span>
+          </p>
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {(snapshot?.gitnexus.repos ?? []).slice(0, 6).map((repo) => (
+              <span key={repo.name} className="rounded-full border border-[var(--line)] px-2 py-0.5 text-[10.5px] text-[var(--text-3)]">
+                {repo.name}
+              </span>
+            ))}
+          </div>
+        </Panel>
+
+        <Panel className="p-5">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <Eyebrow>OpenHands</Eyebrow>
+              <h3 className="mt-1 text-[16px] font-semibold text-[var(--text)]">Delegate lane availability</h3>
+            </div>
+            <Pill tone={openhands?.installed ? "up" : "warn"}>{openhands?.installed ? "installed" : "missing"}</Pill>
+          </div>
+          <div className="mt-4 rounded-[10px] border border-[var(--line)] bg-[var(--surface-2)] p-3">
+            <Eyebrow>CLI status</Eyebrow>
+            <p className="mt-1 text-[13px] text-[var(--text-2)]">
+              {openhands?.installed ? (openhands.version ?? "Version detected") : "OpenHands CLI not installed"}
+            </p>
+            <p className="mt-2 text-[12px] text-[var(--text-3)]">{openhands?.recommendation ?? "Install status unknown"}</p>
+          </div>
+        </Panel>
+      </div>
+    </>
+  );
+}
+
 // ── Cron / schedules ──────────────────────────────────────
 type CronJob = {
   id: string; status: string; name: string; schedule: string;
@@ -804,13 +896,14 @@ export default function HermesPage() {
   const [pending, setPending] = useState(0);
   const [events, setEvents] = useState<Ev[]>([]);
   const [nativeSnapshot, setNativeSnapshot] = useState<NativeSnapshot | null>(null);
+  const [toolingSnapshot, setToolingSnapshot] = useState<ToolingSnapshot | null>(null);
   const [jobs, setJobs] = useState<CronJob[]>([]);
   const [cronSync, setCronSync] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
 
   const load = useCallback(async () => {
-    const [h, reqs, act, native, cr] = await Promise.all([
+    const [h, reqs, act, native, cr, tooling] = await Promise.all([
       getJSON<Health>("/api/hermes/health"),
       getJSON<{ requests: Req[]; pending: number }>(
         "/api/hermes/requests?status=awaiting_approval&take=50"
@@ -818,6 +911,7 @@ export default function HermesPage() {
       getJSON<{ events: Ev[] }>("/api/hermes/activity?take=40"),
       getJSON<NativeSnapshot>("/api/hermes/native"),
       getJSON<{ jobs: CronJob[]; syncedAt: string }>("/api/hermes/crons"),
+      getJSON<ToolingSnapshot>("/api/hermes/tooling"),
     ]);
     if (h) setHealth(h);
     if (reqs) {
@@ -826,6 +920,7 @@ export default function HermesPage() {
     }
     if (act) setEvents(act.events ?? []);
     if (native) setNativeSnapshot(native);
+    if (tooling) setToolingSnapshot(tooling);
     if (cr) {
       setJobs(cr.jobs ?? []);
       setCronSync(cr.syncedAt ?? null);
@@ -932,6 +1027,22 @@ export default function HermesPage() {
             </>
           ) : (
             <NativeWorkPanel snapshot={nativeSnapshot} />
+          )}
+        </section>
+
+
+        {/* Tooling visibility */}
+        <section className="mt-12">
+          {!loaded ? (
+            <>
+              <SectionHeader label="AI tooling" title="GitNexus + OpenHands" />
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                <Skeleton className="h-48" />
+                <Skeleton className="h-48" />
+              </div>
+            </>
+          ) : (
+            <ToolingPanel snapshot={toolingSnapshot} />
           )}
         </section>
 
