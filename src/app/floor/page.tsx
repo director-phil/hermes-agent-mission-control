@@ -17,6 +17,7 @@ import {
 } from "@xyflow/react";
 import { Bot, Check, ExternalLink, FileCode2, GitBranch, Info, Radio, RefreshCw, X } from "lucide-react";
 import { EmptyState, Eyebrow, Panel, Pill, SectionHeader, Skeleton, rise } from "@/components/ui/kit";
+import { chooseConveyorSnapshot } from "@/lib/conveyor-state";
 
 type RunStatusTone = "neutral" | "up" | "down" | "warn" | "accent";
 type FileOp = "read" | "patch" | "write" | "delete";
@@ -90,6 +91,7 @@ interface ConveyorState {
   syncedAt: string | null;
 }
 
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 interface RecoverySummary {
   gid: string;
   dispatches: number;
@@ -570,36 +572,6 @@ function hasSubstantiveGraph(run: RunIndex) {
 
 
 
-function conveyorFallbackFromRuns(runs: RunIndex[]): ConveyorState {
-  const liveRuns = runs.filter((run) => isTrulyRunning(run));
-  return {
-    conveyorOn: liveRuns.length > 0,
-    controllerPids: [],
-    liveGoals: liveRuns.map((run) => run.goal),
-    active: liveRuns.map((run) => ({
-      goalId: run.goal,
-      live: true,
-      status: "running",
-      rung: typeof run.rung === "number" ? run.rung : null,
-      attempts: typeof run.attempts === "number" ? run.attempts : null,
-      pr: typeof run.shipped_pr === "string" ? run.shipped_pr : null,
-    })),
-    upNext: [],
-    planRequired: [],
-    blocked: [],
-    counts: {
-      active: liveRuns.length,
-      blocked: 0,
-      up_next: 0,
-    },
-    focusPrefixes: [],
-    message: liveRuns.length > 0 ? "fallback: inferred from /api/runs liveController" : "fallback: no live controller in /api/runs",
-    boxes: [],
-    statusAgeSec: null,
-    statusMissing: true,
-    syncedAt: new Date().toISOString(),
-  };
-}
 function defaultSelectedGoal(runs: RunIndex[]) {
   // Live floor: a truly-running controller wins, then the newest substantive graph, then newest overall.
   return runs.find(isTrulyRunning)?.goal ?? runs.find(hasSubstantiveGraph)?.goal ?? runs[0]?.goal ?? null;
@@ -1186,6 +1158,7 @@ export default function FloorPage() {
   const [conveyor, setConveyor] = useState<ConveyorState | null>(null);
   const runsRef = useRef<RunIndex[]>([]);
   const graphRunningRef = useRef(false);
+  const loadRunsRequestRef = useRef(0);
 
   useEffect(() => {
     runsRef.current = runs;
@@ -1196,20 +1169,22 @@ export default function FloorPage() {
   }, [graph?.running]);
 
   const loadRuns = useCallback(async () => {
-    const data = await getJSON<RunIndex[]>("/api/runs");
+    const requestId = loadRunsRequestRef.current + 1;
+    loadRunsRequestRef.current = requestId;
+    const [data, rec, conv] = await Promise.all([
+      getJSON<RunIndex[]>("/api/runs"),
+      getJSON<{ events?: RecoveryEvent[] }>("/api/recovery"),
+      getJSON<ConveyorState>("/api/conveyor"),
+    ]);
+    if (requestId !== loadRunsRequestRef.current) return;
+
     if (data) {
       setRuns(data);
       setSelectedGoal((current) => current && data.some((run) => run.goal === current) ? current : defaultSelectedGoal(data));
     }
     setRunsLoaded(true);
-    const rec = await getJSON<{ events?: RecoveryEvent[] }>("/api/recovery");
     if (rec && Array.isArray(rec.events)) setRecovery(rec.events);
-    const conv = await getJSON<ConveyorState>("/api/conveyor");
-    if (conv) {
-      setConveyor(conv);
-    } else if (data) {
-      setConveyor(conveyorFallbackFromRuns(data));
-    }
+    setConveyor((current) => chooseConveyorSnapshot({ current, next: conv, runs: data ?? [] }));
   }, []);
 
   const loadGraph = useCallback(async (goal: string) => {
@@ -1219,6 +1194,7 @@ export default function FloorPage() {
   }, []);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     void loadRuns();
     const interval = setInterval(loadRuns, 4_000);
     return () => clearInterval(interval);
@@ -1226,6 +1202,7 @@ export default function FloorPage() {
 
   useEffect(() => {
     if (!selectedGoal) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setGraph(null);
       setGraphLoaded(runsLoaded);
       return;
