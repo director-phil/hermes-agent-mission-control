@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { readDataStore } from "@/lib/hermes-native-mirror";
+import { extractLiveGoalsFromConveyorPayload } from "@/lib/runs-liveness";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -9,10 +10,6 @@ const CORS_HEADERS = {
   "Access-Control-Allow-Methods": "GET, OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type",
   "Cache-Control": "no-store, no-cache, must-revalidate",
-};
-
-type ConveyorPayload = {
-  active?: Array<{ goalId?: string; live?: boolean; status?: string | null }>;
 };
 
 /**
@@ -51,15 +48,15 @@ export async function GET() {
   try {
     const [runsPayload, conveyorPayload] = await Promise.all([
       readDataStore<{ index?: unknown[] }>("hermes-runs").catch(() => null),
-      readDataStore<ConveyorPayload>("hermes-conveyor").catch(() => null),
+      readDataStore<unknown>("hermes-conveyor").catch(() => null),
     ]);
 
     const baseRuns = Array.isArray(runsPayload?.index) ? runsPayload.index : [];
-    const liveGoals = new Set(
-      (Array.isArray(conveyorPayload?.active) ? conveyorPayload?.active : [])
-        .filter((item) => item?.live === true && typeof item.goalId === "string")
-        .map((item) => item.goalId as string),
-    );
+
+    // Use staleness-aware extraction: if the DataStore conveyor snapshot
+    // is older than CONVEYOR_SNAPSHOT_RETENTION_MS (120s), we get an empty
+    // set — preventing stale payloads from marking dead goals as live.
+    const liveGoals = extractLiveGoalsFromConveyorPayload(conveyorPayload);
 
     const nowIso = new Date().toISOString();
     const seen = new Set<string>();
