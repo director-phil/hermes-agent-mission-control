@@ -73,6 +73,7 @@ interface ConveyorBox {
   host: string;
   reachable: boolean;
   models: string[];
+  modelStates?: Array<{ id: string; status: string }>;
 }
 interface ConveyorState {
   conveyorOn: boolean;
@@ -1059,7 +1060,11 @@ function ConveyorBar({ conveyor, onSelect }: { conveyor: ConveyorState | null; o
             </Pill>
           ))}
           {boxes.map((box) => box.models.length ? (
-            <span key={`${box.host}-models`}>· {box.label} loaded: {box.models.join(", ")}</span>
+            <span key={`${box.host}-models`}>
+              · {box.label}: {(box.modelStates?.length
+                ? box.modelStates.map((model) => `${model.id} (${model.status})`).join(", ")
+                : box.models.join(", "))}
+            </span>
           ) : null)}
           {laneModels?.planner ? <span>· planner: {laneModels.planner}</span> : null}
           {laneModels?.implementer ? <span>· implementer: {laneModels.implementer}</span> : null}
@@ -1183,7 +1188,12 @@ export default function FloorPage() {
 
     if (data) {
       setRuns(data);
-      setSelectedGoal((current) => current && data.some((run) => run.goal === current) ? current : defaultSelectedGoal(data));
+      const liveConveyorGoal = conv?.active?.find((item) => item.live)?.goalId ?? null;
+      setSelectedGoal((current) =>
+        current && data.some((run) => run.goal === current)
+          ? current
+          : liveConveyorGoal ?? defaultSelectedGoal(data),
+      );
     }
     setRunsLoaded(true);
     if (rec && Array.isArray(rec.events)) setRecovery(rec.events);

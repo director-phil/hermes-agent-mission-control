@@ -522,6 +522,7 @@ export function loadedModelBoxesFromLmsPs(rows, specs, reachability = []) {
       host: hostPort.trim(),
       reachable: reachability[index]?.reachable === true,
       models: [],
+      modelStates: [],
     };
   });
   if (!Array.isArray(rows) || boxes.length === 0) return boxes;
@@ -533,6 +534,10 @@ export function loadedModelBoxesFromLmsPs(rows, specs, reachability = []) {
     const index = row?.deviceIdentifier == null ? 0 : 1;
     if (!boxes[index] || boxes[index].models.includes(id)) continue;
     boxes[index].models.push(id);
+    boxes[index].modelStates.push({
+      id,
+      status: typeof row?.status === "string" ? row.status : "loaded",
+    });
   }
   return boxes;
 }

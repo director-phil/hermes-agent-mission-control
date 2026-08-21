@@ -28,6 +28,7 @@ export interface ConveyorBox {
   host: string;
   reachable: boolean;
   models: string[];
+  modelStates?: Array<{ id: string; status: string }>;
 }
 
 export interface ConveyorState {
