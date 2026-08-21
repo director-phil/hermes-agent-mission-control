@@ -86,6 +86,7 @@ interface ConveyorState {
   focusPrefixes: string[];
   message: string;
   boxes: ConveyorBox[];
+  laneModels?: { planner: string | null; implementer: string | null };
   statusAgeSec: number | null;
   statusMissing: boolean;
   syncedAt: string | null;
@@ -858,7 +859,7 @@ function PipelineStrip({ run }: { run: RunIndex | null }) {
     : running && rung === 0 ? "active"
     : rung > 0 || terminalSuccess || shipping ? "ok"
     : "idle";
-  const cloudState: PipelineStageState =
+  const repairState: PipelineStageState =
     failed && rung >= 1 ? "fail"
     : running && rung >= 1 ? "active"
     : rung >= 1 && (terminalSuccess || shipping) ? "ok"
@@ -880,7 +881,7 @@ function PipelineStrip({ run }: { run: RunIndex | null }) {
   return (
     <div className="pipeline-strip mx-5 mt-3 flex min-w-0 flex-wrap items-center gap-2 rounded-[var(--r-md)] border border-[var(--line)] bg-[var(--surface-1)] px-3 py-2">
       <PipelineStage label="Local" state={localState} />
-      <PipelineStage label="Cloud (Codex)" state={cloudState} />
+      <PipelineStage label="Directed repair" state={repairState} />
       <PipelineStage label="Gate" state={gateState} />
       <PipelineStage label={previewState === "building" ? "Preview building" : "Preview"} state={previewState} href={run.preview_url} />
       <PipelineStage label={productionState === "building" ? "Production building" : "Production"} state={productionState} />
@@ -1009,10 +1010,9 @@ function ConveyorBar({ conveyor, onSelect }: { conveyor: ConveyorState | null; o
   const buildingNow = view.buildingNow;
   const upNext = conveyor?.upNext ?? [];
   const blocked = conveyor?.blocked ?? [];
-  const blockedCount = conveyor?.counts?.blocked ?? blocked.length;
+  const blockedCount = blocked.length;
   const boxes = conveyor?.boxes ?? [];
-  const coderModels = boxes.flatMap((b) => b.models).filter((m) => /qwen|coder/i.test(m));
-  const plannerModels = boxes.flatMap((b) => b.models).filter((m) => /ornith/i.test(m));
+  const laneModels = conveyor?.laneModels;
 
   return (
     <section className="hq-rise mt-6 grid grid-cols-1 gap-4 lg:grid-cols-3" style={rise(1)}>
@@ -1058,8 +1058,11 @@ function ConveyorBar({ conveyor, onSelect }: { conveyor: ConveyorState | null; o
               {b.label} {b.reachable ? "•" : "×"}
             </Pill>
           ))}
-          {plannerModels.length ? <span>planner: {plannerModels[0]}</span> : null}
-          {coderModels.length ? <span>· coder: {coderModels[0]}</span> : null}
+          {boxes.map((box) => box.models.length ? (
+            <span key={`${box.host}-models`}>· {box.label} loaded: {box.models.join(", ")}</span>
+          ) : null)}
+          {laneModels?.planner ? <span>· planner: {laneModels.planner}</span> : null}
+          {laneModels?.implementer ? <span>· implementer: {laneModels.implementer}</span> : null}
         </div>
       </Panel>
 
@@ -1220,7 +1223,7 @@ export default function FloorPage() {
 
   const conveyorView = getConveyorFloorView(conveyor);
   const upNext = conveyor?.upNext ?? [];
-  const blockedCount = conveyor?.counts?.blocked ?? (conveyor?.blocked?.length ?? 0);
+  const blockedCount = conveyor?.blocked?.length ?? 0;
 
   return (
     <div className="relative z-10 w-full mx-auto p-8 pb-16 text-[var(--text)]">
@@ -1245,7 +1248,7 @@ export default function FloorPage() {
           <Pill tone={upNext.length ? "warn" : "neutral"}>
             {upNext.length} up next
           </Pill>
-          {blockedCount ? <Pill tone="neutral">{blockedCount} blocked</Pill> : null}
+          {blockedCount ? <Pill tone="neutral">{blockedCount} held</Pill> : null}
           <Pill tone={conveyorView.headerStatusTone}>
             <RefreshCw className="h-3 w-3" />
             {conveyorView.headerStatusLabel}

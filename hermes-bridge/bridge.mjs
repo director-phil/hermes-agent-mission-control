@@ -11,6 +11,7 @@ import { redactText } from "./lib/redact.mjs";
 
 export const CONFIG = {
   hermesBin: process.env.HERMES_BIN || "hermes",
+  lmsBin: process.env.LMS_BIN || path.join(process.env.HOME || "", ".lmstudio", "bin", "lms"),
   nativeSnapshotUrl: process.env.HERMES_NATIVE_SNAPSHOT_URL || "http://127.0.0.1:3020/api/hermes/native",
   nativeInternalSecret: process.env.HERMES_NATIVE_INTERNAL_SECRET || "",
   pollMs: safeNumber(process.env.BRIDGE_POLL_MS, 5000, 1000, 300000),
@@ -30,6 +31,7 @@ export const CONFIG = {
   chatdevQueueStatus: process.env.CHATDEV_QUEUE_STATUS || path.join(process.env.HOME || "", "ChatDev", "goals", "state", "queue-runner-status.json"),
   chatdevQueueRunner: process.env.CHATDEV_QUEUE_RUNNER || path.join(process.env.HOME || "", "ChatDev", "scripts", "goal_queue_runner.py"),
   chatdevPython: process.env.CHATDEV_PYTHON || path.join(process.env.HOME || "", "ChatDev", ".venv", "bin", "python3"),
+  chatdevLaneYaml: process.env.CHATDEV_LANE_YAML || path.join(process.env.HOME || "", "ChatDev", "yaml_instance", "rt_local_goal_v2.yaml"),
   refreshConveyorStatus: process.env.BRIDGE_REFRESH_CONVEYOR_STATUS !== "0",
   // Comma-separated "label|host:port" LM boxes to probe for loaded models.
   lmBoxes: (process.env.BRIDGE_LM_BOXES || "coder-box|127.0.0.1:1234,reviewer-box|10.0.0.150:1234")
@@ -492,24 +494,72 @@ async function mirrorRuns() {
   }
 }
 
-// Probe an LM box's /v1/models. Returns { label, host, reachable, models }.
-// The abort stays active through body parsing so a box that sends headers then
-// stalls (or streams an unbounded body) cannot hang the mirror loop.
-async function probeLmBox(spec) {
+// Probe reachability only. `/v1/models` is a federated catalogue and includes
+// downloaded-but-not-loaded models, so it must never be published as loaded
+// state. Physical loaded-state comes from `lms ps --json` below.
+async function probeLmBoxReachability(spec) {
   const [label, hostPort] = spec.includes("|") ? spec.split("|") : [spec, spec];
-  const url = `http://${hostPort.trim()}/v1/models`;
+  const url = `http://${hostPort.trim()}/api/v0/models`;
   const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), 3000);
+  const timer = setTimeout(() => ctrl.abort(), 3000);
   try {
-    const res = await fetch(url, { signal: ctrl.signal });
-    if (!res.ok) return { label: label.trim(), host: hostPort.trim(), reachable: false, models: [] };
-    const body = await res.json(); // still under the same abort signal
-    const models = (Array.isArray(body?.data) ? body.data.map((m) => m.id).filter(Boolean) : []).slice(0, 40);
-    return { label: label.trim(), host: hostPort.trim(), reachable: true, models };
+    const response = await fetch(url, { signal: ctrl.signal });
+    if (!response.ok) return { label: label.trim(), host: hostPort.trim(), reachable: false, models: [] };
+    await response.json();
+    return { label: label.trim(), host: hostPort.trim(), reachable: true, models: [] };
   } catch {
     return { label: label.trim(), host: hostPort.trim(), reachable: false, models: [] };
   } finally {
-    clearTimeout(t);
+    clearTimeout(timer);
+  }
+}
+
+export function loadedModelBoxesFromLmsPs(rows, specs, reachability = []) {
+  const boxes = specs.map((spec, index) => {
+    const [label, hostPort] = spec.includes("|") ? spec.split("|") : [spec, spec];
+    return {
+      label: label.trim(),
+      host: hostPort.trim(),
+      reachable: reachability[index]?.reachable === true,
+      models: [],
+    };
+  });
+  if (!Array.isArray(rows) || boxes.length === 0) return boxes;
+  for (const row of rows) {
+    const id = typeof row?.identifier === "string" ? row.identifier.trim() : "";
+    if (!id || row?.type === "embedding") continue;
+    // This bridge is physically on configured box 1. LM Link gives remote
+    // instances a deviceIdentifier; null means the local physical host.
+    const index = row?.deviceIdentifier == null ? 0 : 1;
+    if (!boxes[index] || boxes[index].models.includes(id)) continue;
+    boxes[index].models.push(id);
+  }
+  return boxes;
+}
+
+async function probeLmTopology() {
+  const reachability = await Promise.all(
+    CONFIG.lmBoxes.map((spec) => probeLmBoxReachability(spec)),
+  ).catch(() => []);
+  try {
+    const raw = await runBoundedProcess(CONFIG.lmsBin, ["ps", "--json"], "", {
+      timeoutMs: 10000,
+      maxOutputChars: 100000,
+    });
+    return loadedModelBoxesFromLmsPs(JSON.parse(raw), CONFIG.lmBoxes, reachability);
+  } catch (error) {
+    log("LM loaded-state unavailable; refusing to publish catalogue as loaded truth:", error.message);
+    return loadedModelBoxesFromLmsPs([], CONFIG.lmBoxes, reachability);
+  }
+}
+
+async function readLaneModels() {
+  try {
+    const raw = await fs.readFile(CONFIG.chatdevLaneYaml, "utf8");
+    const value = (name) => raw.match(new RegExp(`^\\s*${name}:\\s*([^#\\s]+)`, "m"))?.[1] ?? null;
+    return { planner: value("LOCAL_PLANNER_MODEL"), implementer: value("LOCAL_CODER_MODEL") };
+  } catch {
+    return { planner: null, implementer: null };
   }
 }
 
@@ -540,7 +590,7 @@ async function mirrorConveyor() {
   }
 
   const live = await liveControllerGoals().catch(() => new Set());
-  const boxes = await Promise.all(CONFIG.lmBoxes.map((b) => probeLmBox(b))).catch(() => []);
+  const [boxes, laneModels] = await Promise.all([probeLmTopology(), readLaneModels()]);
 
   const statusAgeSec = status?.updated_at
     ? Math.max(0, Math.round(Date.now() / 1000 - Number(status.updated_at)))
@@ -587,6 +637,7 @@ async function mirrorConveyor() {
     focusPrefixes: (Array.isArray(status?.focus_prefixes) ? status.focus_prefixes : []).slice(0, 12),
     message: typeof status?.message === "string" ? status.message : "",
     boxes,
+    laneModels,
     statusAgeSec,
     statusMissing: status === null,
     syncedAt,

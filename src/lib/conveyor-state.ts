@@ -42,6 +42,7 @@ export interface ConveyorState {
   focusPrefixes: string[];
   message: string;
   boxes: ConveyorBox[];
+  laneModels?: { planner: string | null; implementer: string | null };
   statusAgeSec: number | null;
   statusMissing: boolean;
   syncedAt: string | null;
