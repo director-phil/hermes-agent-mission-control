@@ -14,10 +14,47 @@ import {
   liveControllerGoals,
   parseLiveControllerGoals,
   requestKindsForPolicy,
+  sanitizeEvaluatorDecision,
   unsupportedRequestFailures,
   validateBridgeConfig,
   validateSnapshot,
 } from "../hermes-bridge/bridge.mjs";
+
+test("evaluator decisions expose only the allowlisted metadata contract", () => {
+  const hash = "a".repeat(64);
+  const decision = sanitizeEvaluatorDecision({
+    goal_id: "g_eval",
+    recommendation: "REWORK",
+    canonical_kind: "code_gate_fail",
+    required_change: "Apply deterministic gate failures and rerun acceptance.",
+    eligible: true,
+    max_actions: 1,
+    mutation_performed: false,
+    source_status: "failed",
+    evidence_sha256: hash,
+    decision_key: "b".repeat(64),
+    evaluator_version: "goal-evaluator-shadow-v2",
+    prompt: "must not leave the box",
+    reasoning: "must not leave the box",
+    tool_result: "must not leave the box",
+  });
+
+  assert.deepEqual(decision, {
+    goalId: "g_eval",
+    recommendation: "REWORK",
+    canonicalKind: "code_gate_fail",
+    requiredChange: "Apply deterministic gate failures and rerun acceptance.",
+    eligible: true,
+    maxActions: 1,
+    mutationPerformed: false,
+    sourceStatus: "failed",
+    evidenceSha256: hash,
+    decisionKey: "b".repeat(64),
+    evaluatorVersion: "goal-evaluator-shadow-v2",
+  });
+  assert.equal(JSON.stringify(decision).includes("must not leave"), false);
+  assert.equal(sanitizeEvaluatorDecision({ goal_id: "../escape" }), null);
+});
 
 function sampleSnapshot() {
   const now = new Date().toISOString();
