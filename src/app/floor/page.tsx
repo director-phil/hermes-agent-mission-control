@@ -46,6 +46,20 @@ interface RecoveryEvent {
   pr?: string;
 }
 
+interface EvaluationDecision {
+  goalId: string;
+  recommendation: "APPROVE" | "RETRY" | "REWORK" | "ESCALATE";
+  canonicalKind: string;
+  requiredChange: string | null;
+  eligible: boolean;
+  maxActions: number;
+  mutationPerformed: boolean;
+  sourceStatus: "done" | "failed" | "unknown";
+  evidenceSha256: string;
+  decisionKey: string;
+  evaluatorVersion: string;
+}
+
 interface ConveyorActive {
   goalId: string;
   live: boolean;
@@ -652,12 +666,14 @@ function RunRail({
   loaded,
   onSelect,
   recovery,
+  evaluations,
 }: {
   runs: RunIndex[];
   selected: string | null;
   loaded: boolean;
   onSelect: (goal: string) => void;
   recovery: RecoveryEvent[];
+  evaluations: EvaluationDecision[];
 }) {
   const [tab, setTab] = useState<RunBucket>("active");
 
@@ -718,6 +734,7 @@ function RunRail({
         <div className="max-h-[calc(100vh-280px)] space-y-2 overflow-y-auto pr-1">
           {visible.map((run) => {
             const running = isTrulyRunning(run);
+            const evaluation = [...evaluations].reverse().find((item) => item.goalId === run.goal) ?? null;
             return (
               <button
                 key={run.goal}
@@ -750,6 +767,21 @@ function RunRail({
                     {run.filesTouched} files
                   </span>
                 </div>
+                {evaluation && (
+                  <div className="mt-3 rounded-[var(--r-sm)] border border-[var(--line)] bg-[var(--surface-1)] p-2.5">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-[10px] uppercase tracking-[0.12em] text-[var(--text-4)]">Evaluator</span>
+                      <Pill tone={evaluation.recommendation === "APPROVE" ? "up" : evaluation.recommendation === "ESCALATE" ? "down" : "warn"} className="!py-0.5 !text-[9.5px]">
+                        {evaluation.recommendation}
+                      </Pill>
+                    </div>
+                    <p className="mt-1 text-[10.5px] text-[var(--text-2)]">{evaluation.canonicalKind}</p>
+                    <p className="mt-1 line-clamp-3 text-[10.5px] leading-relaxed text-[var(--text-3)]">
+                      {evaluation.requiredChange ?? "Required change was not recorded by this evaluator version."}
+                    </p>
+                    <p className="num mt-1 text-[9.5px] text-[var(--text-4)]">evidence {evaluation.evidenceSha256.slice(0, 12)}</p>
+                  </div>
+                )}
               </button>
             );
           })}
@@ -1163,6 +1195,7 @@ export default function FloorPage() {
   const [graph, setGraph] = useState<RunGraph | null>(null);
   const [graphLoaded, setGraphLoaded] = useState(false);
   const [recovery, setRecovery] = useState<RecoveryEvent[]>([]);
+  const [evaluations, setEvaluations] = useState<EvaluationDecision[]>([]);
   const [conveyor, setConveyor] = useState<ConveyorState | null>(null);
   const runsRef = useRef<RunIndex[]>([]);
   const graphRunningRef = useRef(false);
@@ -1179,10 +1212,11 @@ export default function FloorPage() {
   const loadRuns = useCallback(async () => {
     const requestId = loadRunsRequestRef.current + 1;
     loadRunsRequestRef.current = requestId;
-    const [data, rec, conv] = await Promise.all([
+    const [data, rec, conv, evals] = await Promise.all([
       getJSON<RunIndex[]>("/api/runs"),
       getJSON<{ events?: RecoveryEvent[] }>("/api/recovery"),
       getJSON<ConveyorState>("/api/conveyor"),
+      getJSON<{ decisions?: EvaluationDecision[] }>("/api/evaluations"),
     ]);
     if (requestId !== loadRunsRequestRef.current) return;
 
@@ -1197,6 +1231,7 @@ export default function FloorPage() {
     }
     setRunsLoaded(true);
     if (rec && Array.isArray(rec.events)) setRecovery(rec.events);
+    if (evals && Array.isArray(evals.decisions)) setEvaluations(evals.decisions);
     setConveyor((current) => chooseConveyorSnapshot({ current, next: conv, runs: data ?? [] }));
   }, []);
 
@@ -1269,7 +1304,7 @@ export default function FloorPage() {
       <ConveyorBar conveyor={conveyor} onSelect={setSelectedGoal} />
 
       <section className="mt-6 grid grid-cols-1 gap-4 xl:grid-cols-[340px_minmax(0,1fr)_340px]">
-        <RunRail runs={runs} selected={selectedGoal} loaded={runsLoaded} onSelect={setSelectedGoal} recovery={recovery} />
+        <RunRail runs={runs} selected={selectedGoal} loaded={runsLoaded} onSelect={setSelectedGoal} recovery={recovery} evaluations={evaluations} />
         <FlowCanvas graph={graph} loaded={graphLoaded} selectedRun={selectedRun} />
         <LearningPanel graph={graph} />
       </section>

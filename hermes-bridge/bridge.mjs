@@ -29,6 +29,7 @@ export const CONFIG = {
   chatdevGoalStateDir: process.env.CHATDEV_GOAL_STATE_DIR || path.join(process.env.HOME || "", "ChatDev", "goals", "state"),
   chatdevRunsDb: process.env.CHATDEV_RUNS_DB || path.join(process.env.HOME || "", "ChatDev", "goals", "state", "runs.db"),
   chatdevQueueStatus: process.env.CHATDEV_QUEUE_STATUS || path.join(process.env.HOME || "", "ChatDev", "goals", "state", "queue-runner-status.json"),
+  evaluatorDecisions: process.env.CHATDEV_EVALUATOR_DECISIONS || path.join(process.env.HOME || "", "ChatDev", "goals", "state", "evaluator-shadow-decisions.jsonl"),
   chatdevQueueRunner: process.env.CHATDEV_QUEUE_RUNNER || path.join(process.env.HOME || "", "ChatDev", "scripts", "goal_queue_runner.py"),
   chatdevPython: process.env.CHATDEV_PYTHON || path.join(process.env.HOME || "", "ChatDev", ".venv", "bin", "python3"),
   chatdevLaneYaml: process.env.CHATDEV_LANE_YAML || path.join(process.env.HOME || "", "ChatDev", "yaml_instance", "rt_local_goal_v2.yaml"),
@@ -741,6 +742,62 @@ async function mirrorRecovery() {
   await setStore("hermes-recovery", { events, summary, syncedAt });
 }
 
+export function sanitizeEvaluatorDecision(value) {
+  const row = asRecord(value);
+  const goalId = safeSlug(row.goal_id);
+  const recommendation = ["APPROVE", "RETRY", "REWORK", "ESCALATE"].includes(row.recommendation)
+    ? row.recommendation
+    : null;
+  const evidenceSha256 = safeHash(row.evidence_sha256);
+  const decisionKey = safeHash(row.decision_key);
+  const evaluatorVersion = safeText(row.evaluator_version, 80);
+  const canonicalKind = safeSlug(row.canonical_kind);
+  if (!goalId || !recommendation || !evidenceSha256 || !decisionKey || !evaluatorVersion || !canonicalKind) return null;
+  return {
+    goalId,
+    recommendation,
+    canonicalKind,
+    requiredChange: safeText(row.required_change, 500),
+    eligible: row.eligible === true,
+    maxActions: row.max_actions === 1 ? 1 : 0,
+    mutationPerformed: row.mutation_performed === true,
+    sourceStatus: row.source_status === "done" ? "done" : row.source_status === "failed" ? "failed" : "unknown",
+    evidenceSha256,
+    decisionKey,
+    evaluatorVersion,
+  };
+}
+
+async function mirrorEvaluatorDecisions() {
+  const syncedAt = new Date().toISOString();
+  const READ_BYTES = 131072;
+  let decisions = [];
+  try {
+    const handle = await fs.open(CONFIG.evaluatorDecisions, "r");
+    try {
+      const { size } = await handle.stat();
+      const start = size > READ_BYTES ? size - READ_BYTES : 0;
+      const length = size - start;
+      const buffer = Buffer.alloc(length);
+      await handle.read(buffer, 0, length, start);
+      const lines = buffer.toString("utf8").split("\n").filter(Boolean).slice(-200);
+      decisions = lines.flatMap((line) => {
+        try {
+          const decision = sanitizeEvaluatorDecision(JSON.parse(line));
+          return decision ? [decision] : [];
+        } catch {
+          return [];
+        }
+      });
+    } finally {
+      await handle.close();
+    }
+  } catch {
+    decisions = [];
+  }
+  await setStore("hermes-evaluations", { decisions, syncedAt });
+}
+
 
 async function failLegacyRequests() {
   await q(
@@ -834,6 +891,7 @@ async function mirrorTick() {
   try { await mirrorConveyor(); } catch (error) { log("conveyor mirror failed:", error.message); }
   try { await mirrorOversight(); } catch (error) { log("oversight mirror failed:", error.message); }
   try { await mirrorRecovery(); } catch (error) { log("recovery mirror failed:", error.message); }
+  try { await mirrorEvaluatorDecisions(); } catch (error) { log("evaluator mirror failed:", error.message); }
 }
 
 async function main() {
