@@ -17,7 +17,7 @@ import {
 } from "@xyflow/react";
 import { Bot, Check, ExternalLink, FileCode2, GitBranch, Info, Radio, RefreshCw, X } from "lucide-react";
 import { EmptyState, Eyebrow, Panel, Pill, SectionHeader, Skeleton, rise } from "@/components/ui/kit";
-import { chooseConveyorSnapshot } from "@/lib/conveyor-state";
+
 
 type RunStatusTone = "neutral" | "up" | "down" | "warn" | "accent";
 type FileOp = "read" | "patch" | "write" | "delete";
@@ -589,12 +589,12 @@ function hasSubstantiveGraph(run: RunIndex) {
 
 
 function defaultSelectedGoal(runs: RunIndex[]) {
-  // Live floor: a truly-running controller wins, then the newest substantive graph, then newest overall.
+  // Live floor: an actively leased Hermes session wins, then the newest substantive graph, then newest overall.
   return runs.find(isTrulyRunning)?.goal ?? runs.find(hasSubstantiveGraph)?.goal ?? runs[0]?.goal ?? null;
 }
 
 const RUN_TABS: Array<{ key: RunBucket; label: string }> = [
-  { key: "active", label: "Up next + running" },
+  { key: "active", label: "Active + idle" },
   { key: "done", label: "Completed" },
   { key: "failed", label: "Failed" },
 ];
@@ -691,7 +691,7 @@ function RunRail({
     <Panel className="h-full min-h-[620px] overflow-hidden p-3">
       <SectionHeader
         label="Runs"
-        title="Live queue"
+        title="Hermes sessions"
         action={<Pill tone={runs.some(isTrulyRunning) ? "accent" : "neutral"}>{runs.length}</Pill>}
       />
       <div className="mb-3 grid grid-cols-3 gap-1 rounded-[var(--r-md)] border border-[var(--line)] bg-[var(--surface-1)] p-1">
@@ -723,12 +723,12 @@ function RunRail({
           {[0, 1, 2, 3, 4].map((item) => <Skeleton key={item} className="h-24" />)}
         </div>
       ) : runs.length === 0 ? (
-        <EmptyState icon={<GitBranch className="h-6 w-6" />} title="No mirrored runs" hint="The local bridge has not published run traces yet." />
+        <EmptyState icon={<GitBranch className="h-6 w-6" />} title="No Hermes sessions" hint="The native bridge has not published session metadata yet." />
       ) : visible.length === 0 ? (
         <EmptyState
           icon={<GitBranch className="h-6 w-6" />}
-          title={tab === "failed" ? "No failures" : tab === "done" ? "Nothing completed yet" : "Nothing queued or running"}
-          hint={tab === "failed" ? "Failed goals will surface here for the Codex recovery lane." : "Runs appear as the conveyor dispatches them."}
+          title={tab === "failed" ? "No failures" : tab === "done" ? "Nothing completed yet" : "No active or idle sessions"}
+          hint={tab === "failed" ? "Failed Hermes sessions will surface here." : "Sessions appear when Hermes records current runtime activity."}
         />
       ) : (
         <div className="max-h-[calc(100vh-280px)] space-y-2 overflow-y-auto pr-1">
@@ -799,14 +799,14 @@ function LearningPanel({ graph }: { graph: RunGraph | null }) {
   return (
     <Panel className="h-full min-h-[620px] overflow-hidden p-5">
       <SectionHeader
-        label="Scribe"
-        title="Learned / inferred"
+        label="Session evidence"
+        title="Learned / inferred metadata"
         action={graph ? <Pill tone="neutral">attempt {graph.attempt}</Pill> : null}
       />
       {!graph ? (
-        <EmptyState icon={<Info className="h-6 w-6" />} title="Select a run" hint="Scribe notes appear beside the execution graph." />
+        <EmptyState icon={<Info className="h-6 w-6" />} title="Select a session" hint="Bounded session evidence appears beside the execution graph." />
       ) : !latest ? (
-        <EmptyState icon={<Info className="h-6 w-6" />} title="No scribe notes" hint="This run has no learned or inferred entries mirrored yet." />
+        <EmptyState icon={<Info className="h-6 w-6" />} title="No learning metadata" hint="Hermes has not recorded learned or inferred metadata for this session." />
       ) : (
         <div className="max-h-[calc(100vh-250px)] overflow-y-auto pr-1">
           <div>
@@ -983,7 +983,7 @@ function FlowCanvas({ graph, loaded, selectedRun }: { graph: RunGraph | null; lo
             <Skeleton className="h-[460px]" />
           </div>
         ) : !graph ? (
-          <EmptyState icon={<GitBranch className="h-6 w-6" />} title="No graph loaded" hint="Select a mirrored run from the rail." className="h-full" />
+          <EmptyState icon={<GitBranch className="h-6 w-6" />} title="No graph loaded" hint="Select a Hermes session from the rail." className="h-full" />
         ) : headerRunning && graph.files.length === 0 && graph.counts.toolCalls === 0 && nodes.length <= 1 && edges.length === 0 ? (
           <EmptyState
             icon={<Radio className="h-6 w-6 animate-pulse" />}
@@ -1038,165 +1038,14 @@ function FlowCanvas({ graph, loaded, selectedRun }: { graph: RunGraph | null; lo
   );
 }
 
-function ConveyorBar({ conveyor, onSelect }: { conveyor: ConveyorState | null; onSelect: (goal: string) => void }) {
-  const view = getConveyorFloorView(conveyor);
-  const buildingNow = view.buildingNow;
-  const upNext = conveyor?.upNext ?? [];
-  const blocked = conveyor?.blocked ?? [];
-  const blockedCount = blocked.length;
-  const boxes = conveyor?.boxes ?? [];
-  const laneModels = conveyor?.laneModels;
-
-  return (
-    <section className="hq-rise mt-6 grid grid-cols-1 gap-4 lg:grid-cols-3" style={rise(1)}>
-      {/* BUILDING NOW */}
-      <Panel>
-        <SectionHeader title="Building now" action={<span className="text-[10px] text-[var(--text-3)]">{view.buildingActionLabel}</span>} />
-        {buildingNow.length === 0 ? (
-          <EmptyState
-            title={view.emptyTitle}
-            hint={view.emptyHint}
-          />
-        ) : (
-          <ul className="space-y-2">
-            {buildingNow.map((a) => {
-              const recovering = isRecoveringActive(a);
-              return (
-              <li key={a.goalId}>
-                <button
-                  onClick={() => onSelect(a.goalId)}
-                  className="w-full rounded-lg border border-[var(--line)] bg-[var(--surface-2)] px-3 py-2 text-left transition hover:border-[var(--accent)]"
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="truncate text-[12px] font-medium text-[var(--text)]">{a.goalId}</span>
-                    <Pill tone={recovering ? "warn" : "accent"} className="!py-0.5 !text-[10px]">
-                      {recovering ? "recovering" : "live"}
-                    </Pill>
-                  </div>
-                  <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[10px] text-[var(--text-3)]">
-                    {a.status ? <span>status {a.status}</span> : null}
-                    {a.rung != null ? <span>· rung {a.rung}</span> : null}
-                    {a.attempts != null ? <span>· attempt {a.attempts}</span> : null}
-                    {a.pr ? <span>· PR {String(a.pr).replace(/^.*\//, "#")}</span> : null}
-                  </div>
-                </button>
-              </li>
-            );
-            })}
-          </ul>
-        )}
-        <div className="mt-3 flex flex-wrap gap-1.5 border-t border-[var(--line)] pt-3 text-[10px] text-[var(--text-3)]">
-          {boxes.map((b) => (
-            <Pill key={b.host} tone={b.reachable ? "up" : "down"} className="!py-0.5 !text-[10px]">
-              {b.label} {b.reachable ? "•" : "×"}
-            </Pill>
-          ))}
-          {boxes.map((box) => box.models.length ? (
-            <span key={`${box.host}-models`}>
-              · {box.label}: {(box.modelStates?.length
-                ? box.modelStates.map((model) => `${model.id} (${model.status})`).join(", ")
-                : box.models.join(", "))}
-            </span>
-          ) : null)}
-          {laneModels?.planner ? <span>· planner: {laneModels.planner}</span> : null}
-          {laneModels?.implementer ? <span>· implementer: {laneModels.implementer}</span> : null}
-        </div>
-      </Panel>
-
-      {/* UP NEXT — full staged pipeline in promote order (ready at top) */}
-      <Panel>
-        <SectionHeader
-          title="Up next"
-          action={
-            <span className="text-[10px] text-[var(--text-3)]">
-              {`${upNext.filter((g) => g.dependencyReady).length} ready · ${upNext.length} staged`}
-            </span>
-          }
-        />
-        {upNext.length === 0 ? (
-          <EmptyState
-            title="Nothing staged"
-            hint={
-              blockedCount > 0
-                ? `${blockedCount} goal(s) held on failed deps or approval — see Blocked.`
-                : "No staged goals in the pipeline."
-            }
-          />
-        ) : (
-          <ol className="space-y-2">
-            {upNext.slice(0, 25).map((g, i) => (
-              <li key={g.goalId}>
-                <button
-                  onClick={() => onSelect(g.goalId)}
-                  className={`w-full rounded-lg border px-3 py-2 text-left transition hover:border-[var(--accent)] ${
-                    g.dependencyReady
-                      ? "border-[var(--accent)]/40 bg-[var(--surface-2)]"
-                      : "border-[var(--line)] bg-[var(--surface-2)] opacity-70"
-                  }`}
-                >
-                  <div className="flex items-center gap-2">
-                    <span className="text-[10px] tabular-nums text-[var(--text-3)]">{i + 1}</span>
-                    <span className="flex-1 truncate text-[12px] text-[var(--text)]">{g.title}</span>
-                    {g.dependencyReady ? (
-                      <Pill tone="up" className="!py-0.5 !text-[10px]">ready</Pill>
-                    ) : g.planRequired ? (
-                      <Pill tone="warn" className="!py-0.5 !text-[10px]">plan</Pill>
-                    ) : (
-                      <Pill tone="neutral" className="!py-0.5 !text-[10px]">waiting</Pill>
-                    )}
-                    {g.specialist ? <Pill tone="neutral" className="!py-0.5 !text-[10px]">{g.specialist}</Pill> : null}
-                  </div>
-                  <div className="mt-0.5 truncate pl-5 text-[10px] text-[var(--text-3)]">{g.goalId}</div>
-                  {!g.dependencyReady && g.waitingOn && g.waitingOn.length ? (
-                    <div className="mt-0.5 truncate pl-5 text-[10px] text-[var(--text-3)]">
-                      waiting on: {g.waitingOn.join(", ")}
-                    </div>
-                  ) : null}
-                </button>
-              </li>
-            ))}
-          </ol>
-        )}
-      </Panel>
-
-      {/* BLOCKED — why the queue can't move */}
-      <Panel>
-        <SectionHeader title="Blocked" action={<span className="text-[10px] text-[var(--text-3)]">{`${blocked.length} held`}</span>} />
-        {blocked.length === 0 ? (
-          <EmptyState title="Nothing blocked" hint="All staged goals are ready or in flight." />
-        ) : (
-          <ul className="space-y-2">
-            {blocked.slice(0, 12).map((b) => (
-              <li key={b.goalId} className="rounded-lg border border-[var(--line)] bg-[var(--surface-2)] px-3 py-2">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="truncate text-[12px] text-[var(--text)]">{b.goalId}</span>
-                  <Pill tone={b.queueState === "hard_stop" ? "down" : b.queueState === "invalid" ? "warn" : "neutral"} className="!py-0.5 !text-[10px]">
-                    {b.queueState}
-                  </Pill>
-                </div>
-                {b.blockedBy.length ? (
-                  <div className="mt-1 text-[10px] text-[var(--text-3)]">
-                    waiting on: {b.blockedBy.map((d) => (b.failedDependencies.includes(d) ? `${d} (failed)` : d)).join(", ")}
-                  </div>
-                ) : null}
-              </li>
-            ))}
-          </ul>
-        )}
-      </Panel>
-    </section>
-  );
-}
-
 export default function FloorPage() {
   const [runs, setRuns] = useState<RunIndex[]>([]);
   const [runsLoaded, setRunsLoaded] = useState(false);
   const [selectedGoal, setSelectedGoal] = useState<string | null>(null);
   const [graph, setGraph] = useState<RunGraph | null>(null);
   const [graphLoaded, setGraphLoaded] = useState(false);
-  const [recovery, setRecovery] = useState<RecoveryEvent[]>([]);
-  const [evaluations, setEvaluations] = useState<EvaluationDecision[]>([]);
-  const [conveyor, setConveyor] = useState<ConveyorState | null>(null);
+  const recovery: RecoveryEvent[] = [];
+  const evaluations: EvaluationDecision[] = [];
   const runsRef = useRef<RunIndex[]>([]);
   const graphRunningRef = useRef(false);
   const loadRunsRequestRef = useRef(0);
@@ -1212,27 +1061,18 @@ export default function FloorPage() {
   const loadRuns = useCallback(async () => {
     const requestId = loadRunsRequestRef.current + 1;
     loadRunsRequestRef.current = requestId;
-    const [data, rec, conv, evals] = await Promise.all([
-      getJSON<RunIndex[]>("/api/runs"),
-      getJSON<{ events?: RecoveryEvent[] }>("/api/recovery"),
-      getJSON<ConveyorState>("/api/conveyor"),
-      getJSON<{ decisions?: EvaluationDecision[] }>("/api/evaluations"),
-    ]);
+    const data = await getJSON<RunIndex[]>("/api/runs");
     if (requestId !== loadRunsRequestRef.current) return;
 
     if (data) {
       setRuns(data);
-      const liveConveyorGoal = conv?.active?.find((item) => item.live)?.goalId ?? null;
       setSelectedGoal((current) =>
         current && data.some((run) => run.goal === current)
           ? current
-          : liveConveyorGoal ?? defaultSelectedGoal(data),
+          : defaultSelectedGoal(data),
       );
     }
     setRunsLoaded(true);
-    if (rec && Array.isArray(rec.events)) setRecovery(rec.events);
-    if (evals && Array.isArray(evals.decisions)) setEvaluations(evals.decisions);
-    setConveyor((current) => chooseConveyorSnapshot({ current, next: conv, runs: data ?? [] }));
   }, []);
 
   const loadGraph = useCallback(async (goal: string) => {
@@ -1266,9 +1106,8 @@ export default function FloorPage() {
 
   const selectedRun = selectedGoal ? runs.find((run) => run.goal === selectedGoal) ?? null : null;
 
-  const conveyorView = getConveyorFloorView(conveyor);
-  const upNext = conveyor?.upNext ?? [];
-  const blockedCount = conveyor?.blocked?.length ?? 0;
+  const activeSessions = runs.filter((run) => isTrulyRunning(run)).length;
+  const latestActivity = runs[0]?.lastActivity ?? null;
 
   return (
     <div className="relative z-10 w-full mx-auto p-8 pb-16 text-[var(--text)]">
@@ -1279,29 +1118,26 @@ export default function FloorPage() {
             Live Process View
           </h1>
           <p className="mt-3 max-w-2xl text-[13px] leading-relaxed text-[var(--text-3)]">
-            Agent handoffs, tool calls, touched files, and scribe autopsies mirrored from the local ChatDev trace bridge.
+            Current Hermes sessions and metadata-only model/tool activity from the native runtime ledger.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <Pill tone={conveyorView.headerConveyorTone}>
+          <Pill tone="accent">
             <Radio className="h-3 w-3" />
-            {conveyorView.headerConveyorLabel}
+            Hermes native
           </Pill>
-          <Pill tone={conveyorView.headerCountTone}>
-            {conveyorView.headerCountLabel}
+          <Pill tone={activeSessions ? "up" : "neutral"}>
+            {activeSessions} active
           </Pill>
-          <Pill tone={upNext.length ? "warn" : "neutral"}>
-            {upNext.length} up next
+          <Pill tone="neutral">
+            {runs.length} recent sessions
           </Pill>
-          {blockedCount ? <Pill tone="neutral">{blockedCount} held</Pill> : null}
-          <Pill tone={conveyorView.headerStatusTone}>
+          <Pill tone="neutral">
             <RefreshCw className="h-3 w-3" />
-            {conveyorView.headerStatusLabel}
+            {fmtRelative(latestActivity)}
           </Pill>
         </div>
       </div>
-
-      <ConveyorBar conveyor={conveyor} onSelect={setSelectedGoal} />
 
       <section className="mt-6 grid grid-cols-1 gap-4 xl:grid-cols-[340px_minmax(0,1fr)_340px]">
         <RunRail runs={runs} selected={selectedGoal} loaded={runsLoaded} onSelect={setSelectedGoal} recovery={recovery} evaluations={evaluations} />

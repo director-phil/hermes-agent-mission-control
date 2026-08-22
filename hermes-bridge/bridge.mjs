@@ -1,13 +1,15 @@
 #!/usr/bin/env node
 import pg from "pg";
-import Database from "better-sqlite3";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { listRuns, parseRunTrace } from "./lib/parse-runs.mjs";
-import { computeOversight } from "./lib/oversight.mjs";
 import { redactText } from "./lib/redact.mjs";
+import {
+  discoverHermesStateDatabases,
+  listHermesSessionRuns,
+  readHermesSessionGraph,
+} from "./lib/parse-hermes-runs.mjs";
 
 export const CONFIG = {
   hermesBin: process.env.HERMES_BIN || "hermes",
@@ -24,6 +26,7 @@ export const CONFIG = {
   runsMaxPayloadBytes: safeNumber(process.env.BRIDGE_RUNS_MAX_PAYLOAD_BYTES, 8_000_000, 500_000, 25_000_000),
   maxLiveControllerPids: safeNumber(process.env.BRIDGE_MAX_LIVE_CONTROLLER_PIDS, 80, 1, 500),
   chatdevOversightRowCap: safeNumber(process.env.BRIDGE_OVERSIGHT_ROW_CAP, 5000, 1, 50000),
+  hermesRoot: process.env.HERMES_HOME || path.join(process.env.HOME || "", ".hermes"),
   chatdevBridgeDir: process.env.CHATDEV_BRIDGE_DIR || path.join(process.env.HOME || "", "ChatDev", "bridge"),
   chatdevRunsDir: process.env.CHATDEV_RUNS_DIR || path.join(process.env.HOME || "", "ChatDev", "runs"),
   chatdevGoalStateDir: process.env.CHATDEV_GOAL_STATE_DIR || path.join(process.env.HOME || "", "ChatDev", "goals", "state"),
@@ -450,68 +453,28 @@ async function mirrorCrons() {
 
 async function mirrorRuns() {
   const syncedAt = new Date().toISOString();
-  const secrets = knownSecrets();
   try {
-    await fs.access(CONFIG.chatdevRunsDir);
-  } catch {
-    await setStore("hermes-runs", { index: [], graphs: {}, syncedAt });
-    return;
-  }
-
-  try {
-    const indexRows = await listRuns(CONFIG.chatdevRunsDir, { goalStateDir: CONFIG.chatdevGoalStateDir, secrets });
-    const live = await liveControllerGoals();
-    const index = indexRows.map((row) => ({ ...row, liveController: live.has(row.goal) }));
+    const databases = await discoverHermesStateDatabases(CONFIG.hermesRoot);
+    const index = listHermesSessionRuns(databases, { limit: 100 });
     const graphs = {};
     const maxPayloadBytes = CONFIG.runsMaxPayloadBytes;
     let payloadBytes = Buffer.byteLength(JSON.stringify({ index, graphs, syncedAt }));
-    // Build graphs for all indexed runs in recency order.
-    // Do NOT filter by an allow-list of statuses: the conveyor emits many
-    // statuses (shipping, blocked, materializing, recovered, ...) and any run
-    // present in the index should have a resolvable graph, else /api/runs/[goal] 404s.
-    const candidates = index;
 
-    for (const run of candidates) {
-      try {
-        const graph = await parseRunTrace(path.join(CONFIG.chatdevRunsDir, run.goal), {
-          goalStateDir: CONFIG.chatdevGoalStateDir,
-          secrets,
-        });
-        const graphJson = JSON.stringify(graph);
-        const entryBytes = Buffer.byteLength(`${JSON.stringify(run.goal)}:${graphJson}`) + (Object.keys(graphs).length ? 1 : 0);
-        if (payloadBytes + entryBytes > maxPayloadBytes) break;
-        graphs[run.goal] = graph;
-        payloadBytes += entryBytes;
-      } catch (error) {
-        log("run trace parse failed:", run.goal, error.message);
-      }
+    for (const run of index) {
+      const graph = readHermesSessionGraph(databases, run.goal);
+      if (!graph) continue;
+      const graphJson = JSON.stringify(graph);
+      const entryBytes = Buffer.byteLength(`${JSON.stringify(run.goal)}:${graphJson}`) + (Object.keys(graphs).length ? 1 : 0);
+      if (payloadBytes + entryBytes > maxPayloadBytes) break;
+      graphs[run.goal] = graph;
+      payloadBytes += entryBytes;
     }
 
-    const payload = { index, graphs, syncedAt };
+    const payload = { source: "hermes-state-db", index, graphs, syncedAt };
     await setStore("hermes-runs", payload);
   } catch (error) {
-    log("runs mirror failed:", error.message);
-    await setStore("hermes-runs", { index: [], graphs: {}, syncedAt });
-  }
-}
-
-// Probe reachability only. `/v1/models` is a federated catalogue and includes
-// downloaded-but-not-loaded models, so it must never be published as loaded
-// state. Physical loaded-state comes from `lms ps --json` below.
-async function probeLmBoxReachability(spec) {
-  const [label, hostPort] = spec.includes("|") ? spec.split("|") : [spec, spec];
-  const url = `http://${hostPort.trim()}/api/v0/models`;
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 3000);
-  try {
-    const response = await fetch(url, { signal: ctrl.signal });
-    if (!response.ok) return { label: label.trim(), host: hostPort.trim(), reachable: false, models: [] };
-    await response.json();
-    return { label: label.trim(), host: hostPort.trim(), reachable: true, models: [] };
-  } catch {
-    return { label: label.trim(), host: hostPort.trim(), reachable: false, models: [] };
-  } finally {
-    clearTimeout(timer);
+    log("Hermes runs mirror failed:", error.message);
+    await setStore("hermes-runs", { source: "hermes-state-db", index: [], graphs: {}, syncedAt });
   }
 }
 
@@ -543,205 +506,6 @@ export function loadedModelBoxesFromLmsPs(rows, specs, reachability = []) {
   return boxes;
 }
 
-async function probeLmTopology() {
-  const reachability = await Promise.all(
-    CONFIG.lmBoxes.map((spec) => probeLmBoxReachability(spec)),
-  ).catch(() => []);
-  try {
-    const raw = await runBoundedProcess(CONFIG.lmsBin, ["ps", "--json"], "", {
-      timeoutMs: 10000,
-      maxOutputChars: 100000,
-    });
-    return loadedModelBoxesFromLmsPs(JSON.parse(raw), CONFIG.lmBoxes, reachability);
-  } catch (error) {
-    log("LM loaded-state unavailable; refusing to publish catalogue as loaded truth:", error.message);
-    return loadedModelBoxesFromLmsPs([], CONFIG.lmBoxes, reachability);
-  }
-}
-
-async function readLaneModels() {
-  try {
-    const raw = await fs.readFile(CONFIG.chatdevLaneYaml, "utf8");
-    const value = (name) => raw.match(new RegExp(`^\\s*${name}:\\s*([^#\\s]+)`, "m"))?.[1] ?? null;
-    return { planner: value("LOCAL_PLANNER_MODEL"), implementer: value("LOCAL_CODER_MODEL") };
-  } catch {
-    return { planner: null, implementer: null };
-  }
-}
-
-// Publish the truthful conveyor state: is it on, what is live right now, and
-// what is genuinely up next / blocked. Reads queue-runner-status.json (emitted
-// by the ChatDev queue runner) and probes the LM boxes. This is the surface the
-// Floor uses to answer "what are the locals doing" and "what is up next".
-async function mirrorConveyor() {
-  const syncedAt = new Date().toISOString();
-  // Refresh the status file truthfully first (never dispatches). Fail-open:
-  // if the runner isn't runnable, we fall back to the on-disk status file.
-  if (CONFIG.refreshConveyorStatus) {
-    try {
-      await runBoundedProcess(CONFIG.chatdevPython, [CONFIG.chatdevQueueRunner, "--status-only"], "", {
-        timeoutMs: 15000,
-        maxOutputChars: 2000,
-      });
-    } catch (error) {
-      log("conveyor status refresh skipped:", error.message);
-    }
-  }
-  let status = null;
-  try {
-    const raw = await fs.readFile(CONFIG.chatdevQueueStatus, "utf8");
-    status = JSON.parse(raw);
-  } catch (error) {
-    log("conveyor status read failed:", error.message);
-  }
-
-  const live = await liveControllerGoals().catch(() => new Set());
-  const [boxes, laneModels] = await Promise.all([probeLmTopology(), readLaneModels()]);
-
-  const statusAgeSec = status?.updated_at
-    ? Math.max(0, Math.round(Date.now() / 1000 - Number(status.updated_at)))
-    : null;
-
-  const activeDetail = Array.isArray(status?.active_detail) ? status.active_detail : [];
-  const activeGoals = Array.isArray(status?.active) ? status.active : [];
-  // A controller is truly live only if pgrep sees the process now.
-  const liveGoals = activeGoals.filter((g) => live.has(g));
-
-  const payload = {
-    conveyorOn: Boolean(status?.conveyor_on) || live.size > 0,
-    controllerPids: (Array.isArray(status?.controller_pids) ? status.controller_pids : []).slice(0, 50),
-    liveGoals: liveGoals.slice(0, 25),
-    active: activeGoals.slice(0, 25).map((gid) => {
-      const detail = activeDetail.find((d) => d.goal_id === gid) || {};
-      return {
-        goalId: gid,
-        live: live.has(gid),
-        status: detail.status ?? null,
-        rung: detail.rung ?? null,
-        attempts: detail.attempts ?? null,
-        pr: detail.pr ?? null,
-      };
-    }),
-    upNext: Array.isArray(status?.up_next) ? status.up_next.slice(0, 25).map((g) => ({
-      goalId: g.goal_id,
-      title: g.title || g.goal_id,
-      specialist: g.specialist ?? null,
-      dependencyReady: g.dependency_ready ?? true,
-      planRequired: g.plan_required ?? false,
-      waitingOn: (Array.isArray(g.waiting_on) ? g.waiting_on : []).slice(0, 12),
-    })) : [],
-    planRequired: Array.isArray(status?.plan_required) ? status.plan_required.slice(0, 25).map((g) => ({
-      goalId: g.goal_id, title: g.title || g.goal_id,
-    })) : [],
-    blocked: Array.isArray(status?.blocked) ? status.blocked.slice(0, 50).map((b) => ({
-      goalId: b.goal_id,
-      queueState: b.queue_state,
-      blockedBy: (Array.isArray(b.blocked_by) ? b.blocked_by : []).slice(0, 12),
-      failedDependencies: (Array.isArray(b.failed_dependencies) ? b.failed_dependencies : []).slice(0, 12),
-    })) : [],
-    counts: status?.counts || {},
-    focusPrefixes: (Array.isArray(status?.focus_prefixes) ? status.focus_prefixes : []).slice(0, 12),
-    message: typeof status?.message === "string" ? status.message : "",
-    boxes,
-    laneModels,
-    statusAgeSec,
-    statusMissing: status === null,
-    syncedAt,
-  };
-  await setStore("hermes-conveyor", payload);
-}
-
-async function mirrorOversight() {
-  const generatedAt = new Date().toISOString();
-  let db = null;
-  try {
-    db = new Database(CONFIG.chatdevRunsDb, { readonly: true, fileMustExist: true });
-    const rows = db
-      .prepare(
-        `SELECT ts, goal_id, rung, attempt, model, failure_kind, outcome, wall_s, diff_files, notes
-         FROM runs
-         ORDER BY ts DESC
-         LIMIT ?`,
-      )
-      .all(CONFIG.chatdevOversightRowCap);
-    await setStore("hermes-oversight", computeOversight(rows, new Date(generatedAt)));
-  } catch (error) {
-    debug("oversight mirror failed:", error.message);
-    await setStore("hermes-oversight", { generatedAt, empty: true });
-  } finally {
-    try { db?.close(); } catch {}
-  }
-}
-
-// Publish the cloud-recovery correction ledger so the Floor can show every
-// Codex correction of a failed goal (dispatch, scope gate, acceptance, PR).
-async function mirrorRecovery() {
-  const syncedAt = new Date().toISOString();
-  const ledgerPath = path.join(CONFIG.chatdevGoalStateDir, "cloud_recovery_ledger.jsonl");
-  const secrets = knownSecrets();
-  const CAP = 400; // max chars per free-text field
-  const redact = (s) => {
-    let out = String(s == null ? "" : s);
-    for (const sec of secrets) if (sec) out = out.split(sec).join("[redacted]");
-    return out.length > CAP ? out.slice(0, CAP) + "…" : out;
-  };
-  // EXPLICIT sanitized event shape — drop ALL unknown fields so nothing raw is
-  // ever republished (Codex review finding). Only these keys leave the box.
-  const sanitize = (rec) => ({
-    ts: typeof rec.ts === "string" ? rec.ts.slice(0, 40) : null,
-    gid: typeof rec.gid === "string" ? rec.gid.slice(0, 200) : "?",
-    event: typeof rec.event === "string" ? rec.event.slice(0, 60) : "unknown",
-    reason: rec.reason != null ? redact(rec.reason) : undefined,
-    detail: rec.detail != null ? redact(rec.detail) : undefined,
-    // pr is shown as a link — keep only a well-formed https github URL
-    pr: typeof rec.pr === "string" && /^https:\/\/github\.com\/\S+$/.test(rec.pr.trim())
-      ? rec.pr.trim().slice(0, 300)
-      : undefined,
-  });
-
-  let events = [];
-  try {
-    // Bound the READ itself: open the file and read only the last ~64KB from
-    // disk (not the whole ledger into memory), then take the last 200 lines.
-    const READ_BYTES = 65536;
-    const handle = await fs.open(ledgerPath, "r");
-    try {
-      const { size } = await handle.stat();
-      const start = size > READ_BYTES ? size - READ_BYTES : 0;
-      const length = size - start;
-      const buf = Buffer.alloc(length);
-      await handle.read(buf, 0, length, start);
-      const tail = buf.toString("utf8");
-      const lines = tail.split("\n").filter(Boolean).slice(-200);
-      for (const line of lines) {
-        try {
-          events.push(sanitize(JSON.parse(line)));
-        } catch {
-          /* skip malformed / partial first line */
-        }
-      }
-    } finally {
-      await handle.close();
-    }
-  } catch {
-    events = [];
-  }
-  // Roll up per-goal: dispatch count, PR (if any), latest event label. Do NOT
-  // embed the full record — only scalar summary fields.
-  const byGoal = new Map();
-  for (const ev of events) {
-    const g = ev.gid || "?";
-    const cur = byGoal.get(g) || { gid: g, dispatches: 0, pr: null, last: null, at: null };
-    if (ev.event === "codex_dispatch") cur.dispatches += 1;
-    if (ev.event === "pr_opened" && ev.pr) cur.pr = ev.pr;
-    cur.last = ev.event;
-    cur.at = ev.ts || cur.at;
-    byGoal.set(g, cur);
-  }
-  const summary = Array.from(byGoal.values()).sort((a, b) => Date.parse(b.at || "") - Date.parse(a.at || ""));
-  await setStore("hermes-recovery", { events, summary, syncedAt });
-}
-
 export function sanitizeEvaluatorDecision(value) {
   const row = asRecord(value);
   const goalId = safeSlug(row.goal_id);
@@ -767,37 +531,6 @@ export function sanitizeEvaluatorDecision(value) {
     evaluatorVersion,
   };
 }
-
-async function mirrorEvaluatorDecisions() {
-  const syncedAt = new Date().toISOString();
-  const READ_BYTES = 131072;
-  let decisions = [];
-  try {
-    const handle = await fs.open(CONFIG.evaluatorDecisions, "r");
-    try {
-      const { size } = await handle.stat();
-      const start = size > READ_BYTES ? size - READ_BYTES : 0;
-      const length = size - start;
-      const buffer = Buffer.alloc(length);
-      await handle.read(buffer, 0, length, start);
-      const lines = buffer.toString("utf8").split("\n").filter(Boolean).slice(-200);
-      decisions = lines.flatMap((line) => {
-        try {
-          const decision = sanitizeEvaluatorDecision(JSON.parse(line));
-          return decision ? [decision] : [];
-        } catch {
-          return [];
-        }
-      });
-    } finally {
-      await handle.close();
-    }
-  } catch {
-    decisions = [];
-  }
-  await setStore("hermes-evaluations", { decisions, syncedAt });
-}
-
 
 async function failLegacyRequests() {
   await q(
@@ -884,14 +617,38 @@ export function unsupportedRequestFailures() {
   return UNSUPPORTED_REQUEST_FAILURES.map((item) => ({ kind: item.kind, error: item.error }));
 }
 
+async function retireChatDevLiveStores() {
+  const syncedAt = new Date().toISOString();
+  await Promise.all([
+    setStore("hermes-conveyor", {
+      source: "retired-chatdev-archive",
+      conveyorOn: false,
+      controllerPids: [],
+      liveGoals: [],
+      active: [],
+      upNext: [],
+      planRequired: [],
+      blocked: [],
+      counts: {},
+      focusPrefixes: [],
+      message: "ChatDev is retired and is not a live Mission Control source.",
+      boxes: [],
+      laneModels: { planner: null, implementer: null },
+      statusAgeSec: null,
+      statusMissing: true,
+      syncedAt,
+    }),
+    setStore("hermes-oversight", { source: "retired-chatdev-archive", generatedAt: syncedAt, empty: true }),
+    setStore("hermes-recovery", { source: "retired-chatdev-archive", events: [], summary: [], syncedAt }),
+    setStore("hermes-evaluations", { source: "retired-chatdev-archive", decisions: [], syncedAt }),
+  ]);
+}
+
 async function mirrorTick() {
   try { await mirrorNative(); } catch (error) { log("native mirror failed:", error.message); }
   try { await mirrorCrons(); } catch (error) { log("cron mirror failed:", error.message); }
   try { await mirrorRuns(); } catch (error) { log("runs mirror failed:", error.message); }
-  try { await mirrorConveyor(); } catch (error) { log("conveyor mirror failed:", error.message); }
-  try { await mirrorOversight(); } catch (error) { log("oversight mirror failed:", error.message); }
-  try { await mirrorRecovery(); } catch (error) { log("recovery mirror failed:", error.message); }
-  try { await mirrorEvaluatorDecisions(); } catch (error) { log("evaluator mirror failed:", error.message); }
+  try { await retireChatDevLiveStores(); } catch (error) { log("retired ChatDev store reset failed:", error.message); }
 }
 
 async function main() {
