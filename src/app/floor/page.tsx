@@ -247,7 +247,7 @@ function AgentTraceNode({ data }: NodeProps<AgentNode>) {
           <p className="mt-1 truncate text-[11.5px] text-[var(--text-3)]">{data.agent.model || "model pending"}</p>
         </div>
         <Pill tone={data.running ? "accent" : "neutral"} className="!py-0.5 !text-[10px]">
-          {data.running ? "live" : "seen"}
+          {data.running ? "active turn" : "seen"}
         </Pill>
       </div>
       <div className="mt-4 grid grid-cols-2 gap-2">
@@ -533,7 +533,7 @@ function RunRail({
                     )}
                   </div>
                   <Pill tone={statusTone(run.status, running)} className="!py-0.5 !text-[10px]">
-                    {running ? "running" : run.status}
+                    {running ? "active turn" : run.status}
                   </Pill>
                 </div>
                 <div className="mt-3 flex flex-wrap gap-1.5">
@@ -736,7 +736,7 @@ function FlowCanvas({ graph, loaded, selectedRun }: { graph: RunGraph | null; lo
           )}
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          {graph && <Pill tone={statusTone(headerStatus, headerRunning)}>{headerRunning ? "running" : headerStatus}</Pill>}
+          {graph && <Pill tone={statusTone(headerStatus, headerRunning)}>{headerRunning ? "active turn" : headerStatus}</Pill>}
           {graph && <Pill tone="neutral">{graph.counts.toolCalls} tools</Pill>}
           {graph && <Pill tone="neutral">{graph.files.length} files</Pill>}
         </div>
@@ -915,7 +915,7 @@ export default function FloorPage() {
             Hermes native
           </Pill>
           <Pill tone={activeSessions ? "up" : "neutral"}>
-            {activeSessions} active
+            {activeSessions} active turns
           </Pill>
           <Pill tone={admission?.readiness.ready ? "up" : "warn"}>
             {activeSeats} model seats · {queuedSeats} queued
