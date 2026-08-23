@@ -96,6 +96,58 @@ interface NativeGoalsPayload {
   };
 }
 
+interface ConveyorAttemptGraph {
+  attempt: number;
+  status: string;
+  rung: number | null;
+  startedAt: string | null;
+  endedAt: string | null;
+  running: boolean;
+  agents: AgentTrace[];
+  files: FileTrace[];
+  flow: Array<{ from: string; to: string }>;
+  touches: TouchTrace[];
+  timeline: TimelineEntry[];
+  currentAgent: string | null;
+  currentActivity: CurrentActivity | null;
+  counts: { events: number; modelCalls: number; toolCalls: number };
+}
+
+interface ConveyorRunGraph {
+  goal: string;
+  source: "conveyor-run";
+  attempts: ConveyorAttemptGraph[];
+  learnings: Array<{ attempt: number; learned: string[]; inferred: string[] }>;
+  syncedAt: string;
+}
+
+function goalIdOf(goal: NativeGoal): string | null {
+  const match = goal.id.match(/g_[A-Za-z0-9_.-]+/);
+  return match ? match[0] : null;
+}
+
+function conveyorAttemptToRunGraph(goal: string, attempt: ConveyorAttemptGraph, learnings: ConveyorRunGraph["learnings"]): RunGraph {
+  return {
+    goal,
+    attempt: attempt.attempt,
+    status: attempt.status,
+    startedAt: attempt.startedAt,
+    endedAt: attempt.endedAt,
+    running: attempt.running,
+    agents: attempt.agents,
+    files: attempt.files,
+    flow: attempt.flow,
+    touches: attempt.touches,
+    learnings: learnings
+      .filter((item) => item.attempt === attempt.attempt)
+      .map((item) => ({ attempt: item.attempt, learned: item.learned, inferred: item.inferred })),
+    currentAgent: attempt.currentAgent,
+    currentActivity: attempt.currentActivity,
+    timeline: attempt.timeline,
+    counts: attempt.counts,
+  };
+}
+
 interface AgentTrace {
   id: string;
   label: string;
@@ -583,17 +635,63 @@ function RunRail({
   );
 }
 
-function LearningPanel({ graph }: { graph: RunGraph | null }) {
+function LearningPanel({ graph, conveyor, attempt }: { graph: RunGraph | null; conveyor: ConveyorRunGraph | null; attempt: number }) {
+  const learning = conveyor?.learnings.find((item) => item.attempt === attempt) ?? null;
   const latest = graph?.learnings.at(-1);
+  const hasLearning = Boolean(learning && (learning.learned.length > 0 || learning.inferred.length > 0));
+
   return (
     <Panel className="h-full min-h-[620px] overflow-hidden p-5">
       <SectionHeader
         label="Session evidence"
         title="Learned / inferred metadata"
-        action={graph ? <Pill tone="neutral">attempt {graph.attempt}</Pill> : null}
+        action={
+          conveyor ? (
+            <Pill tone="neutral">attempt {attempt}</Pill>
+          ) : graph ? (
+            <Pill tone="neutral">attempt {graph.attempt}</Pill>
+          ) : null
+        }
       />
-      {!graph ? (
-        <EmptyState icon={<Info className="h-6 w-6" />} title="Select a session" hint="Bounded session evidence appears beside the execution graph." />
+      {conveyor ? (
+        !hasLearning ? (
+          <EmptyState
+            icon={<Info className="h-6 w-6" />}
+            title="No learning metadata"
+            hint="This attempt has no learned or inferred metadata recorded yet."
+          />
+        ) : (
+          <div className="max-h-[calc(100vh-250px)] overflow-y-auto pr-1">
+            <div>
+              <Eyebrow>Learned</Eyebrow>
+              <ul className="mt-3 space-y-2">
+                {learning!.learned.slice(0, 10).map((item) => (
+                  <li key={item} className="rounded-[var(--r-sm)] border border-[var(--line)] bg-[var(--surface-1)] px-3 py-2 text-[12px] leading-relaxed text-[var(--text-2)]">
+                    {item}
+                  </li>
+                ))}
+                {learning!.learned.length === 0 && (
+                  <li className="text-[11px] text-[var(--text-4)]">Nothing learned this attempt.</li>
+                )}
+              </ul>
+            </div>
+            <div className="mt-6">
+              <Eyebrow>Inferred</Eyebrow>
+              <ul className="mt-3 space-y-2">
+                {learning!.inferred.slice(0, 8).map((item) => (
+                  <li key={item} className="rounded-[var(--r-sm)] border border-[var(--line)] bg-[var(--surface-1)] px-3 py-2 text-[12px] leading-relaxed text-[var(--text-2)]">
+                    {item}
+                  </li>
+                ))}
+                {learning!.inferred.length === 0 && (
+                  <li className="text-[11px] text-[var(--text-4)]">No inferences this attempt.</li>
+                )}
+              </ul>
+            </div>
+          </div>
+        )
+      ) : !graph ? (
+        <EmptyState icon={<Info className="h-6 w-6" />} title="Select a goal" hint="Bounded attempt evidence appears beside the execution graph." />
       ) : !latest ? (
         <EmptyState icon={<Info className="h-6 w-6" />} title="No learning metadata" hint="Hermes has not recorded learned or inferred metadata for this session." />
       ) : (
@@ -832,12 +930,48 @@ function FlowCanvas({ graph, loaded, selectedRun }: { graph: RunGraph | null; lo
   );
 }
 
-function NativeGoalsPanel({ goals }: { goals: NativeGoalsPayload | null }) {
+function GoalTile({
+  goal,
+  tone,
+  onSelect,
+}: {
+  goal: NativeGoal;
+  tone: "accent" | "neutral" | "down";
+  onSelect: (goal: NativeGoal) => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={() => onSelect(goal)}
+      className="block w-full rounded-[var(--r-md)] border border-[var(--line)] bg-[var(--surface-1)] p-3 text-left transition-colors hover:border-[var(--accent)] hover:bg-[var(--surface-2)]"
+    >
+      <div className="flex items-start justify-between gap-3">
+        <p className="text-[13px] font-medium leading-snug text-[var(--text)]">{goal.title}</p>
+        <Pill tone={tone} className="!py-0.5 !text-[10px]">{tone === "accent" ? "running" : tone === "down" ? "failed" : "ready"}</Pill>
+      </div>
+      <p className="num mt-1.5 text-[10.5px] text-[var(--text-4)]">
+        {goal.status ?? goal.state}{goal.updatedAt ? ` · ${fmtRelative(goal.updatedAt)}` : ""}
+      </p>
+    </button>
+  );
+}
+
+function NativeGoalsPanel({
+  goals,
+  selectedGoal,
+  onSelect,
+}: {
+  goals: NativeGoalsPayload | null;
+  selectedGoal: string | null;
+  onSelect: (goal: NativeGoal) => void;
+}) {
   const live = goals?.goals.live ?? { ready: [], running: [], done: [], failed: [] };
   const counts = goals?.goals.counts ?? { ready: 0, running: 0, done: 0, failed: 0 };
   const running = live.running;
   const ready = live.ready;
   const recentFailed = goals?.goals.recentFailed ?? [];
+
+  const selectedIdOf = (goal: NativeGoal) => goalIdOf(goal) ?? goal.id;
 
   return (
     <Panel className="h-full min-h-[620px] overflow-hidden p-5">
@@ -854,14 +988,8 @@ function NativeGoalsPanel({ goals }: { goals: NativeGoalsPayload | null }) {
           ) : (
             <ul className="mt-3 space-y-2">
               {running.map((goal) => (
-                <li key={goal.id} className="rounded-[var(--r-md)] border border-[var(--line)] bg-[var(--surface-1)] p-3">
-                  <div className="flex items-start justify-between gap-3">
-                    <p className="text-[13px] font-medium leading-snug text-[var(--text)]">{goal.title}</p>
-                    <Pill tone="accent" className="!py-0.5 !text-[10px]">running</Pill>
-                  </div>
-                  <p className="num mt-1.5 text-[10.5px] text-[var(--text-4)]">
-                    {goal.status ?? goal.state}{goal.updatedAt ? ` · ${fmtRelative(goal.updatedAt)}` : ""}
-                  </p>
+                <li key={goal.id} className={selectedGoal === selectedIdOf(goal) ? "ring-2 ring-[var(--accent)] rounded-[var(--r-md)]" : ""}>
+                  <GoalTile goal={goal} tone="accent" onSelect={onSelect} />
                 </li>
               ))}
             </ul>
@@ -875,11 +1003,8 @@ function NativeGoalsPanel({ goals }: { goals: NativeGoalsPayload | null }) {
           ) : (
             <ul className="mt-3 space-y-2">
               {ready.slice(0, 8).map((goal) => (
-                <li key={goal.id} className="rounded-[var(--r-md)] border border-[var(--line)] bg-[var(--surface-1)] p-3">
-                  <div className="flex items-start justify-between gap-3">
-                    <p className="text-[12.5px] font-medium leading-snug text-[var(--text-2)]">{goal.title}</p>
-                    <Pill tone="neutral" className="!py-0.5 !text-[10px]">ready</Pill>
-                  </div>
+                <li key={goal.id} className={selectedGoal === selectedIdOf(goal) ? "ring-2 ring-[var(--accent)] rounded-[var(--r-md)]" : ""}>
+                  <GoalTile goal={goal} tone="neutral" onSelect={onSelect} />
                 </li>
               ))}
             </ul>
@@ -891,11 +1016,8 @@ function NativeGoalsPanel({ goals }: { goals: NativeGoalsPayload | null }) {
             <Eyebrow>Recent failures</Eyebrow>
             <ul className="mt-3 space-y-2">
               {recentFailed.slice(0, 5).map((goal) => (
-                <li key={goal.id} className="rounded-[var(--r-md)] border border-[var(--line)] bg-[var(--surface-1)] p-3">
-                  <div className="flex items-start justify-between gap-3">
-                    <p className="text-[12.5px] font-medium leading-snug text-[var(--text-3)]">{goal.title}</p>
-                    <Pill tone="down" className="!py-0.5 !text-[10px]">failed</Pill>
-                  </div>
+                <li key={goal.id} className={selectedGoal === selectedIdOf(goal) ? "ring-2 ring-[var(--accent)] rounded-[var(--r-md)]" : ""}>
+                  <GoalTile goal={goal} tone="down" onSelect={onSelect} />
                 </li>
               ))}
             </ul>
@@ -916,10 +1038,14 @@ export default function FloorPage() {
   const [processes, setProcesses] = useState<ProcessPayload | null>(null);
   const [crons, setCrons] = useState<CronPayload | null>(null);
   const [goals, setGoals] = useState<NativeGoalsPayload | null>(null);
+  const [conveyor, setConveyor] = useState<ConveyorRunGraph | null>(null);
+  const [attemptIndex, setAttemptIndex] = useState(0);
+  const [conveyorSource, setConveyorSource] = useState<string | null>(null);
 
   const runsRef = useRef<RunIndex[]>([]);
   const graphRunningRef = useRef(false);
   const loadRunsRequestRef = useRef(0);
+  const conveyorGoalRef = useRef<string | null>(null);
 
   useEffect(() => {
     runsRef.current = runs;
@@ -943,11 +1069,11 @@ export default function FloorPage() {
 
     if (data) {
       setRuns(data);
-      setSelectedGoal((current) =>
-        current && data.some((run) => run.goal === current)
-          ? current
-          : defaultSelectedGoal(data),
-      );
+      setSelectedGoal((current) => {
+        if (current && conveyorGoalRef.current) return current; // conveyor selection wins
+        if (current && data.some((run) => run.goal === current)) return current;
+        return defaultSelectedGoal(data);
+      });
     }
     if (admissionData) setAdmission(admissionData);
     if (processData) setProcesses(processData);
@@ -962,12 +1088,39 @@ export default function FloorPage() {
     setGraphLoaded(true);
   }, []);
 
+  const loadConveyor = useCallback(async (goal: string) => {
+    const data = await getJSON<ConveyorRunGraph>(`/api/goals/${encodeURIComponent(goal)}`);
+    setConveyor(data);
+    if (data?.attempts?.length) {
+      setAttemptIndex(data.attempts.length - 1);
+    }
+    setGraphLoaded(true);
+  }, []);
+
+  const selectGoal = useCallback((goal: NativeGoal) => {
+    const gid = goalIdOf(goal) ?? goal.id;
+    conveyorGoalRef.current = gid;
+    setConveyorSource(gid);
+    setSelectedGoal(gid);
+    setGraphLoaded(false);
+    void loadConveyor(gid);
+  }, [loadConveyor]);
+
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     void loadRuns();
     const interval = setInterval(loadRuns, 4_000);
     return () => clearInterval(interval);
   }, [loadRuns]);
+
+  // Poll the selected conveyor run while it is live (running attempt).
+  useEffect(() => {
+    if (!conveyorSource) return;
+    const poll = () => void loadConveyor(conveyorSource);
+    const latest = conveyor?.attempts[conveyor.attempts.length - 1];
+    const interval = setInterval(poll, latest?.running ? 4_000 : 10_000);
+    return () => clearInterval(interval);
+  }, [conveyorSource, conveyor?.attempts, loadConveyor]);
 
   useEffect(() => {
     if (!selectedGoal) {
@@ -976,6 +1129,7 @@ export default function FloorPage() {
       setGraphLoaded(runsLoaded);
       return;
     }
+    if (conveyorSource === selectedGoal) return; // conveyor owns this selection
     setGraphLoaded(false);
     void loadGraph(selectedGoal);
     const interval = setInterval(() => {
@@ -983,9 +1137,38 @@ export default function FloorPage() {
       if (selectedRun ? isTrulyRunning(selectedRun) : graphRunningRef.current) void loadGraph(selectedGoal);
     }, 4_000);
     return () => clearInterval(interval);
-  }, [loadGraph, runsLoaded, selectedGoal]);
+  }, [loadGraph, runsLoaded, selectedGoal, conveyorSource]);
 
   const selectedRun = selectedGoal ? runs.find((run) => run.goal === selectedGoal) ?? null : null;
+
+  const conveyorAttempt = conveyor?.attempts[attemptIndex] ?? null;
+  const derivedGraph: RunGraph | null = conveyor && conveyorAttempt
+    ? conveyorAttemptToRunGraph(conveyor.goal, conveyorAttempt, conveyor.learnings)
+    : graph;
+  const isConveyorView = conveyorSource === selectedGoal && conveyor !== null;
+
+  const onSelectAttempt = (index: number) => {
+    if (conveyor && index >= 0 && index < conveyor.attempts.length) setAttemptIndex(index);
+  };
+
+  const attemptSelector = conveyor && conveyor.attempts.length > 1 ? (
+    <div className="flex flex-wrap items-center gap-1.5">
+      {conveyor.attempts.map((attempt, index) => (
+        <button
+          key={attempt.attempt}
+          type="button"
+          onClick={() => onSelectAttempt(index)}
+          className={`rounded-full border px-2.5 py-1 text-[11px] transition-colors ${
+            index === attemptIndex
+              ? "border-[var(--accent)] bg-[var(--accent)]/10 text-[var(--accent)]"
+              : "border-[var(--line)] text-[var(--text-3)] hover:border-[var(--text-2)]"
+          }`}
+        >
+          attempt {attempt.attempt}
+        </button>
+      ))}
+    </div>
+  ) : null;
 
   const activeSessions = runs.filter((run) => isTrulyRunning(run)).length;
   const latestActivity = runs[0]?.lastActivity ?? null;
@@ -1034,9 +1217,12 @@ export default function FloorPage() {
       </div>
 
       <section className="mt-6 grid grid-cols-1 gap-4 xl:grid-cols-[340px_minmax(0,1fr)_340px]">
-        <NativeGoalsPanel goals={goals} />
-        <FlowCanvas graph={graph} loaded={graphLoaded} selectedRun={selectedRun} />
-        <LearningPanel graph={graph} />
+        <NativeGoalsPanel goals={goals} selectedGoal={conveyorSource ?? selectedGoal} onSelect={selectGoal} />
+        <div className="flex min-w-0 flex-col gap-2">
+          {attemptSelector}
+          <FlowCanvas graph={derivedGraph} loaded={graphLoaded} selectedRun={selectedRun} />
+        </div>
+        <LearningPanel graph={isConveyorView ? null : graph} conveyor={isConveyorView ? conveyor : null} attempt={conveyorAttempt?.attempt ?? 0} />
       </section>
     </div>
   );
