@@ -5,7 +5,6 @@ import { usePathname } from "next/navigation";
 import { useState, useEffect } from "react";
 import {
   Activity,
-  ChartNoAxesCombined,
   Home,
   Twitter,
   Play,
@@ -21,7 +20,6 @@ import {
   Workflow,
   Menu,
   X,
-  CircuitBoard,
 } from "lucide-react";
 
 const navGroups = [
@@ -53,8 +51,6 @@ const navGroups = [
     items: [
       { href: "/floor", label: "Floor", icon: Network },
       { href: "/observability", label: "Observability", icon: Activity },
-      { href: "/oversight", label: "Oversight", icon: ChartNoAxesCombined },
-      { href: "/conveyor-ops", label: "Conveyor Ops", icon: CircuitBoard },
       { href: "/agents", label: "Agents", icon: Bot },
       { href: "/memory-wiki", label: "Memory Wiki", icon: BookOpen },
       { href: "/ideas", label: "Ideas", icon: Lightbulb },
@@ -71,6 +67,17 @@ const mobileTabsRaw = [
   { href: "/ideas", label: "Ideas", icon: Lightbulb },
   { href: "/agents", label: "Agents", icon: Bot },
 ];
+
+function Logo() {
+  return (
+    <div className="flex items-center gap-2.5">
+      <div className="w-8 h-8 rounded-[10px] bg-[var(--text)] flex items-center justify-center shadow-[inset_0_1px_0_rgba(255,255,255,0.4)]">
+        <span className="text-[#0a0b0d] font-bold text-[13px] tracking-tight">H</span>
+      </div>
+      <span className="font-semibold text-[var(--text)] tracking-[-0.01em] text-[15px]">Hermy HQ</span>
+    </div>
+  );
+}
 
 export function Sidebar() {
   const pathname = usePathname();
@@ -90,15 +97,6 @@ export function Sidebar() {
     window.addEventListener("resize", handleResize);
     return () => window.removeEventListener("resize", handleResize);
   }, []);
-
-  const Logo = () => (
-    <div className="flex items-center gap-2.5">
-      <div className="w-8 h-8 rounded-[10px] bg-[var(--text)] flex items-center justify-center shadow-[inset_0_1px_0_rgba(255,255,255,0.4)]">
-        <span className="text-[#0a0b0d] font-bold text-[13px] tracking-tight">H</span>
-      </div>
-      <span className="font-semibold text-[var(--text)] tracking-[-0.01em] text-[15px]">Hermy HQ</span>
-    </div>
-  );
 
   return (
     <>

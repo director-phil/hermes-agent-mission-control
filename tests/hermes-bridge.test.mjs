@@ -5,55 +5,79 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { listRuns, parseRunTrace, toDisplayPath, scrubTextPaths } from "../hermes-bridge/lib/parse-runs.mjs";
 import {
   buildNativeSnapshotRequest,
   buildMirrorEnvelope,
   fetchNativeSnapshot,
   hermesChat,
-  liveControllerGoals,
-  parseLiveControllerGoals,
   requestKindsForPolicy,
-  sanitizeEvaluatorDecision,
+  sanitizeAdmissionStatus,
+  sanitizeProcessRegistry,
   unsupportedRequestFailures,
   validateBridgeConfig,
   validateSnapshot,
 } from "../hermes-bridge/bridge.mjs";
 
-test("evaluator decisions expose only the allowlisted metadata contract", () => {
-  const hash = "a".repeat(64);
-  const decision = sanitizeEvaluatorDecision({
-    goal_id: "g_eval",
-    recommendation: "REWORK",
-    canonical_kind: "code_gate_fail",
-    required_change: "Apply deterministic gate failures and rerun acceptance.",
-    eligible: true,
-    max_actions: 1,
-    mutation_performed: false,
-    source_status: "failed",
-    evidence_sha256: hash,
-    decision_key: "b".repeat(64),
-    evaluator_version: "goal-evaluator-shadow-v2",
-    prompt: "must not leave the box",
-    reasoning: "must not leave the box",
-    tool_result: "must not leave the box",
+test("admission mirror exposes bounded capacity metadata only", () => {
+  const value = sanitizeAdmissionStatus({
+    draining: false,
+    groups: {
+      "coder-box": {
+        physical_id: "gb10-box-1",
+        active_tokens: 1,
+        max_active: 1,
+        queued_depth: 2,
+        max_waiting: 3,
+        active: [{ id: "request-1", model: "qwen3.8-27b", priority: "goal", active_age_seconds: 12.5, prompt: "must not leak" }],
+      },
+    },
+    stats: { admits: 10, rejects: 2, cancels: 1, deadline_expiries: 3, pushouts: 0 },
+    readiness: { state: "clean", ready: true, bypasses: [{ secret: "must not leak" }] },
+    token: "must not leak",
   });
+  assert.deepEqual(value, {
+    draining: false,
+    groups: [{
+      id: "coder-box",
+      physicalId: "gb10-box-1",
+      activeTokens: 1,
+      maxActive: 1,
+      queuedDepth: 2,
+      maxWaiting: 3,
+      active: [{ id: "request-1", model: "qwen3.8-27b", priority: "goal", activeAgeSeconds: 12.5 }],
+    }],
+    stats: { admits: 10, rejects: 2, cancels: 1, deadlineExpiries: 3, pushouts: 0 },
+    readiness: { state: "clean", ready: true },
+  });
+  assert.equal(JSON.stringify(value).includes("must not leak"), false);
+});
 
-  assert.deepEqual(decision, {
-    goalId: "g_eval",
-    recommendation: "REWORK",
-    canonicalKind: "code_gate_fail",
-    requiredChange: "Apply deterministic gate failures and rerun acceptance.",
-    eligible: true,
-    maxActions: 1,
-    mutationPerformed: false,
-    sourceStatus: "failed",
-    evidenceSha256: hash,
-    decisionKey: "b".repeat(64),
-    evaluatorVersion: "goal-evaluator-shadow-v2",
-  });
-  assert.equal(JSON.stringify(decision).includes("must not leave"), false);
-  assert.equal(sanitizeEvaluatorDecision({ goal_id: "../escape" }), null);
+test("process mirror exposes liveness metadata without commands or private paths", () => {
+  const rows = sanitizeProcessRegistry([
+    {
+      session_id: "proc_abc123",
+      command: "hermes --query-file /tmp/private-prompt.md --token secret",
+      pid: process.pid,
+      cwd: "/home/person/private/repo-name",
+      started_at: 1787440000,
+      task_id: "default",
+      session_key: "session_123",
+      notify_on_complete: true,
+    },
+  ], { isAlive: () => true });
+  assert.deepEqual(rows, [{
+    id: "proc_abc123",
+    kind: "hermes",
+    pid: process.pid,
+    workspace: "repo-name",
+    startedAt: "2026-08-22T23:06:40.000Z",
+    taskId: "default",
+    ownerSessionId: "session_123",
+    notifyOnComplete: true,
+    live: true,
+  }]);
+  assert.equal(JSON.stringify(rows).includes("private-prompt"), false);
+  assert.equal(JSON.stringify(rows).includes("/home/person"), false);
 });
 
 function sampleSnapshot() {
@@ -262,202 +286,4 @@ test("unsupported requests have no environment opt-in path", () => {
   assert.equal(unsupportedRequestFailures({ unsupportedRequests: true }).length, 2);
   assert.equal(kinds.includes("briefing.generate"), false);
   assert.equal(kinds.includes("memory.write"), false);
-});
-
-test("listRuns excludes dot-prefixed run directories", async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "hermes-runs-"));
-  try {
-    const normalDir = path.join(root, "g_normal");
-    const supersededDir = path.join(root, ".superseded-foo");
-    await fs.mkdir(normalDir, { recursive: true });
-    await fs.mkdir(supersededDir, { recursive: true });
-    await fs.writeFile(path.join(normalDir, "attempt-1-events.jsonl"), `${JSON.stringify({ data: { event_type: "NODE_START", node_id: "Planner" } })}\n`, "utf8");
-    await fs.writeFile(path.join(supersededDir, "attempt-1-events.jsonl"), `${JSON.stringify({ data: { event_type: "NODE_START", node_id: "Planner" } })}\n`, "utf8");
-
-    const rows = await listRuns(root, { goalStateDir: path.join(root, "state") });
-
-    assert.deepEqual(rows.map((row) => row.goal), ["g_normal"]);
-  } finally {
-    await fs.rm(root, { recursive: true, force: true });
-  }
-});
-
-test("live controller argv parser only trusts the ChatDev bridge controller", () => {
-  const bridgeDir = "/home/phillip_downs/ChatDev/bridge";
-  const python = "/x/.venv/bin/python3";
-  const script = path.join(bridgeDir, "escalate.py");
-
-  assert.deepEqual(
-    [...parseLiveControllerGoals([python, script, "run", "g_x"], bridgeDir)],
-    ["g_x"],
-  );
-
-  assert.deepEqual(
-    [...parseLiveControllerGoals(["python3", "-c", "import time;time.sleep(9)", script, "run", "g_fake"], bridgeDir)],
-    [],
-  );
-
-  assert.deepEqual(
-    [...parseLiveControllerGoals(["python3", "/tmp/escalate.py", "run", "g_x"], bridgeDir)],
-    [],
-  );
-
-  assert.deepEqual(
-    [...parseLiveControllerGoals(["sleep", "999", "/tmp/escalate.py", "run", "g_x"], bridgeDir)],
-    [],
-  );
-
-  assert.deepEqual(
-    [...parseLiveControllerGoals(["python3", script, "stop", "g_x"], bridgeDir)],
-    [],
-  );
-
-  assert.deepEqual(
-    [...parseLiveControllerGoals(["python3", script, "padding", "run", "g_x"], bridgeDir)],
-    [],
-  );
-});
-
-test("liveControllerGoals resolves absolute-path goals even when /proc/<pid>/cwd is unreadable (EACCES under hardened service)", async () => {
-  const bridgeDir = "/home/phillip_downs/ChatDev/bridge";
-  const script = path.join(bridgeDir, "escalate.py");
-  // Fake pgrep child that emits one pid then exits 0.
-  const fakeSpawn = () => {
-    const listeners = {};
-    const child = {
-      pid: 4242,
-      stdout: {
-        setEncoding() {},
-        on(event, cb) { if (event === "data") cb("4242\n"); },
-      },
-      on(event, cb) { listeners[event] = cb; if (event === "close") queueMicrotask(() => cb(0)); return child; },
-      kill() {},
-    };
-    return child;
-  };
-  // Fake /proc where cmdline has an ABSOLUTE escalate.py path and cwd readlink throws EACCES.
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "hermes-proc-"));
-  const procDir = path.join(root, "4242");
-  await fs.mkdir(procDir, { recursive: true });
-  const argv = ["/x/.venv/bin/python3", script, "run", "g_live_abs"].join("\u0000") + "\u0000";
-  await fs.writeFile(path.join(procDir, "cmdline"), argv);
-  // Do NOT create a "cwd" symlink → readlink throws ENOENT/EACCES-like failure,
-  // which must NOT prevent the absolute-path goal from being reported.
-  const goals = await liveControllerGoals({
-    spawnFn: fakeSpawn,
-    procRoot: root,
-    trustedBridgeDir: bridgeDir,
-    timeoutMs: 2000,
-  });
-  assert.deepEqual([...goals], ["g_live_abs"]);
-  await fs.rm(root, { recursive: true, force: true });
-});
-
-test("run trace parser bounds oversized lines and redacts scribe previews and display paths", async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "hermes-runs-"));
-  try {
-    const goalDir = path.join(root, "sample-goal");
-    await fs.mkdir(goalDir, { recursive: true });
-    const secret = "bridge-secret-value-0123456789";
-    const repoPath = path.join(os.homedir(), "Documents", "GitHub", "client-project", "src", "app-file.ts");
-    const chatDevPath = path.join(os.homedir(), "ChatDev", "runs", "sample-goal", "attempt-1-events.jsonl");
-    const event = {
-      data: {
-        event_type: "TOOL_CALL",
-        node_id: "agent-one",
-        timestamp: "2026-08-06T00:00:00.000Z",
-        details: {
-          tool_name: "read_repo_file",
-          tool_args: { path: repoPath },
-        },
-      },
-    };
-    const giantLine = `${JSON.stringify({ data: { event_type: "MODEL_CALL", node_id: "ignored", details: { model: "x".repeat(210 * 1024) } } })}\n`;
-    await fs.writeFile(path.join(goalDir, "attempt-1-events.jsonl"), `${giantLine}${JSON.stringify(event)}\n`, "utf8");
-    await fs.writeFile(path.join(goalDir, "scribe.md"), [
-      "## Attempt 1",
-      "### Learned",
-      `- first ${secret} ${"a".repeat(220)}`,
-      "- second",
-      "- third",
-      "- fourth",
-      "- fifth",
-      "- sixth",
-      "- seventh",
-      "### Inferred",
-      "- inferred value",
-      "",
-    ].join("\n"), "utf8");
-
-    const graph = await parseRunTrace(goalDir, { secrets: [secret] });
-    const serialized = JSON.stringify(graph);
-
-    assert.equal(serialized.includes(secret), false);
-    assert.equal(graph.counts.events, 1);
-    assert.equal(graph.files[0].path, "src/app-file.ts");
-    assert.equal(graph.touches[0].path, "src/app-file.ts");
-    assert.equal(graph.learnings[0].learnedCount, 7);
-    assert.equal(graph.learnings[0].inferredCount, 1);
-    assert.equal(graph.learnings[0].learned.length + graph.learnings[0].inferred.length, 6);
-    assert.ok(graph.learnings[0].learned[0].length <= 160);
-    assert.equal(toDisplayPath(chatDevPath), "runs/sample-goal/attempt-1-events.jsonl");
-  } finally {
-    await fs.rm(root, { recursive: true, force: true });
-  }
-});
-
-test("toDisplayPath never emits an absolute path outside recognized roots", () => {
-  assert.equal(toDisplayPath("/etc/passwd"), "passwd");
-  assert.equal(toDisplayPath("/var/secret/keys/id_rsa"), "id_rsa");
-  assert.equal(toDisplayPath("C:/Users/phil/secret.txt"), "secret.txt");
-  const home = process.env.HOME || "";
-  // Embedded double-slash must not survive prefix stripping as an absolute path.
-  for (const p of [
-    "/etc/shadow", "/root/.ssh/config", "/tmp/x/y/z.log",
-    `${home}/Documents/GitHub/repo//tmp/secret.txt`,
-    `${home}/ChatDev//tmp/secret.txt`,
-  ]) {
-    assert.equal(/^(\/|[A-Za-z]:\/|\/\/)/.test(toDisplayPath(p)), false, `leaked: ${p}`);
-  }
-});
-
-test("scrubTextPaths collapses absolute paths but leaves URLs intact", () => {
-  const prose = "Failed reading /home/phillip_downs/secret/config.env and /etc/shadow during repair";
-  const scrubbed = scrubTextPaths(prose);
-  assert.equal(scrubbed.includes("/home/phillip_downs"), false);
-  assert.equal(scrubbed.includes("/etc/shadow"), false);
-  assert.match(scrubbed, /config\.env/);
-  assert.match(scrubbed, /shadow/);
-  // URLs must not be corrupted by the path scrubber.
-  const withUrl = scrubTextPaths("see https://example.com/a/b and error at /home/phil/x/y.log");
-  assert.ok(withUrl.includes("https://example.com/a/b"), "url corrupted");
-  assert.equal(withUrl.includes("/home/phil"), false);
-});
-
-
-test("run trace parser exposes live cursor fields", async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "hermes-runs-"));
-  try {
-    const goalDir = path.join(root, "live-goal");
-    await fs.mkdir(goalDir, { recursive: true });
-    const repoPath = path.join(os.homedir(), "Documents/GitHub/client-project/src/live-file.ts");
-    const ev = (event_type, node_id, sec, details = {}) => ({ data: { event_type, node_id, timestamp: new Date(Date.UTC(2026, 7, 6, 0, 0, sec)).toISOString(), details } });
-    const events = [ev("NODE_START", "Planner", 0), ev("NODE_END", "Planner", 1), ev("NODE_START", "Local Implementer", 2)];
-    for (let i = 0; i < 33; i += 1) events.push(ev("MODEL_CALL", "Local Implementer", 3 + i, { model: "qwen3-coder-next" }));
-    events.push(ev("TOOL_CALL", "Local Implementer", 36, { tool_name: "apply_patch", tool_args: { path: repoPath } }));
-    await fs.writeFile(path.join(goalDir, "attempt-1-events.jsonl"), events.map(JSON.stringify).join("\n") + "\n", "utf8");
-    const graph = await parseRunTrace(goalDir);
-    const liveFields = JSON.stringify({ currentAgent: graph.currentAgent, currentActivity: graph.currentActivity, timeline: graph.timeline });
-    assert.equal(graph.currentAgent, "Local Implementer");
-    assert.equal(graph.currentActivity.node, "Local Implementer");
-    assert.equal(graph.currentActivity.kind, "tool");
-    assert.equal(graph.currentActivity.tool, "apply_patch");
-    assert.equal(graph.currentActivity.file, "src/live-file.ts");
-    assert.equal(graph.timeline.length, 30);
-    assert.equal(graph.timeline.at(-1).file, "src/live-file.ts");
-    assert.equal(liveFields.includes(os.homedir()), false);
-    assert.equal(liveFields.includes("\"file\":\"/"), false);
-  } finally {
-    await fs.rm(root, { recursive: true, force: true });
-  }
 });
