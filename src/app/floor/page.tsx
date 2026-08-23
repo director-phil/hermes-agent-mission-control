@@ -414,7 +414,7 @@ function runBucket(run: RunIndex): RunBucket {
   if (isFailedStatus(s)) return "failed";
   if (
     isTrulyRunning(run) ||
-    ["pending", "staged", "ready", "blocked", "queued", "idle"].includes(s)
+    ["pending", "staged", "ready", "blocked", "queued"].includes(s)
   )
     return "active";
   if (isTerminalSuccessStatus(s) || s === "shipping") return "done";
@@ -434,7 +434,7 @@ function defaultSelectedGoal(runs: RunIndex[]) {
 }
 
 const RUN_TABS: Array<{ key: RunBucket; label: string }> = [
-  { key: "active", label: "Active + idle" },
+  { key: "active", label: "Active" },
   { key: "done", label: "Completed" },
   { key: "failed", label: "Failed" },
 ];
@@ -502,7 +502,7 @@ function RunRail({
       ) : visible.length === 0 ? (
         <EmptyState
           icon={<GitBranch className="h-6 w-6" />}
-          title={tab === "failed" ? "No failures" : tab === "done" ? "Nothing completed yet" : "No active or idle sessions"}
+          title={tab === "failed" ? "No failures" : tab === "done" ? "Nothing completed yet" : "No active sessions"}
           hint={tab === "failed" ? "Failed Hermes sessions will surface here." : "Sessions appear when Hermes records current runtime activity."}
         />
       ) : (
@@ -542,6 +542,11 @@ function RunRail({
                       {node}
                     </span>
                   ))}
+                  {run.repo === "ChatDev" && (
+                    <span className="rounded-full border border-[var(--line)] px-2 py-1 text-[10.5px] text-[var(--text-4)]">
+                      retired archive
+                    </span>
+                  )}
                   {run.filesTouched > 0 && (
                     <span className="rounded-full border border-[var(--line)] px-2 py-1 text-[10.5px] text-[var(--text-4)]">
                       {run.filesTouched} files
