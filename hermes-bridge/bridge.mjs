@@ -5,6 +5,7 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { redactText } from "./lib/redact.mjs";
+import { processWebhookQueue, scoutFailedGoals } from "./webhook-rails.mjs";
 import {
   discoverHermesStateDatabases,
   listHermesSessionRuns,
@@ -272,6 +273,7 @@ async function mirrorNative() {
     detail,
   });
   await setStore("hermes-native", envelope);
+  return snapshot;
 }
 
 async function mirrorCrons() {
@@ -532,11 +534,13 @@ export function unsupportedRequestFailures() {
 }
 
 async function mirrorTick() {
-  try { await mirrorNative(); } catch (error) { log("native mirror failed:", error.message); }
+  let snapshot = null;
+  try { snapshot = await mirrorNative(); } catch (error) { log("native mirror failed:", error.message); }
   try { await mirrorCrons(); } catch (error) { log("cron mirror failed:", error.message); }
   try { await mirrorRuns(); } catch (error) { log("runs mirror failed:", error.message); }
   try { await mirrorAdmission(); } catch (error) { log("admission mirror failed:", error.message); }
   try { await mirrorProcesses(); } catch (error) { log("process mirror failed:", error.message); }
+  try { if (snapshot) await scoutFailedGoals(snapshot, { log }); } catch (error) { log("langfuse scout failed:", error.message); }
 }
 
 async function main() {
@@ -547,6 +551,7 @@ async function main() {
   setInterval(() => mirrorTick().catch((error) => log("mirror loop", error.message)), CONFIG.mirrorMs);
   const tick = async () => {
     try { await processQueue(); } catch (error) { log("queue loop", error.message); }
+    try { await processWebhookQueue({ q, log }); } catch (error) { log("webhook rails loop", error.message); }
     finally { setTimeout(tick, CONFIG.pollMs); }
   };
   tick();
