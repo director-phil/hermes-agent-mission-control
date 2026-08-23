@@ -23,6 +23,35 @@ function labelFor(row, descriptor) {
   return String(row.profile_name || descriptor.profile || row.source || "hermes").slice(0, 128);
 }
 
+function stageFor(row) {
+  const value = String(row.source || "session").toLowerCase().replace(/[^a-z0-9._:-]+/g, "-");
+  return SESSION_ID.test(value) ? value : "session";
+}
+
+function repoFor(row) {
+  const value = typeof row.git_repo_root === "string" && row.git_repo_root
+    ? row.git_repo_root
+    : typeof row.cwd === "string" ? row.cwd : "";
+  const name = value ? path.basename(value) : "";
+  return name && SESSION_ID.test(name) ? name : null;
+}
+
+function branchFor(row) {
+  const value = typeof row.git_branch === "string" ? row.git_branch.trim() : "";
+  return value && value.length <= 160 && !/[\u0000-\u001f\u007f]/.test(value) ? value : null;
+}
+
+function correlationFor(row) {
+  return {
+    operationId: `op:${row.id}`,
+    goalId: `session:${row.id}`,
+    runId: row.id,
+    stageId: stageFor(row),
+    repo: repoFor(row),
+    branch: branchFor(row),
+  };
+}
+
 function statusFor(row, live) {
   if (live) return "running";
   const reason = String(row.end_reason || "").toLowerCase();
@@ -77,7 +106,7 @@ export function listHermesSessionRuns(databases, options = {}) {
       const sessions = db.prepare(`
         SELECT s.id, s.source, s.profile_name, s.title, s.model, s.started_at, s.ended_at,
                s.end_reason, s.last_activity_at, s.message_count, s.tool_call_count,
-               s.api_call_count,
+               s.api_call_count, s.cwd, s.git_branch, s.git_repo_root,
                EXISTS(
                  SELECT 1 FROM session_turn_leases l
                  WHERE l.conversation_id = s.id AND l.expires_at > ?
@@ -91,12 +120,14 @@ export function listHermesSessionRuns(databases, options = {}) {
         if (!SESSION_ID.test(String(row.id || ""))) continue;
         const label = labelFor(row, descriptor);
         const live = row.live === 1;
+        const correlation = correlationFor(row);
         rows.push({
           goal: row.id,
           title: typeof row.title === "string" ? row.title.slice(0, 200) : null,
           source: typeof row.source === "string" ? row.source.slice(0, 64) : null,
           profile: label,
           model: typeof row.model === "string" ? row.model.slice(0, 128) : null,
+          ...correlation,
           status: statusFor(row, live),
           attempts: 1,
           liveController: live,
@@ -141,7 +172,7 @@ export function readHermesSessionGraph(databases, sessionId, options = {}) {
       const row = db.prepare(`
         SELECT s.id, s.source, s.profile_name, s.title, s.model, s.started_at, s.ended_at,
                s.end_reason, s.last_activity_at, s.message_count, s.tool_call_count,
-               s.api_call_count,
+               s.api_call_count, s.cwd, s.git_branch, s.git_repo_root,
                EXISTS(
                  SELECT 1 FROM session_turn_leases l
                  WHERE l.conversation_id = s.id AND l.expires_at > ?
@@ -152,6 +183,7 @@ export function readHermesSessionGraph(databases, sessionId, options = {}) {
 
       const label = labelFor(row, descriptor);
       const live = row.live === 1;
+      const correlation = correlationFor(row);
       const messageRows = db.prepare(`
         SELECT id, role, tool_name, timestamp
         FROM messages
@@ -182,6 +214,7 @@ export function readHermesSessionGraph(databases, sessionId, options = {}) {
         title: typeof row.title === "string" ? row.title.slice(0, 200) : null,
         source: typeof row.source === "string" ? row.source.slice(0, 64) : null,
         profile: label,
+        ...correlation,
         attempt: 1,
         status: statusFor(row, live),
         startedAt,

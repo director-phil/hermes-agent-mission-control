@@ -81,6 +81,12 @@ test("lists only metadata and treats only unexpired leases as live", async () =>
     assert.equal(runs[0].status, "running");
     assert.equal(runs[0].specialist, "fresh-coder");
     assert.deepEqual(runs[0].nodeLabels, ["fresh-coder"]);
+    assert.equal(runs[0].operationId, "op:20260823_001");
+    assert.equal(runs[0].goalId, "session:20260823_001");
+    assert.equal(runs[0].runId, "20260823_001");
+    assert.equal(runs[0].stageId, "cli");
+    assert.equal(runs[0].repo, "private");
+    assert.equal(runs[0].branch, "feat/native");
     const exported = JSON.stringify(runs);
     for (const forbidden of ["SECRET_PROMPT_BODY", "SECRET_TOOL_RESULT", "SECRET_ARGS", "private-holder"]) {
       assert.equal(exported.includes(forbidden), false);
@@ -100,6 +106,12 @@ test("builds a compatibility graph without exporting message content or private 
     assert.equal(graph.running, true);
     assert.equal(graph.currentAgent, "fresh-coder");
     assert.equal(graph.currentActivity?.tool, "read_file");
+    assert.equal(graph.operationId, "op:20260823_001");
+    assert.equal(graph.goalId, "session:20260823_001");
+    assert.equal(graph.runId, "20260823_001");
+    assert.equal(graph.stageId, "cli");
+    assert.equal(graph.repo, "private");
+    assert.equal(graph.branch, "feat/native");
     assert.deepEqual(graph.files, []);
     assert.deepEqual(graph.touches, []);
     assert.deepEqual(graph.learnings, []);

@@ -13,7 +13,6 @@ import {
 
 export const CONFIG = {
   hermesBin: process.env.HERMES_BIN || "hermes",
-  lmsBin: process.env.LMS_BIN || path.join(process.env.HOME || "", ".lmstudio", "bin", "lms"),
   nativeSnapshotUrl: process.env.HERMES_NATIVE_SNAPSHOT_URL || "http://127.0.0.1:3020/api/hermes/native",
   nativeInternalSecret: process.env.HERMES_NATIVE_INTERNAL_SECRET || "",
   pollMs: safeNumber(process.env.BRIDGE_POLL_MS, 5000, 1000, 300000),
@@ -24,22 +23,9 @@ export const CONFIG = {
   maxResultChars: safeNumber(process.env.BRIDGE_MAX_RESULT_CHARS, 8000, 1, 50000),
   maxEventDetailChars: 400,
   runsMaxPayloadBytes: safeNumber(process.env.BRIDGE_RUNS_MAX_PAYLOAD_BYTES, 8_000_000, 500_000, 25_000_000),
-  maxLiveControllerPids: safeNumber(process.env.BRIDGE_MAX_LIVE_CONTROLLER_PIDS, 80, 1, 500),
-  chatdevOversightRowCap: safeNumber(process.env.BRIDGE_OVERSIGHT_ROW_CAP, 5000, 1, 50000),
+  admissionStatusUrl: "http://127.0.0.1:19875/v1/admission/status",
+  processRegistryPath: path.join(process.env.HOME || "", ".hermes", "processes.json"),
   hermesRoot: process.env.HERMES_HOME || path.join(process.env.HOME || "", ".hermes"),
-  chatdevBridgeDir: process.env.CHATDEV_BRIDGE_DIR || path.join(process.env.HOME || "", "ChatDev", "bridge"),
-  chatdevRunsDir: process.env.CHATDEV_RUNS_DIR || path.join(process.env.HOME || "", "ChatDev", "runs"),
-  chatdevGoalStateDir: process.env.CHATDEV_GOAL_STATE_DIR || path.join(process.env.HOME || "", "ChatDev", "goals", "state"),
-  chatdevRunsDb: process.env.CHATDEV_RUNS_DB || path.join(process.env.HOME || "", "ChatDev", "goals", "state", "runs.db"),
-  chatdevQueueStatus: process.env.CHATDEV_QUEUE_STATUS || path.join(process.env.HOME || "", "ChatDev", "goals", "state", "queue-runner-status.json"),
-  evaluatorDecisions: process.env.CHATDEV_EVALUATOR_DECISIONS || path.join(process.env.HOME || "", "ChatDev", "goals", "state", "evaluator-shadow-decisions.jsonl"),
-  chatdevQueueRunner: process.env.CHATDEV_QUEUE_RUNNER || path.join(process.env.HOME || "", "ChatDev", "scripts", "goal_queue_runner.py"),
-  chatdevPython: process.env.CHATDEV_PYTHON || path.join(process.env.HOME || "", "ChatDev", ".venv", "bin", "python3"),
-  chatdevLaneYaml: process.env.CHATDEV_LANE_YAML || path.join(process.env.HOME || "", "ChatDev", "yaml_instance", "rt_local_goal_v2.yaml"),
-  refreshConveyorStatus: process.env.BRIDGE_REFRESH_CONVEYOR_STATUS !== "0",
-  // Comma-separated "label|host:port" LM boxes to probe for loaded models.
-  lmBoxes: (process.env.BRIDGE_LM_BOXES || "coder-box|127.0.0.1:1234,reviewer-box|10.0.0.150:1234")
-    .split(",").map((s) => s.trim()).filter(Boolean),
 };
 
 const CORE_REQUEST_KINDS = ["oneshot", "chat", "cron.create", "cron.run", "cron.pause", "cron.resume", "cron.remove", "cron.edit"];
@@ -129,153 +115,6 @@ export async function runBoundedProcess(command, args, stdinText, options) {
 
     child.stdin.end(stdinText, "utf8");
   });
-}
-
-export function parseLiveControllerGoals(argvInput, trustedBridgeDir, options = {}) {
-  const goals = new Set();
-  const argvRows = normalizeArgvRows(argvInput);
-  for (const argv of argvRows) {
-    if (argv.length < 4) continue;
-    if (!isPythonArgv0(argv[0])) continue;
-    if (typeof argv[1] !== "string" || argv[1].startsWith("-")) continue;
-    if (!isTrustedEscalateScript(argv[1], trustedBridgeDir, options.cwd)) continue;
-    if (argv[2] !== "run") continue;
-    if (!/^g[_-][A-Za-z0-9_.-]{1,240}$/.test(argv[3])) continue;
-    goals.add(argv[3]);
-  }
-  return goals;
-}
-
-export async function liveControllerGoals({
-  spawnFn = spawn,
-  timeoutMs = 4000,
-  procRoot = "/proc",
-  maxPids = CONFIG.maxLiveControllerPids,
-  trustedBridgeDir = CONFIG.chatdevBridgeDir,
-} = {}) {
-  return await new Promise((resolve) => {
-    let stdout = "";
-    let settled = false;
-    let readingProc = false;
-    let child;
-    // Goals accumulate as /proc entries are parsed. If the watchdog fires
-    // mid-read (loaded box), we resolve with what we already collected rather
-    // than discarding a real live controller (the 2026-08-07 settle-race bug:
-    // a saturated coder-box made the /proc reads outlast the old 2s timeout,
-    // so the Floor showed "0 building" while a controller was demonstrably up).
-    const goals = new Set();
-    const finish = (result) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      resolve(result);
-    };
-    const timer = setTimeout(() => {
-      // Only kill the child if pgrep itself hasn't returned yet. Once we're
-      // reading /proc, the pids are in hand — let the reads finish; the loop's
-      // per-iteration settled-check will still bail if it truly overruns, but
-      // we resolve with the goals gathered so far, never an empty set that
-      // erases a live controller.
-      if (!readingProc) {
-        try { if (child?.pid) child.kill("SIGKILL"); } catch {}
-      }
-      debug("live controller lookup timed out; resolving with", goals.size, "goal(s)");
-      finish(new Set(goals));
-    }, timeoutMs);
-
-    try {
-      child = spawnFn("pgrep", ["-f", "escalate.py"], { stdio: ["ignore", "pipe", "ignore"] });
-    } catch (error) {
-      debug("live controller pgrep spawn failed:", error.message);
-      finish(new Set());
-      return;
-    }
-
-    child.stdout?.setEncoding?.("utf8");
-    child.stdout?.on?.("data", (chunk) => {
-      stdout = appendBounded(stdout, chunk, 20000);
-    });
-    child.on?.("error", (error) => {
-      debug("live controller pgrep failed:", error.message);
-      finish(new Set());
-    });
-    child.on?.("close", async (code) => {
-      if (code !== 0) {
-        // pgrep exits 1 when there are no matches — that is a legitimate
-        // "nothing live" answer, not an error.
-        debug("live controller pgrep exited:", String(code));
-        finish(new Set());
-        return;
-      }
-      readingProc = true;
-      const pids = parsePids(stdout).slice(0, maxPids);
-      debug("live controller pids:", JSON.stringify(pids));
-      for (const pid of pids) {
-        if (settled) break;
-        try {
-          const procDir = path.join(procRoot, String(pid));
-          const cmdline = await fs.readFile(path.join(procDir, "cmdline"));
-          // cwd is only needed to resolve a RELATIVE script path. Under a
-          // hardened service (ProtectProc/hidepid) readlink(/proc/<pid>/cwd)
-          // can throw EACCES for processes we don't own — that must NOT abort
-          // the whole pid, because the live controller runs with an ABSOLUTE
-          // escalate.py path that needs no cwd. Read cwd best-effort only.
-          // (2026-08-07: EACCES on cwd was silently zeroing every live goal,
-          // so the Floor showed "0 building" with a controller demonstrably up.)
-          let cwd;
-          try {
-            cwd = await fs.readlink(path.join(procDir, "cwd"));
-          } catch {
-            cwd = undefined;
-          }
-          const parsed = [...parseLiveControllerGoals(cmdline, trustedBridgeDir, { cwd })];
-          for (const goal of parsed) goals.add(goal);
-        } catch {
-          // /proc entries are volatile and permission-dependent; fail closed per PID.
-        }
-      }
-      finish(new Set(goals));
-    });
-  });
-}
-
-function normalizeArgvRows(input) {
-  if (Buffer.isBuffer(input)) return [splitCmdline(input.toString("utf8"))];
-  if (Array.isArray(input)) {
-    if (input.every((item) => typeof item === "string")) return [input];
-    return input.filter(Array.isArray).map((argv) => argv.filter((item) => typeof item === "string"));
-  }
-  if (typeof input === "string" && input.includes("\u0000")) return [splitCmdline(input)];
-  return [];
-}
-
-function splitCmdline(text) {
-  return String(text || "").split("\u0000").filter(Boolean);
-}
-
-function isPythonArgv0(value) {
-  return /^python[0-9.]*$/.test(path.basename(String(value || "")));
-}
-
-function isTrustedEscalateScript(script, trustedBridgeDir, cwd) {
-  const bridgeDir = typeof trustedBridgeDir === "string" ? trustedBridgeDir.trim() : "";
-  if (!bridgeDir) return false;
-  if (typeof script !== "string" || path.basename(script) !== "escalate.py") return false;
-  if (!path.isAbsolute(script) && !cwd) return false;
-
-  const resolvedScript = path.isAbsolute(script) ? path.resolve(script) : path.resolve(cwd, script);
-  const normalizedBridgeDir = path.resolve(bridgeDir);
-  const scriptDir = path.dirname(resolvedScript);
-  return scriptDir === normalizedBridgeDir || scriptDir.startsWith(`${normalizedBridgeDir}${path.sep}`);
-}
-
-function parsePids(output) {
-  const pids = [];
-  for (const line of String(output || "").split(/\r?\n/)) {
-    const value = line.trim();
-    if (/^\d{1,10}$/.test(value)) pids.push(Number(value));
-  }
-  return pids;
 }
 
 export async function fetchNativeSnapshot(config = CONFIG) {
@@ -478,58 +317,119 @@ async function mirrorRuns() {
   }
 }
 
-export function loadedModelBoxesFromLmsPs(rows, specs, reachability = []) {
-  const boxes = specs.map((spec, index) => {
-    const [label, hostPort] = spec.includes("|") ? spec.split("|") : [spec, spec];
-    return {
-      label: label.trim(),
-      host: hostPort.trim(),
-      reachable: reachability[index]?.reachable === true,
-      models: [],
-      modelStates: [],
-    };
-  });
-  if (!Array.isArray(rows) || boxes.length === 0) return boxes;
-  for (const row of rows) {
-    const id = typeof row?.identifier === "string" ? row.identifier.trim() : "";
-    if (!id || row?.type === "embedding") continue;
-    // This bridge is physically on configured box 1. LM Link gives remote
-    // instances a deviceIdentifier; null means the local physical host.
-    const index = row?.deviceIdentifier == null ? 0 : 1;
-    if (!boxes[index] || boxes[index].models.includes(id)) continue;
-    boxes[index].models.push(id);
-    boxes[index].modelStates.push({
-      id,
-      status: typeof row?.status === "string" ? row.status : "loaded",
+export function sanitizeAdmissionStatus(value) {
+  const root = asRecord(value);
+  const integer = (item) => {
+    const parsed = Number(item);
+    return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : 0;
+  };
+  const groups = Object.entries(asRecord(root.groups)).flatMap(([id, raw]) => {
+    const groupId = safeSlug(id);
+    if (!groupId) return [];
+    const group = asRecord(raw);
+    const active = (Array.isArray(group.active) ? group.active : []).slice(0, 20).flatMap((item) => {
+      const row = asRecord(item);
+      const requestId = safeSlug(row.id);
+      if (!requestId) return [];
+      const age = Number(row.active_age_seconds);
+      return [{
+        id: requestId,
+        model: safeText(row.model, 128),
+        priority: safeText(row.priority, 32),
+        activeAgeSeconds: Number.isFinite(age) && age >= 0 ? Math.round(age * 1000) / 1000 : 0,
+      }];
     });
-  }
-  return boxes;
+    return [{
+      id: groupId,
+      physicalId: safeText(group.physical_id, 128),
+      activeTokens: integer(group.active_tokens),
+      maxActive: integer(group.max_active),
+      queuedDepth: integer(group.queued_depth),
+      maxWaiting: integer(group.max_waiting),
+      active,
+    }];
+  }).slice(0, 20);
+  const stats = asRecord(root.stats);
+  const readiness = asRecord(root.readiness);
+  return {
+    draining: root.draining === true,
+    groups,
+    stats: {
+      admits: integer(stats.admits),
+      rejects: integer(stats.rejects),
+      cancels: integer(stats.cancels),
+      deadlineExpiries: integer(stats.deadline_expiries),
+      pushouts: integer(stats.pushouts),
+    },
+    readiness: {
+      state: safeText(readiness.state, 64),
+      ready: readiness.ready === true,
+    },
+  };
 }
 
-export function sanitizeEvaluatorDecision(value) {
-  const row = asRecord(value);
-  const goalId = safeSlug(row.goal_id);
-  const recommendation = ["APPROVE", "RETRY", "REWORK", "ESCALATE"].includes(row.recommendation)
-    ? row.recommendation
-    : null;
-  const evidenceSha256 = safeHash(row.evidence_sha256);
-  const decisionKey = safeHash(row.decision_key);
-  const evaluatorVersion = safeText(row.evaluator_version, 80);
-  const canonicalKind = safeSlug(row.canonical_kind);
-  if (!goalId || !recommendation || !evidenceSha256 || !decisionKey || !evaluatorVersion || !canonicalKind) return null;
-  return {
-    goalId,
-    recommendation,
-    canonicalKind,
-    requiredChange: safeText(row.required_change, 500),
-    eligible: row.eligible === true,
-    maxActions: row.max_actions === 1 ? 1 : 0,
-    mutationPerformed: row.mutation_performed === true,
-    sourceStatus: row.source_status === "done" ? "done" : row.source_status === "failed" ? "failed" : "unknown",
-    evidenceSha256,
-    decisionKey,
-    evaluatorVersion,
-  };
+async function mirrorAdmission() {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), CONFIG.fetchTimeoutMs);
+  try {
+    const response = await fetch(CONFIG.admissionStatusUrl, { signal: controller.signal });
+    if (!response.ok) throw new Error(`admission status HTTP ${response.status}`);
+    const status = sanitizeAdmissionStatus(await response.json());
+    await setStore("hermes-admission", {
+      source: "hermes-admission",
+      ...status,
+      syncedAt: new Date().toISOString(),
+    });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export function sanitizeProcessRegistry(value, options = {}) {
+  const isAlive = typeof options.isAlive === "function"
+    ? options.isAlive
+    : (pid) => {
+      try { process.kill(pid, 0); return true; } catch { return false; }
+    };
+  return (Array.isArray(value) ? value : []).slice(0, 64).flatMap((item) => {
+    const row = asRecord(item);
+    const id = safeSlug(row.session_id);
+    const pid = safeInteger(row.pid);
+    if (!id || pid == null) return [];
+    const command = typeof row.command === "string" ? row.command.trim().toLowerCase() : "";
+    const kind = command.startsWith("hermes ") || command === "hermes"
+      ? "hermes"
+      : command.startsWith("npm ") || command.startsWith("node ") ? "server" : "process";
+    const cwd = typeof row.cwd === "string" ? path.basename(row.cwd) : "";
+    const started = Number(row.started_at);
+    return [{
+      id,
+      kind,
+      pid,
+      workspace: cwd && safeText(cwd, 128) ? safeText(cwd, 128) : null,
+      startedAt: Number.isFinite(started) && started > 0 ? new Date(started * 1000).toISOString() : null,
+      taskId: safeSlug(row.task_id),
+      ownerSessionId: safeSlug(row.session_key),
+      notifyOnComplete: row.notify_on_complete === true,
+      live: isAlive(pid),
+    }];
+  });
+}
+
+async function mirrorProcesses() {
+  let rows = [];
+  try {
+    const raw = await fs.readFile(CONFIG.processRegistryPath, "utf8");
+    if (Buffer.byteLength(raw) > 256 * 1024) throw new Error("process registry exceeds size cap");
+    rows = sanitizeProcessRegistry(JSON.parse(raw));
+  } catch (error) {
+    debug("process registry unavailable:", error.message);
+  }
+  await setStore("hermes-processes", {
+    source: "hermes-process-registry",
+    processes: rows,
+    syncedAt: new Date().toISOString(),
+  });
 }
 
 async function failLegacyRequests() {
@@ -617,38 +517,12 @@ export function unsupportedRequestFailures() {
   return UNSUPPORTED_REQUEST_FAILURES.map((item) => ({ kind: item.kind, error: item.error }));
 }
 
-async function retireChatDevLiveStores() {
-  const syncedAt = new Date().toISOString();
-  await Promise.all([
-    setStore("hermes-conveyor", {
-      source: "retired-chatdev-archive",
-      conveyorOn: false,
-      controllerPids: [],
-      liveGoals: [],
-      active: [],
-      upNext: [],
-      planRequired: [],
-      blocked: [],
-      counts: {},
-      focusPrefixes: [],
-      message: "ChatDev is retired and is not a live Mission Control source.",
-      boxes: [],
-      laneModels: { planner: null, implementer: null },
-      statusAgeSec: null,
-      statusMissing: true,
-      syncedAt,
-    }),
-    setStore("hermes-oversight", { source: "retired-chatdev-archive", generatedAt: syncedAt, empty: true }),
-    setStore("hermes-recovery", { source: "retired-chatdev-archive", events: [], summary: [], syncedAt }),
-    setStore("hermes-evaluations", { source: "retired-chatdev-archive", decisions: [], syncedAt }),
-  ]);
-}
-
 async function mirrorTick() {
   try { await mirrorNative(); } catch (error) { log("native mirror failed:", error.message); }
   try { await mirrorCrons(); } catch (error) { log("cron mirror failed:", error.message); }
   try { await mirrorRuns(); } catch (error) { log("runs mirror failed:", error.message); }
-  try { await retireChatDevLiveStores(); } catch (error) { log("retired ChatDev store reset failed:", error.message); }
+  try { await mirrorAdmission(); } catch (error) { log("admission mirror failed:", error.message); }
+  try { await mirrorProcesses(); } catch (error) { log("process mirror failed:", error.message); }
 }
 
 async function main() {

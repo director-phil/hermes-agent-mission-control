@@ -24,6 +24,16 @@ type FileOp = "read" | "patch" | "write" | "delete";
 
 interface RunIndex {
   goal: string;
+  title?: string | null;
+  source?: string | null;
+  profile?: string | null;
+  model?: string | null;
+  operationId?: string | null;
+  goalId?: string | null;
+  runId?: string | null;
+  stageId?: string | null;
+  repo?: string | null;
+  branch?: string | null;
   status: string;
   attempts: number;
   liveController?: boolean;
@@ -37,83 +47,33 @@ interface RunIndex {
   filesTouched: number;
 }
 
-interface RecoveryEvent {
-  ts: string;
-  gid: string;
-  event: string;
-  reason?: string;
-  detail?: string;
-  pr?: string;
+interface AdmissionGroup {
+  id: string;
+  physicalId: string | null;
+  activeTokens: number;
+  maxActive: number;
+  queuedDepth: number;
+  maxWaiting: number;
+  active: Array<{ id: string; model: string | null; priority: string | null; activeAgeSeconds: number }>;
 }
 
-interface EvaluationDecision {
-  goalId: string;
-  recommendation: "APPROVE" | "RETRY" | "REWORK" | "ESCALATE";
-  canonicalKind: string;
-  requiredChange: string | null;
-  eligible: boolean;
-  maxActions: number;
-  mutationPerformed: boolean;
-  sourceStatus: "done" | "failed" | "unknown";
-  evidenceSha256: string;
-  decisionKey: string;
-  evaluatorVersion: string;
-}
-
-interface ConveyorActive {
-  goalId: string;
-  live: boolean;
-  status: string | null;
-  rung: number | null;
-  attempts: number | null;
-  pr: string | null;
-}
-interface ConveyorUpNext {
-  goalId: string;
-  title: string;
-  specialist: string | null;
-  dependencyReady?: boolean;
-  planRequired?: boolean;
-  waitingOn?: string[];
-}
-interface ConveyorBlocked {
-  goalId: string;
-  queueState: string;
-  blockedBy: string[];
-  failedDependencies: string[];
-}
-interface ConveyorBox {
-  label: string;
-  host: string;
-  reachable: boolean;
-  models: string[];
-  modelStates?: Array<{ id: string; status: string }>;
-}
-interface ConveyorState {
-  conveyorOn: boolean;
-  controllerPids: number[];
-  liveGoals: string[];
-  active: ConveyorActive[];
-  upNext: ConveyorUpNext[];
-  planRequired: { goalId: string; title: string }[];
-  blocked: ConveyorBlocked[];
-  counts: Record<string, number>;
-  focusPrefixes: string[];
-  message: string;
-  boxes: ConveyorBox[];
-  laneModels?: { planner: string | null; implementer: string | null };
-  statusAgeSec: number | null;
-  statusMissing: boolean;
+interface AdmissionPayload {
+  available: boolean;
+  draining: boolean;
+  groups: AdmissionGroup[];
+  readiness: { state?: string; ready?: boolean };
   syncedAt: string | null;
 }
 
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-interface RecoverySummary {
-  gid: string;
-  dispatches: number;
-  pr: string | null;
-  last: string | null;
-  at: string | null;
+interface ProcessPayload {
+  available: boolean;
+  processes: Array<{ id: string; kind: string; live: boolean }>;
+  syncedAt: string | null;
+}
+
+interface CronPayload {
+  jobs: Array<{ status?: string }>;
+  syncedAt: string | null;
 }
 
 interface AgentTrace {
@@ -233,126 +193,6 @@ function isFailedStatus(status: string | null | undefined) {
 
 function isTerminalSuccessStatus(status: string | null | undefined) {
   return ["done", "complete", "completed", "passed", "success", "shipped", "merged"].includes(normalizeStatus(status));
-}
-
-function isRecoveringActive(active: ConveyorActive) {
-  if (active.live) return false;
-  const status = normalizeStatus(active.status);
-  return status === "running" || status === "recovering" || status === "external_recovery" || status.includes("recover");
-}
-
-type ConveyorFloorMode = "loading" | "live" | "recovering" | "on-idle" | "off";
-
-export function getConveyorFloorView(conveyor: ConveyorState | null): {
-  mode: ConveyorFloorMode;
-  liveActive: ConveyorActive[];
-  recoveringActive: ConveyorActive[];
-  buildingNow: ConveyorActive[];
-  headerConveyorLabel: string;
-  headerConveyorTone: RunStatusTone;
-  headerCountLabel: string;
-  headerCountTone: RunStatusTone;
-  headerStatusLabel: string;
-  headerStatusTone: RunStatusTone;
-  buildingActionLabel: string;
-  emptyTitle: string;
-  emptyHint: string;
-} {
-  if (!conveyor) {
-    return {
-      mode: "loading",
-      liveActive: [],
-      recoveringActive: [],
-      buildingNow: [],
-      headerConveyorLabel: "Syncing conveyor",
-      headerConveyorTone: "neutral",
-      headerCountLabel: "checking active goal",
-      headerCountTone: "neutral",
-      headerStatusLabel: "syncing status",
-      headerStatusTone: "neutral",
-      buildingActionLabel: "syncing conveyor",
-      emptyTitle: "Syncing conveyor",
-      emptyHint: "checking active goal",
-    };
-  }
-
-  const liveActive = conveyor.active.filter((active) => active.live);
-  const recoveringActive = conveyor.active.filter(isRecoveringActive);
-  const buildingNow = [...liveActive, ...recoveringActive];
-  const statusStale = conveyor.statusAgeSec != null && conveyor.statusAgeSec > 120;
-  const headerStatusLabel =
-    conveyor.statusAgeSec == null ? "no status" : statusStale ? `stale ${conveyor.statusAgeSec}s` : `${conveyor.statusAgeSec}s ago`;
-  const headerStatusTone: RunStatusTone = statusStale ? "down" : "neutral";
-
-  if (liveActive.length > 0) {
-    return {
-      mode: "live",
-      liveActive,
-      recoveringActive,
-      buildingNow,
-      headerConveyorLabel: "Conveyor ON",
-      headerConveyorTone: "up",
-      headerCountLabel: `${liveActive.length} building now`,
-      headerCountTone: "accent",
-      headerStatusLabel,
-      headerStatusTone,
-      buildingActionLabel: "conveyor on",
-      emptyTitle: "Conveyor on — nothing dispatched yet",
-      emptyHint: conveyor.message || "Waiting for a ready goal to promote.",
-    };
-  }
-
-  if (recoveringActive.length > 0) {
-    return {
-      mode: "recovering",
-      liveActive,
-      recoveringActive,
-      buildingNow,
-      headerConveyorLabel: "Conveyor recovering",
-      headerConveyorTone: "warn",
-      headerCountLabel: `${recoveringActive.length} recovering`,
-      headerCountTone: "warn",
-      headerStatusLabel,
-      headerStatusTone,
-      buildingActionLabel: "recovering",
-      emptyTitle: "Conveyor recovering",
-      emptyHint: conveyor.message || "Waiting for the queue timer to restart the controller.",
-    };
-  }
-
-  if (conveyor.conveyorOn) {
-    return {
-      mode: "on-idle",
-      liveActive,
-      recoveringActive,
-      buildingNow,
-      headerConveyorLabel: "Conveyor ON",
-      headerConveyorTone: "up",
-      headerCountLabel: "idle",
-      headerCountTone: "neutral",
-      headerStatusLabel,
-      headerStatusTone,
-      buildingActionLabel: "conveyor on",
-      emptyTitle: "Conveyor on — nothing dispatched yet",
-      emptyHint: conveyor.message || "Waiting for a ready goal to promote.",
-    };
-  }
-
-  return {
-    mode: "off",
-    liveActive,
-    recoveringActive,
-    buildingNow,
-    headerConveyorLabel: "Conveyor OFF",
-    headerConveyorTone: "down",
-    headerCountLabel: "idle",
-    headerCountTone: "neutral",
-    headerStatusLabel,
-    headerStatusTone,
-    buildingActionLabel: "conveyor off",
-    emptyTitle: "Conveyor off",
-    emptyHint: conveyor.message || "Start rt-goal-queue.timer to resume dispatch.",
-  };
 }
 
 function statusTone(status: string, running = false): RunStatusTone {
@@ -574,7 +414,7 @@ function runBucket(run: RunIndex): RunBucket {
   if (isFailedStatus(s)) return "failed";
   if (
     isTrulyRunning(run) ||
-    ["pending", "staged", "ready", "blocked", "queued", "recovering", "external_recovery"].includes(s)
+    ["pending", "staged", "ready", "blocked", "queued", "idle"].includes(s)
   )
     return "active";
   if (isTerminalSuccessStatus(s) || s === "shipping") return "done";
@@ -599,81 +439,16 @@ const RUN_TABS: Array<{ key: RunBucket; label: string }> = [
   { key: "failed", label: "Failed" },
 ];
 
-const RECOVERY_LABEL: Record<string, string> = {
-  codex_dispatch: "Codex dispatched",
-  scope_ok: "Scope gate passed",
-  scope_refused: "Scope gate REFUSED",
-  acceptance_pass: "Acceptance passed",
-  acceptance_fail: "Acceptance failed",
-  pr_opened: "PR opened",
-  codex_failed: "Codex run failed",
-  push_failed: "Push failed",
-  skip: "Skipped",
-  plan: "Planned (dry)",
-};
-
-function recoveryTone(event: string): RunStatusTone {
-  if (["acceptance_pass", "pr_opened", "scope_ok"].includes(event)) return "up";
-  if (["scope_refused", "acceptance_fail", "codex_failed", "push_failed"].includes(event)) return "down";
-  if (event === "codex_dispatch") return "accent";
-  return "neutral";
-}
-
-function RecoveryLog({ events, forGoal }: { events: RecoveryEvent[]; forGoal: string | null }) {
-  const scoped = forGoal ? events.filter((event) => event.gid === forGoal) : events;
-  const recent = scoped.slice(-40).reverse();
-  if (recent.length === 0) {
-    return (
-      <div className="mt-3 rounded-[var(--r-md)] border border-dashed border-[var(--line)] px-3 py-4 text-center text-[11px] text-[var(--text-4)]">
-        No Codex corrections logged yet. Failed goals stamped eligible are picked up here.
-      </div>
-    );
-  }
-  return (
-    <div className="mt-3 space-y-1.5">
-      <Eyebrow>Codex correction log{forGoal ? "" : " (all goals)"}</Eyebrow>
-      {recent.map((event, index) => (
-        <div
-          key={`${event.gid}:${event.ts}:${index}`}
-          className="flex items-start justify-between gap-2 rounded-[var(--r-sm)] border border-[var(--line)] bg-[var(--surface-1)] px-2.5 py-1.5"
-        >
-          <div className="min-w-0">
-            <div className="flex items-center gap-1.5">
-              <Pill tone={recoveryTone(event.event)} className="!py-0.5 !text-[9.5px]">
-                {RECOVERY_LABEL[event.event] || event.event}
-              </Pill>
-              {!forGoal && <span className="truncate text-[10.5px] text-[var(--text-3)]">{event.gid}</span>}
-            </div>
-            {(event.reason || event.detail) && (
-              <p className="mt-1 truncate text-[10.5px] text-[var(--text-4)]">{event.reason || event.detail}</p>
-            )}
-            {event.pr && event.pr.startsWith("http") && (
-              <a href={event.pr} target="_blank" rel="noreferrer" className="mt-1 block truncate text-[10.5px] text-[var(--accent)] underline">
-                {event.pr}
-              </a>
-            )}
-          </div>
-          <span className="num shrink-0 text-[10px] text-[var(--text-4)]">{fmtRelative(event.ts)}</span>
-        </div>
-      ))}
-    </div>
-  );
-}
-
 function RunRail({
   runs,
   selected,
   loaded,
   onSelect,
-  recovery,
-  evaluations,
 }: {
   runs: RunIndex[];
   selected: string | null;
   loaded: boolean;
   onSelect: (goal: string) => void;
-  recovery: RecoveryEvent[];
-  evaluations: EvaluationDecision[];
 }) {
   const [tab, setTab] = useState<RunBucket>("active");
 
@@ -734,7 +509,6 @@ function RunRail({
         <div className="max-h-[calc(100vh-280px)] space-y-2 overflow-y-auto pr-1">
           {visible.map((run) => {
             const running = isTrulyRunning(run);
-            const evaluation = [...evaluations].reverse().find((item) => item.goalId === run.goal) ?? null;
             return (
               <button
                 key={run.goal}
@@ -748,48 +522,38 @@ function RunRail({
               >
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
-                    <p className="truncate text-[12.5px] font-semibold text-[var(--text)]">{run.goal}</p>
+                    <p className="truncate text-[12.5px] font-semibold text-[var(--text)]">{run.title || run.goal}</p>
                     <p className="num mt-1 text-[10.5px] text-[var(--text-4)]">
-                      {fmtRelative(run.lastActivity)} · attempt {run.attempts}
+                      {run.operationId || run.goal} · {fmtRelative(run.lastActivity)}
                     </p>
+                    {(run.repo || run.branch) && (
+                      <p className="mt-1 truncate text-[10.5px] text-[var(--text-3)]">
+                        {[run.repo, run.branch].filter(Boolean).join(" · ")}
+                      </p>
+                    )}
                   </div>
                   <Pill tone={statusTone(run.status, running)} className="!py-0.5 !text-[10px]">
                     {running ? "running" : run.status}
                   </Pill>
                 </div>
                 <div className="mt-3 flex flex-wrap gap-1.5">
-                  {run.nodeLabels.slice(0, 4).map((node) => (
+                  {[run.profile, run.model, run.stageId].filter((value): value is string => Boolean(value)).slice(0, 4).map((node) => (
                     <span key={node} className="rounded-full border border-[var(--line)] px-2 py-1 text-[10.5px] text-[var(--text-3)]">
                       {node}
                     </span>
                   ))}
-                  <span className="rounded-full border border-[var(--line)] px-2 py-1 text-[10.5px] text-[var(--text-4)]">
-                    {run.filesTouched} files
-                  </span>
+                  {run.filesTouched > 0 && (
+                    <span className="rounded-full border border-[var(--line)] px-2 py-1 text-[10.5px] text-[var(--text-4)]">
+                      {run.filesTouched} files
+                    </span>
+                  )}
                 </div>
-                {evaluation && (
-                  <div className="mt-3 rounded-[var(--r-sm)] border border-[var(--line)] bg-[var(--surface-1)] p-2.5">
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="text-[10px] uppercase tracking-[0.12em] text-[var(--text-4)]">Evaluator</span>
-                      <Pill tone={evaluation.recommendation === "APPROVE" ? "up" : evaluation.recommendation === "ESCALATE" ? "down" : "warn"} className="!py-0.5 !text-[9.5px]">
-                        {evaluation.recommendation}
-                      </Pill>
-                    </div>
-                    <p className="mt-1 text-[10.5px] text-[var(--text-2)]">{evaluation.canonicalKind}</p>
-                    <p className="mt-1 line-clamp-3 text-[10.5px] leading-relaxed text-[var(--text-3)]">
-                      {evaluation.requiredChange ?? "Required change was not recorded by this evaluator version."}
-                    </p>
-                    <p className="num mt-1 text-[9.5px] text-[var(--text-4)]">evidence {evaluation.evidenceSha256.slice(0, 12)}</p>
-                  </div>
-                )}
               </button>
             );
           })}
         </div>
       )}
-      {tab === "failed" && (
-        <RecoveryLog events={recovery} forGoal={selected && buckets.failed.some((r) => r.goal === selected) ? selected : null} />
-      )}
+
     </Panel>
   );
 }
@@ -958,8 +722,13 @@ function FlowCanvas({ graph, loaded, selectedRun }: { graph: RunGraph | null; lo
         <div className="min-w-0">
           <Eyebrow>Process graph</Eyebrow>
           <h2 className="mt-1 truncate text-[18px] font-semibold text-[var(--text)]">
-            {graph?.goal || "No run selected"}
+            {selectedRun?.title || graph?.goal || "No session selected"}
           </h2>
+          {selectedRun?.operationId && (
+            <p className="num mt-1 truncate text-[10.5px] text-[var(--text-4)]">
+              {selectedRun.operationId} · {[selectedRun.repo, selectedRun.branch].filter(Boolean).join(" · ") || "workspace unavailable"}
+            </p>
+          )}
         </div>
         <div className="flex flex-wrap items-center gap-2">
           {graph && <Pill tone={statusTone(headerStatus, headerRunning)}>{headerRunning ? "running" : headerStatus}</Pill>}
@@ -987,12 +756,12 @@ function FlowCanvas({ graph, loaded, selectedRun }: { graph: RunGraph | null; lo
         ) : headerRunning && graph.files.length === 0 && graph.counts.toolCalls === 0 && nodes.length <= 1 && edges.length === 0 ? (
           <EmptyState
             icon={<Radio className="h-6 w-6 animate-pulse" />}
-            title="Planner starting — no steps yet"
-            hint="The run just dispatched. Tool calls and touched files will appear here as the agent works."
+            title="Session starting — no tool events yet"
+            hint="The session is active. Metadata-only model and tool events will appear here as Hermes records them."
             className="h-full"
           />
         ) : nodes.length === 0 ? (
-          <EmptyState icon={<Bot className="h-6 w-6" />} title="Trace is empty" hint="The mirrored run has no agent or file events." className="h-full" />
+          <EmptyState icon={<Bot className="h-6 w-6" />} title="Trace is empty" hint="This Hermes session has no model or tool events yet." className="h-full" />
         ) : (
           <ReactFlow<FloorNode, Edge>
             nodes={nodes}
@@ -1044,8 +813,10 @@ export default function FloorPage() {
   const [selectedGoal, setSelectedGoal] = useState<string | null>(null);
   const [graph, setGraph] = useState<RunGraph | null>(null);
   const [graphLoaded, setGraphLoaded] = useState(false);
-  const recovery: RecoveryEvent[] = [];
-  const evaluations: EvaluationDecision[] = [];
+  const [admission, setAdmission] = useState<AdmissionPayload | null>(null);
+  const [processes, setProcesses] = useState<ProcessPayload | null>(null);
+  const [crons, setCrons] = useState<CronPayload | null>(null);
+
   const runsRef = useRef<RunIndex[]>([]);
   const graphRunningRef = useRef(false);
   const loadRunsRequestRef = useRef(0);
@@ -1061,7 +832,12 @@ export default function FloorPage() {
   const loadRuns = useCallback(async () => {
     const requestId = loadRunsRequestRef.current + 1;
     loadRunsRequestRef.current = requestId;
-    const data = await getJSON<RunIndex[]>("/api/runs");
+    const [data, admissionData, processData, cronData] = await Promise.all([
+      getJSON<RunIndex[]>("/api/runs"),
+      getJSON<AdmissionPayload>("/api/hermes/admission"),
+      getJSON<ProcessPayload>("/api/hermes/processes"),
+      getJSON<CronPayload>("/api/hermes/crons"),
+    ]);
     if (requestId !== loadRunsRequestRef.current) return;
 
     if (data) {
@@ -1072,6 +848,9 @@ export default function FloorPage() {
           : defaultSelectedGoal(data),
       );
     }
+    if (admissionData) setAdmission(admissionData);
+    if (processData) setProcesses(processData);
+    if (cronData) setCrons(cronData);
     setRunsLoaded(true);
   }, []);
 
@@ -1108,6 +887,10 @@ export default function FloorPage() {
 
   const activeSessions = runs.filter((run) => isTrulyRunning(run)).length;
   const latestActivity = runs[0]?.lastActivity ?? null;
+  const activeSeats = admission?.groups.reduce((sum, group) => sum + group.activeTokens, 0) ?? 0;
+  const queuedSeats = admission?.groups.reduce((sum, group) => sum + group.queuedDepth, 0) ?? 0;
+  const liveProcesses = processes?.processes.filter((item) => item.live).length ?? 0;
+  const scheduledJobs = crons?.jobs.filter((job) => job.status === "active").length ?? 0;
 
   return (
     <div className="relative z-10 w-full mx-auto p-8 pb-16 text-[var(--text)]">
@@ -1118,7 +901,7 @@ export default function FloorPage() {
             Live Process View
           </h1>
           <p className="mt-3 max-w-2xl text-[13px] leading-relaxed text-[var(--text-3)]">
-            Current Hermes sessions and metadata-only model/tool activity from the native runtime ledger.
+            Hermes sessions, admission capacity, tracked background processes and scheduled work joined to metadata-only runtime evidence.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -1128,6 +911,15 @@ export default function FloorPage() {
           </Pill>
           <Pill tone={activeSessions ? "up" : "neutral"}>
             {activeSessions} active
+          </Pill>
+          <Pill tone={admission?.readiness.ready ? "up" : "warn"}>
+            {activeSeats} model seats · {queuedSeats} queued
+          </Pill>
+          <Pill tone={liveProcesses ? "accent" : "neutral"}>
+            {liveProcesses} background
+          </Pill>
+          <Pill tone={scheduledJobs ? "neutral" : "warn"}>
+            {scheduledJobs} scheduled
           </Pill>
           <Pill tone="neutral">
             {runs.length} recent sessions
@@ -1140,7 +932,7 @@ export default function FloorPage() {
       </div>
 
       <section className="mt-6 grid grid-cols-1 gap-4 xl:grid-cols-[340px_minmax(0,1fr)_340px]">
-        <RunRail runs={runs} selected={selectedGoal} loaded={runsLoaded} onSelect={setSelectedGoal} recovery={recovery} evaluations={evaluations} />
+        <RunRail runs={runs} selected={selectedGoal} loaded={runsLoaded} onSelect={setSelectedGoal} />
         <FlowCanvas graph={graph} loaded={graphLoaded} selectedRun={selectedRun} />
         <LearningPanel graph={graph} />
       </section>
