@@ -189,6 +189,19 @@ export interface CorrelationCoverage {
   percentage: number | null;
 }
 
+export interface ErrorObservationRow {
+  id: string;
+  goalId: string | null;
+  operationId: string | null;
+  traceId: string | null;
+  type: string | null;
+  name: string | null;
+  toolName: string | null;
+  model: string | null;
+  statusMessage: string | null;
+  startTime: string | null;
+}
+
 export interface OperationAggregate {
   operationId: string;
   goalId: string | null;
@@ -326,6 +339,7 @@ export interface HermesObservability {
   topLargeTraces: SessionTraceAggregate[];
   wasteFlags: WasteFlag[];
   recommendations: string[];
+  errors: ErrorObservationRow[];
   // Optional fields for degraded/partial responses
   status?: "ok" | "partial" | "error";
   error?: string;
@@ -686,6 +700,7 @@ function aggregateObservations(
   const observationIds = new Set<string>();
   const countedObservationKeys = new Set<string>();
   const countedObservations: Observation[] = [];
+  const errorRows: ErrorObservationRow[] = [];
   const childIds = new Set<string>();
   let latencyCount = 0;
   let latencyTotalMs = 0;
@@ -790,7 +805,23 @@ function aggregateObservations(
     if (type === "GENERATION") totals.generationCalls += 1;
     if (tool) totals.toolCalls += tool.count;
     if (hasGraftSignal) graftSignalObservations += 1;
-    if (isError) totals.errors += 1;
+    if (isError) {
+      totals.errors += 1;
+      if (errorRows.length < 300) {
+        errorRows.push({
+          id: obs.id ?? `${obs.traceId}:${obs.startTime}`,
+          goalId: correlation.goalId,
+          operationId: correlation.operationId,
+          traceId: obs.traceId,
+          type,
+          name: obs.name,
+          toolName: tool?.name ?? null,
+          model: model ?? obs.providedModelName,
+          statusMessage: obs.statusMessage,
+          startTime: obs.startTime,
+        });
+      }
+    }
     if (obs.traceId) traces.add(obs.traceId);
     if (obs.sessionId) sessions.add(obs.sessionId);
     if (rowLatestMs != null) latestMs = Math.max(latestMs ?? rowLatestMs, rowLatestMs);
@@ -1055,6 +1086,7 @@ function aggregateObservations(
       wasteFlags,
       byModel: Array.from(models.values()).map(roundCostAggregate),
     }),
+    errors: errorRows,
   };
 }
 
@@ -2063,6 +2095,7 @@ function failurePayload(
     topLargeTraces: [],
     wasteFlags: [],
     recommendations: [],
+    errors: [],
   };
 }
 

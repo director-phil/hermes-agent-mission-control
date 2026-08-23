@@ -46,6 +46,7 @@ import type {
   TimeSeriesBucket,
   ToolAggregate,
   WasteFlag,
+  ErrorObservationRow,
 } from "@/lib/langfuse-observability";
 
 type Tone = "neutral" | "up" | "down" | "warn" | "accent";
@@ -911,6 +912,57 @@ function ToolsPanel({ recent, repeated }: { recent: ToolAggregate[]; repeated: T
   );
 }
 
+function ErrorsPanel({ errors }: { errors: ErrorObservationRow[] }) {
+  const [expanded, setExpanded] = useState(false);
+  const shown = expanded ? errors : errors.slice(0, 10);
+  return (
+    <Panel className="mt-8 p-5">
+      <SectionHeader
+        label="Error nodes"
+        title="Failed observations"
+        action={<Pill tone={errors.length ? "down" : "neutral"}>{errors.length} nodes</Pill>}
+      />
+      {errors.length === 0 ? (
+        <EmptyState icon={<CheckCircle2 className="h-6 w-6" />} title="No error nodes" hint="No ERROR-level observations in this window." />
+      ) : (
+        <>
+          <div className="overflow-hidden rounded-[8px] border border-[var(--line)]">
+            <table className="w-full text-left text-[12px]">
+              <thead className="bg-[var(--surface-2)] text-[var(--text-3)]">
+                <tr>
+                  <th className="px-3 py-2 font-medium">Goal</th>
+                  <th className="px-3 py-2 font-medium">Tool / name</th>
+                  <th className="px-3 py-2 font-medium">Model</th>
+                  <th className="px-3 py-2 font-medium">Type</th>
+                  <th className="px-3 py-2 font-medium">Status</th>
+                  <th className="px-3 py-2 font-medium">When</th>
+                </tr>
+              </thead>
+              <tbody>
+                {shown.map((err) => (
+                  <tr key={err.id} className="border-t border-[var(--line)] text-[var(--text-2)]">
+                    <td className="px-3 py-2 font-mono text-[11.5px]">{err.goalId ?? "—"}</td>
+                    <td className="px-3 py-2 font-mono text-[11.5px]">{err.toolName ?? err.name ?? "—"}</td>
+                    <td className="px-3 py-2">{err.model ?? "—"}</td>
+                    <td className="px-3 py-2 text-[var(--text-3)]">{err.type ?? "—"}</td>
+                    <td className="px-3 py-2 max-w-[280px] truncate text-[var(--text-3)]" title={err.statusMessage ?? undefined}>{err.statusMessage ?? "—"}</td>
+                    <td className="px-3 py-2 text-[var(--text-3)]">{err.startTime ? timeAgo(err.startTime) : "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {errors.length > 10 && (
+            <button onClick={() => setExpanded((v) => !v)} className="mt-3 text-[12px] font-medium text-[var(--accent)] hover:underline">
+              {expanded ? "Show fewer" : `Show all ${errors.length} nodes`}
+            </button>
+          )}
+        </>
+      )}
+    </Panel>
+  );
+}
+
 function RecommendationsPanel({ recommendations }: { recommendations: string[] }) {
   return (
     <Panel className="mt-8 p-5">
@@ -1007,6 +1059,7 @@ export default function ObservabilityPage() {
           <GraftCohortPanel cohort={data.graftCohort} />
           <OperationsPanel operations={data.operations ?? []} accounting={data.accounting} coverage={data.correlationCoverage} />
           <ToolsPanel recent={data.tools?.recent ?? []} repeated={data.tools?.repeated ?? []} />
+          <ErrorsPanel errors={data.errors ?? []} />
           <RecommendationsPanel recommendations={data.recommendations ?? []} />
           <CompletenessFooter completeness={data.completeness ?? null} coverage={data.correlationCoverage} />
         </>
