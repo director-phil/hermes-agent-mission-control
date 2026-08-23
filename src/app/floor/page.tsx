@@ -76,6 +76,26 @@ interface CronPayload {
   syncedAt: string | null;
 }
 
+interface NativeGoal {
+  id: string;
+  title: string;
+  state: "ready" | "running" | "done" | "failed";
+  source: "live-native" | "archive";
+  status: string | null;
+  updatedAt: string | null;
+  evidence: string[];
+  bytes: number;
+}
+
+interface NativeGoalsPayload {
+  goals: {
+    live: Record<"ready" | "running" | "done" | "failed", NativeGoal[]>;
+    counts: Record<"ready" | "running" | "done" | "failed", number>;
+    current: NativeGoal | null;
+    recentFailed: NativeGoal[];
+  };
+}
+
 interface AgentTrace {
   id: string;
   label: string;
@@ -812,6 +832,80 @@ function FlowCanvas({ graph, loaded, selectedRun }: { graph: RunGraph | null; lo
   );
 }
 
+function NativeGoalsPanel({ goals }: { goals: NativeGoalsPayload | null }) {
+  const live = goals?.goals.live ?? { ready: [], running: [], done: [], failed: [] };
+  const counts = goals?.goals.counts ?? { ready: 0, running: 0, done: 0, failed: 0 };
+  const running = live.running;
+  const ready = live.ready;
+  const recentFailed = goals?.goals.recentFailed ?? [];
+
+  return (
+    <Panel className="h-full min-h-[620px] overflow-hidden p-5">
+      <SectionHeader
+        label="Goals"
+        title="What locals are working on"
+        action={<Pill tone={running.length ? "accent" : "neutral"}>{counts.running} running</Pill>}
+      />
+      <div className="mt-4 max-h-[calc(100vh-300px)] space-y-5 overflow-y-auto pr-1">
+        <div>
+          <Eyebrow>Running now</Eyebrow>
+          {running.length === 0 ? (
+            <p className="mt-2 text-[12px] text-[var(--text-4)]">No goal is currently running through the conveyor.</p>
+          ) : (
+            <ul className="mt-3 space-y-2">
+              {running.map((goal) => (
+                <li key={goal.id} className="rounded-[var(--r-md)] border border-[var(--line)] bg-[var(--surface-1)] p-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <p className="text-[13px] font-medium leading-snug text-[var(--text)]">{goal.title}</p>
+                    <Pill tone="accent" className="!py-0.5 !text-[10px]">running</Pill>
+                  </div>
+                  <p className="num mt-1.5 text-[10.5px] text-[var(--text-4)]">
+                    {goal.status ?? goal.state}{goal.updatedAt ? ` · ${fmtRelative(goal.updatedAt)}` : ""}
+                  </p>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+
+        <div>
+          <Eyebrow>Ready</Eyebrow>
+          {ready.length === 0 ? (
+            <p className="mt-2 text-[12px] text-[var(--text-4)]">No ready goals queued.</p>
+          ) : (
+            <ul className="mt-3 space-y-2">
+              {ready.slice(0, 8).map((goal) => (
+                <li key={goal.id} className="rounded-[var(--r-md)] border border-[var(--line)] bg-[var(--surface-1)] p-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <p className="text-[12.5px] font-medium leading-snug text-[var(--text-2)]">{goal.title}</p>
+                    <Pill tone="neutral" className="!py-0.5 !text-[10px]">ready</Pill>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+
+        {recentFailed.length > 0 && (
+          <div>
+            <Eyebrow>Recent failures</Eyebrow>
+            <ul className="mt-3 space-y-2">
+              {recentFailed.slice(0, 5).map((goal) => (
+                <li key={goal.id} className="rounded-[var(--r-md)] border border-[var(--line)] bg-[var(--surface-1)] p-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <p className="text-[12.5px] font-medium leading-snug text-[var(--text-3)]">{goal.title}</p>
+                    <Pill tone="down" className="!py-0.5 !text-[10px]">failed</Pill>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </div>
+    </Panel>
+  );
+}
+
 export default function FloorPage() {
   const [runs, setRuns] = useState<RunIndex[]>([]);
   const [runsLoaded, setRunsLoaded] = useState(false);
@@ -821,6 +915,7 @@ export default function FloorPage() {
   const [admission, setAdmission] = useState<AdmissionPayload | null>(null);
   const [processes, setProcesses] = useState<ProcessPayload | null>(null);
   const [crons, setCrons] = useState<CronPayload | null>(null);
+  const [goals, setGoals] = useState<NativeGoalsPayload | null>(null);
 
   const runsRef = useRef<RunIndex[]>([]);
   const graphRunningRef = useRef(false);
@@ -837,11 +932,12 @@ export default function FloorPage() {
   const loadRuns = useCallback(async () => {
     const requestId = loadRunsRequestRef.current + 1;
     loadRunsRequestRef.current = requestId;
-    const [data, admissionData, processData, cronData] = await Promise.all([
+    const [data, admissionData, processData, cronData, goalsData] = await Promise.all([
       getJSON<RunIndex[]>("/api/runs"),
       getJSON<AdmissionPayload>("/api/hermes/admission"),
       getJSON<ProcessPayload>("/api/hermes/processes"),
       getJSON<CronPayload>("/api/hermes/crons"),
+      getJSON<NativeGoalsPayload>("/api/hermes/native"),
     ]);
     if (requestId !== loadRunsRequestRef.current) return;
 
@@ -856,6 +952,7 @@ export default function FloorPage() {
     if (admissionData) setAdmission(admissionData);
     if (processData) setProcesses(processData);
     if (cronData) setCrons(cronData);
+    if (goalsData) setGoals(goalsData);
     setRunsLoaded(true);
   }, []);
 
@@ -937,7 +1034,7 @@ export default function FloorPage() {
       </div>
 
       <section className="mt-6 grid grid-cols-1 gap-4 xl:grid-cols-[340px_minmax(0,1fr)_340px]">
-        <RunRail runs={runs} selected={selectedGoal} loaded={runsLoaded} onSelect={setSelectedGoal} />
+        <NativeGoalsPanel goals={goals} />
         <FlowCanvas graph={graph} loaded={graphLoaded} selectedRun={selectedRun} />
         <LearningPanel graph={graph} />
       </section>

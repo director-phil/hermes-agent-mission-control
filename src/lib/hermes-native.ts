@@ -343,6 +343,19 @@ async function readLiveGoals(root: string, ctx: SafeContext): Promise<Record<Goa
     result[state] = rows.sort(newestFirst);
   }));
 
+  // Surface staged goals as "ready" so the conveyor's queued work is visible in
+  // the cockpit. The mirror writes classifier-ready goals to runtime/goals/staged
+  // (a separate promotion lane); merging them into `ready` here is read-only.
+  const stagedDir = path.join("runtime/goals", "staged");
+  const stagedEntries = await listFilesAtRoot(root, stagedDir, ctx, MAX_GOAL_ROWS_PER_STATE);
+  for (const entry of stagedEntries) {
+    const rel = path.join(stagedDir, entry.name);
+    const read = await readTextWithStatsAtRoot(root, rel, MAX_GOAL_BYTES, ctx, false);
+    if (!read) continue;
+    result.ready.push(parseGoalSummary(entry.name, "ready", "live-native", read.text, read.bytes));
+  }
+  result.ready.sort(newestFirst);
+
   return result;
 }
 
