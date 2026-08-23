@@ -6,6 +6,7 @@ export const revalidate = 0;
 
 type AdmissionPayload = {
   source?: string;
+  available?: boolean;
   draining?: boolean;
   groups?: unknown[];
   stats?: Record<string, unknown>;
@@ -18,7 +19,7 @@ export async function GET() {
   return NextResponse.json(
     {
       source: payload?.source ?? "hermes-admission",
-      available: payload !== null,
+      available: payload !== null && payload.available !== false,
       draining: payload?.draining === true,
       groups: Array.isArray(payload?.groups) ? payload.groups : [],
       stats: payload?.stats ?? {},

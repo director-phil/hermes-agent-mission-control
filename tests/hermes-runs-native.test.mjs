@@ -49,6 +49,14 @@ async function fixture() {
   db.prepare(`INSERT INTO session_turn_leases VALUES (?, ?, ?, ?)`).run(
     "20260823_001", "pid=123:private-holder", NOW_MS / 1000 - 60, NOW_MS / 1000 + 60,
   );
+  db.prepare(`INSERT INTO sessions VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+    "20260823_002", "cli", "fresh-coder", "Expired lease session", "local-coder",
+    NOW_MS / 1000 - 600, null, null, NOW_MS / 1000 - 300, 1, 0, 1,
+    "/repo/private", "feat/native", "/repo/private",
+  );
+  db.prepare(`INSERT INTO session_turn_leases VALUES (?, ?, ?, ?)`).run(
+    "20260823_002", "pid=124:private-holder", NOW_MS / 1000 - 600, NOW_MS / 1000 - 120,
+  );
   db.prepare(`INSERT INTO messages (session_id, role, content, tool_calls, tool_name, timestamp) VALUES (?, ?, ?, ?, ?, ?)`).run(
     "20260823_001", "assistant", "SECRET_PROMPT_BODY", null, null, NOW_MS / 1000 - 10,
   );
@@ -75,7 +83,7 @@ test("lists only metadata and treats only unexpired leases as live", async () =>
   try {
     const databases = await discoverHermesStateDatabases(hermesRoot);
     const runs = listHermesSessionRuns(databases, { nowMs: NOW_MS, limit: 20 });
-    assert.equal(runs.length, 1);
+    assert.equal(runs.length, 2);
     assert.equal(runs[0].goal, "20260823_001");
     assert.equal(runs[0].liveController, true);
     assert.equal(runs[0].status, "running");
@@ -87,6 +95,9 @@ test("lists only metadata and treats only unexpired leases as live", async () =>
     assert.equal(runs[0].stageId, "cli");
     assert.equal(runs[0].repo, "private");
     assert.equal(runs[0].branch, "feat/native");
+    const expired = runs.find((run) => run.goal === "20260823_002");
+    assert.equal(expired?.liveController, false);
+    assert.equal(expired?.status, "idle");
     const exported = JSON.stringify(runs);
     for (const forbidden of ["SECRET_PROMPT_BODY", "SECRET_TOOL_RESULT", "SECRET_ARGS", "private-holder"]) {
       assert.equal(exported.includes(forbidden), false);

@@ -374,12 +374,26 @@ async function mirrorAdmission() {
   try {
     const response = await fetch(CONFIG.admissionStatusUrl, { signal: controller.signal });
     if (!response.ok) throw new Error(`admission status HTTP ${response.status}`);
-    const status = sanitizeAdmissionStatus(await response.json());
+    const text = await response.text();
+    if (Buffer.byteLength(text) > 1_000_000) throw new Error("admission status exceeds bridge cap");
+    const status = sanitizeAdmissionStatus(JSON.parse(text));
     await setStore("hermes-admission", {
       source: "hermes-admission",
+      available: true,
       ...status,
       syncedAt: new Date().toISOString(),
     });
+  } catch (error) {
+    await setStore("hermes-admission", {
+      source: "hermes-admission",
+      available: false,
+      draining: false,
+      groups: [],
+      stats: {},
+      readiness: { state: "unavailable", ready: false },
+      syncedAt: new Date().toISOString(),
+    });
+    throw error;
   } finally {
     clearTimeout(timer);
   }
