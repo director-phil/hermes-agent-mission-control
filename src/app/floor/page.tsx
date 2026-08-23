@@ -747,7 +747,7 @@ function FlowCanvas({ graph, loaded, selectedRun }: { graph: RunGraph | null; lo
       {graph && (
         <div className="floor-now-strip mx-5 mt-4 flex min-w-0 items-center gap-2 rounded-[var(--r-md)] border border-[var(--line)] bg-[var(--surface-1)] px-3 py-2 text-[12px] text-[var(--text-2)]">
           <span className="floor-now-dot" aria-hidden="true" />
-          <span className="truncate"><span className="font-semibold text-[var(--text)]">NOW</span> · {activityText(graph)}</span>
+          <span className="truncate"><span className="font-semibold text-[var(--text)]">LAST EVENT</span> · {activityText(graph)}</span>
         </div>
       )}
 
