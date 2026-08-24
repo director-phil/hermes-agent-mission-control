@@ -96,6 +96,12 @@ interface NativeGoalsPayload {
   };
 }
 
+interface ConveyorGoalSummary {
+  goal: string;
+  attempts: number;
+  updatedAt: string | null;
+}
+
 interface ConveyorAttemptGraph {
   attempt: number;
   status: string;
@@ -145,6 +151,40 @@ function conveyorAttemptToRunGraph(goal: string, attempt: ConveyorAttemptGraph, 
     currentActivity: attempt.currentActivity,
     timeline: attempt.timeline,
     counts: attempt.counts,
+  };
+}
+
+// Synthesise a pipeline-stage view for a conveyor goal so the Local → Directed
+// repair → Gate → Preview → Production strip renders for local runs too (not
+// just chat sessions). Repair depth is inferred from the attempt number.
+function conveyorGoalToRunIndex(goal: NativeGoal | null, attempt: ConveyorAttemptGraph | null): RunIndex | null {
+  if (!goal) return null;
+  const gid = goalIdOf(goal) ?? goal.id;
+  const state = goal.state;
+  const status = goal.status ?? state;
+  return {
+    goal: gid,
+    title: goal.title,
+    source: goal.source,
+    profile: null,
+    model: null,
+    operationId: gid,
+    goalId: gid,
+    runId: null,
+    stageId: null,
+    repo: "ChatDev conveyor",
+    branch: null,
+    status,
+    attempts: attempt ? attempt.attempt : 1,
+    liveController: state === "running",
+    traceRunning: false,
+    rung: attempt ? Math.max(0, attempt.attempt - 1) : null,
+    specialist: null,
+    shipped_pr: null,
+    preview_url: null,
+    lastActivity: goal.updatedAt,
+    nodeLabels: attempt ? attempt.agents.map((agent) => agent.label) : [],
+    filesTouched: attempt ? attempt.files.length : 0,
   };
 }
 
@@ -1057,6 +1097,7 @@ export default function FloorPage() {
   const [crons, setCrons] = useState<CronPayload | null>(null);
   const [goals, setGoals] = useState<NativeGoalsPayload | null>(null);
   const [conveyor, setConveyor] = useState<ConveyorRunGraph | null>(null);
+  const [conveyorGoals, setConveyorGoals] = useState<ConveyorGoalSummary[]>([]);
   const [attemptIndex, setAttemptIndex] = useState(0);
   const [conveyorSource, setConveyorSource] = useState<string | null>(null);
 
@@ -1064,6 +1105,7 @@ export default function FloorPage() {
   const graphRunningRef = useRef(false);
   const loadRunsRequestRef = useRef(0);
   const conveyorGoalRef = useRef<string | null>(null);
+  const autoSelectedRef = useRef(false);
 
   useEffect(() => {
     runsRef.current = runs;
@@ -1076,12 +1118,13 @@ export default function FloorPage() {
   const loadRuns = useCallback(async () => {
     const requestId = loadRunsRequestRef.current + 1;
     loadRunsRequestRef.current = requestId;
-    const [data, admissionData, processData, cronData, goalsData] = await Promise.all([
+    const [data, admissionData, processData, cronData, goalsData, conveyorGoalsData] = await Promise.all([
       getJSON<RunIndex[]>("/api/runs"),
       getJSON<AdmissionPayload>("/api/hermes/admission"),
       getJSON<ProcessPayload>("/api/hermes/processes"),
       getJSON<CronPayload>("/api/hermes/crons"),
       getJSON<NativeGoalsPayload>("/api/hermes/native"),
+      getJSON<{ goals: ConveyorGoalSummary[] }>("/api/goals"),
     ]);
     if (requestId !== loadRunsRequestRef.current) return;
 
@@ -1097,6 +1140,7 @@ export default function FloorPage() {
     if (processData) setProcesses(processData);
     if (cronData) setCrons(cronData);
     if (goalsData) setGoals(goalsData);
+    if (conveyorGoalsData?.goals) setConveyorGoals(conveyorGoalsData.goals);
     setRunsLoaded(true);
   }, []);
 
@@ -1115,14 +1159,27 @@ export default function FloorPage() {
     setGraphLoaded(true);
   }, []);
 
-  const selectGoal = useCallback((goal: NativeGoal) => {
-    const gid = goalIdOf(goal) ?? goal.id;
+  const selectGoalById = useCallback((gid: string) => {
     conveyorGoalRef.current = gid;
     setConveyorSource(gid);
     setSelectedGoal(gid);
     setGraphLoaded(false);
     void loadConveyor(gid);
   }, [loadConveyor]);
+
+  const selectGoal = useCallback((goal: NativeGoal) => {
+    selectGoalById(goalIdOf(goal) ?? goal.id);
+  }, [selectGoalById]);
+
+  // Default the process graph to the freshest local conveyor run so the local
+  // process (planner → implementer → gate agents + file touches) renders, rather
+  // than an empty chat-session graph.
+  useEffect(() => {
+    if (autoSelectedRef.current || conveyorSource) return;
+    if (conveyorGoals.length === 0) return;
+    autoSelectedRef.current = true;
+    selectGoalById(conveyorGoals[0].goal);
+  }, [conveyorGoals, conveyorSource, selectGoalById]);
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -1157,13 +1214,26 @@ export default function FloorPage() {
     return () => clearInterval(interval);
   }, [loadGraph, runsLoaded, selectedGoal, conveyorSource]);
 
-  const selectedRun = selectedGoal ? runs.find((run) => run.goal === selectedGoal) ?? null : null;
-
   const conveyorAttempt = conveyor?.attempts[attemptIndex] ?? null;
   const derivedGraph: RunGraph | null = conveyor && conveyorAttempt
     ? conveyorAttemptToRunGraph(conveyor.goal, conveyorAttempt, conveyor.learnings)
     : graph;
   const isConveyorView = conveyorSource === selectedGoal && conveyor !== null;
+
+  const selectedConveyorGoal = useMemo(() => {
+    if (!conveyorSource) return null;
+    const live = goals?.goals.live ?? { ready: [], running: [], done: [], failed: [] };
+    for (const state of ["running", "ready", "done", "failed"] as const) {
+      const match = live[state].find((goal) => goalIdOf(goal) === conveyorSource);
+      if (match) return match;
+    }
+    return null;
+  }, [goals, conveyorSource]);
+
+  const selectedRun = selectedGoal
+    ? runs.find((run) => run.goal === selectedGoal) ??
+      (isConveyorView ? conveyorGoalToRunIndex(selectedConveyorGoal, conveyorAttempt) : null)
+    : null;
 
   const onSelectAttempt = (index: number) => {
     if (conveyor && index >= 0 && index < conveyor.attempts.length) setAttemptIndex(index);

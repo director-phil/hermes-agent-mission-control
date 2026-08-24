@@ -316,6 +316,66 @@ function parseScribe(text: string): Array<{ attempt: number; learned: string[]; 
   return result.sort((a, b) => a.attempt - b.attempt);
 }
 
+export interface ConveyorRunSummary {
+  goal: string;
+  attempts: number;
+  updatedAt: string | null;
+}
+
+/**
+ * Enumerate goals that have a local conveyor run directory with parsed
+ * attempt events. Returns the most recently active goal first, so callers can
+ * default the process graph to the freshest local process.
+ */
+export async function listConveyorRuns(): Promise<ConveyorRunSummary[]> {
+  let entries;
+  try {
+    entries = await fs.readdir(RUNS_ROOT, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+
+  const summaries: ConveyorRunSummary[] = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const goal = entry.name;
+    if (!GOAL_ID.test(goal)) continue;
+    const dir = path.join(RUNS_ROOT, goal);
+
+    let files;
+    try {
+      files = await fs.readdir(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    const attemptFiles = files
+      .filter((f) => f.isFile() && ATTEMPT_FILE.test(f.name))
+      .map((f) => Number(f.name.match(ATTEMPT_FILE)?.[1]));
+    if (attemptFiles.length === 0) continue;
+
+    let latestMtimeMs = 0;
+    for (const f of files) {
+      if (!f.isFile()) continue;
+      try {
+        const st = await fs.stat(path.join(dir, f.name));
+        if (st.mtimeMs > latestMtimeMs) latestMtimeMs = st.mtimeMs;
+      } catch {
+        // skip unreadable file
+      }
+    }
+
+    summaries.push({
+      goal,
+      attempts: attemptFiles.length,
+      updatedAt: latestMtimeMs ? new Date(latestMtimeMs).toISOString() : null,
+    });
+  }
+
+  return summaries.sort(
+    (a, b) => (Date.parse(b.updatedAt ?? "") || 0) - (Date.parse(a.updatedAt ?? "") || 0),
+  );
+}
+
 export async function readConveyorRun(goal: string): Promise<ConveyorRunGraph | null> {
   if (!GOAL_ID.test(goal)) return null;
   const dir = path.join(RUNS_ROOT, goal);
