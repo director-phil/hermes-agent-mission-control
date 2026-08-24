@@ -1128,14 +1128,7 @@ export default function FloorPage() {
     ]);
     if (requestId !== loadRunsRequestRef.current) return;
 
-    if (data) {
-      setRuns(data);
-      setSelectedGoal((current) => {
-        if (current && conveyorGoalRef.current) return current; // conveyor selection wins
-        if (current && data.some((run) => run.goal === current)) return current;
-        return defaultSelectedGoal(data);
-      });
-    }
+    if (data) setRuns(data);
     if (admissionData) setAdmission(admissionData);
     if (processData) setProcesses(processData);
     if (cronData) setCrons(cronData);
@@ -1173,13 +1166,21 @@ export default function FloorPage() {
 
   // Default the process graph to the freshest local conveyor run so the local
   // process (planner → implementer → gate agents + file touches) renders, rather
-  // than an empty chat-session graph.
+  // than an empty chat-session graph. Fall back to a live session only when no
+  // conveyor run exists.
   useEffect(() => {
     if (autoSelectedRef.current || conveyorSource) return;
-    if (conveyorGoals.length === 0) return;
-    autoSelectedRef.current = true;
-    selectGoalById(conveyorGoals[0].goal);
-  }, [conveyorGoals, conveyorSource, selectGoalById]);
+    if (conveyorGoals.length > 0) {
+      autoSelectedRef.current = true;
+      selectGoalById(conveyorGoals[0].goal);
+      return;
+    }
+    if (runs.length > 0) {
+      autoSelectedRef.current = true;
+      const fallback = defaultSelectedGoal(runs);
+      if (fallback) setSelectedGoal(fallback);
+    }
+  }, [conveyorGoals, conveyorSource, runs, selectGoalById]);
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
