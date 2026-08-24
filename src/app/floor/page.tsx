@@ -936,9 +936,10 @@ function GoalTile({
   onSelect,
 }: {
   goal: NativeGoal;
-  tone: "accent" | "neutral" | "down";
+  tone: "accent" | "neutral" | "down" | "up";
   onSelect: (goal: NativeGoal) => void;
 }) {
+  const stateLabel = tone === "accent" ? "working" : tone === "down" ? "failed" : tone === "up" ? "done" : "ready";
   return (
     <button
       type="button"
@@ -947,7 +948,7 @@ function GoalTile({
     >
       <div className="flex items-start justify-between gap-3">
         <p className="text-[13px] font-medium leading-snug text-[var(--text)]">{goal.title}</p>
-        <Pill tone={tone} className="!py-0.5 !text-[10px]">{tone === "accent" ? "running" : tone === "down" ? "failed" : "ready"}</Pill>
+        <Pill tone={tone} className="!py-0.5 !text-[10px]">{stateLabel}</Pill>
       </div>
       <p className="num mt-1.5 text-[10.5px] text-[var(--text-4)]">
         {goal.status ?? goal.state}{goal.updatedAt ? ` · ${fmtRelative(goal.updatedAt)}` : ""}
@@ -969,6 +970,7 @@ function NativeGoalsPanel({
   const counts = goals?.goals.counts ?? { ready: 0, running: 0, done: 0, failed: 0 };
   const running = live.running;
   const ready = live.ready;
+  const done = live.done;
   const recentFailed = goals?.goals.recentFailed ?? [];
 
   const selectedIdOf = (goal: NativeGoal) => goalIdOf(goal) ?? goal.id;
@@ -978,11 +980,11 @@ function NativeGoalsPanel({
       <SectionHeader
         label="Goals"
         title="What locals are working on"
-        action={<Pill tone={running.length ? "accent" : "neutral"}>{counts.running} running</Pill>}
+        action={<Pill tone={running.length ? "accent" : "neutral"}>{counts.running} working</Pill>}
       />
       <div className="mt-4 max-h-[calc(100vh-300px)] space-y-5 overflow-y-auto pr-1">
         <div>
-          <Eyebrow>Running now</Eyebrow>
+          <Eyebrow>Working now</Eyebrow>
           {running.length === 0 ? (
             <p className="mt-2 text-[12px] text-[var(--text-4)]">No goal is currently running through the conveyor.</p>
           ) : (
@@ -997,7 +999,7 @@ function NativeGoalsPanel({
         </div>
 
         <div>
-          <Eyebrow>Ready</Eyebrow>
+          <Eyebrow>Up next</Eyebrow>
           {ready.length === 0 ? (
             <p className="mt-2 text-[12px] text-[var(--text-4)]">No ready goals queued.</p>
           ) : (
@@ -1011,9 +1013,25 @@ function NativeGoalsPanel({
           )}
         </div>
 
+        {done.length > 0 && (
+          <div>
+            <Eyebrow>Completed</Eyebrow>
+            <ul className="mt-3 space-y-2">
+              {done.slice(0, 8).map((goal) => (
+                <li key={goal.id} className={selectedGoal === selectedIdOf(goal) ? "ring-2 ring-[var(--accent)] rounded-[var(--r-md)]" : ""}>
+                  <GoalTile goal={goal} tone="up" onSelect={onSelect} />
+                </li>
+              ))}
+            </ul>
+            {done.length > 8 && (
+              <p className="num mt-2 text-[10.5px] text-[var(--text-4)]">+{done.length - 8} more completed</p>
+            )}
+          </div>
+        )}
+
         {recentFailed.length > 0 && (
           <div>
-            <Eyebrow>Recent failures</Eyebrow>
+            <Eyebrow>Failed</Eyebrow>
             <ul className="mt-3 space-y-2">
               {recentFailed.slice(0, 5).map((goal) => (
                 <li key={goal.id} className={selectedGoal === selectedIdOf(goal) ? "ring-2 ring-[var(--accent)] rounded-[var(--r-md)]" : ""}>

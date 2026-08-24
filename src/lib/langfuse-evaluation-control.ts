@@ -9,9 +9,20 @@ const WINDOW_MS: Record<ObservabilityWindow, number> = {
 };
 
 const DEFAULT_LIMIT = 100;
-const DEFAULT_MAX_PAGES = 8;
-const DEFAULT_MAX_ROWS = 800;
+const DEFAULT_MAX_PAGES = 20;
+const DEFAULT_MAX_ROWS = 2000;
 const DEFAULT_TIMEOUT_MS = 6000;
+
+// LLM-as-judge quality signals. These fire at low sampling and are buried under
+// the high-frequency deterministic code-evaluator scores (output-* / tool-call-*)
+// in the default reverse-chronological stream, so they are fetched by name to
+// guarantee they surface regardless of volume.
+const QUALITY_JUDGE_SCORE_NAMES = [
+  "agent-hallucination-live",
+  "agent-tool-call-quality-live",
+  "agent-context-bloat-live",
+  "agent-goal-relevance-live",
+];
 
 type ResourceStatus = "ok" | "unavailable" | "error";
 type ScoreDataType = "NUMERIC" | "BOOLEAN" | "CATEGORICAL" | "TEXT" | "UNKNOWN";
@@ -71,6 +82,21 @@ export interface ScoreSummary {
   experimentTargets: number;
   /** @deprecated Use experimentTargets. Kept for existing dashboard clients. */
   datasetRunTargets: number;
+  /** Recent individual scores (most recent first) — per-run/per-target raw values. */
+  recentScores: RecentScore[];
+}
+
+export interface RecentScore {
+  id: string | null;
+  name: string;
+  source: ScoreSource;
+  dataType: ScoreDataType;
+  value: unknown;
+  numeric: number | null;
+  boolean: boolean | null;
+  targetKind: ScoreTargetKind | null;
+  targetId: string | null;
+  timestamp: string | null;
 }
 
 export interface PromptRegistryEntry {
@@ -256,9 +282,27 @@ async function readScores(
       fields: "subject",
     });
     const rows = result.rows.map(parseScoreRow).filter((row): row is ScoreRow => row != null);
+
+    // Fetch the sampled LLM-as-judge quality scores by name so they are not
+    // crowded out of the reverse-chronological stream by the deterministic
+    // code-evaluator scores that fire on every generation/tool call.
+    let qualityRows: ScoreRow[] = [];
+    try {
+      const quality = await fetchPaginated(config, "/api/public/v3/scores", options, {
+        fromTimestamp: range.fromTimestamp,
+        toTimestamp: range.toTimestamp,
+        fields: "subject",
+        name: QUALITY_JUDGE_SCORE_NAMES.join(","),
+      });
+      qualityRows = quality.rows.map(parseScoreRow).filter((row): row is ScoreRow => row != null);
+    } catch {
+      // quality judges are optional — do not fail the whole read if they error
+    }
+
+    const merged = dedupeScores([...rows, ...qualityRows]);
     return {
-      health: resourceHealth("ok", "Scores API v3 live", rows.length, result.pages, result.truncated),
-      data: aggregateScores(rows),
+      health: resourceHealth("ok", "Scores API v3 live", merged.length, result.pages, result.truncated),
+      data: aggregateScores(merged),
     };
   } catch (error) {
     return {
@@ -266,6 +310,18 @@ async function readScores(
       data: emptyScoreSummary(),
     };
   }
+}
+
+function dedupeScores(rows: ScoreRow[]): ScoreRow[] {
+  const seen = new Set<string>();
+  const out: ScoreRow[] = [];
+  for (const row of rows) {
+    const key = row.id ?? `${row.name}:${row.target?.id ?? ""}:${row.timestamp ?? ""}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(row);
+  }
+  return out;
 }
 
 async function readPrompts(
@@ -477,6 +533,10 @@ function aggregateScores(rows: ScoreRow[]): ScoreSummary {
     }
   }
   const experimentTargets = targetsByKind.experiment.size;
+  const recentScores = rows
+    .map(toRecentScore)
+    .sort((a, b) => (Date.parse(b.timestamp ?? "") || 0) - (Date.parse(a.timestamp ?? "") || 0))
+    .slice(0, 120);
 
   return {
     aggregates: Array.from(groups.entries())
@@ -490,6 +550,22 @@ function aggregateScores(rows: ScoreRow[]): ScoreSummary {
     observationTargets: targetsByKind.observation.size,
     experimentTargets,
     datasetRunTargets: experimentTargets,
+    recentScores,
+  };
+}
+
+function toRecentScore(row: ScoreRow): RecentScore {
+  return {
+    id: row.id,
+    name: row.name,
+    source: row.source,
+    dataType: row.dataType,
+    value: row.value,
+    numeric: numericScoreValue(row),
+    boolean: booleanScoreValue(row),
+    targetKind: row.target?.kind ?? null,
+    targetId: row.target?.id ?? null,
+    timestamp: row.timestamp,
   };
 }
 
@@ -643,6 +719,7 @@ function emptyScoreSummary(): ScoreSummary {
     observationTargets: 0,
     experimentTargets: 0,
     datasetRunTargets: 0,
+    recentScores: [],
   };
 }
 
