@@ -128,7 +128,7 @@ interface ConveyorRunGraph {
 }
 
 function goalIdOf(goal: NativeGoal): string | null {
-  const match = goal.id.match(/g_[A-Za-z0-9_.-]+/);
+  const match = goal.id.match(/g_[A-Za-z0-9_-]+/);
   return match ? match[0] : null;
 }
 
