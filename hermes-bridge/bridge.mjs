@@ -319,6 +319,47 @@ async function mirrorRuns() {
   }
 }
 
+async function mirrorConveyorRuns() {
+  const syncedAt = new Date().toISOString();
+  const baseUrl = CONFIG.nativeSnapshotUrl.replace(/\/api\/hermes\/native$/, "");
+  try {
+    const list = await fetchLoopbackJson(`${baseUrl}/api/goals`);
+    const goals = Array.isArray(list?.goals) ? list.goals.slice(0, 15) : [];
+
+    const graphs = {};
+    let payloadBytes = Buffer.byteLength(JSON.stringify({ index: goals, graphs, syncedAt }));
+    for (const item of goals) {
+      const gid = String(item?.goal || "");
+      if (!gid) continue;
+      const graph = await fetchLoopbackJson(`${baseUrl}/api/goals/${encodeURIComponent(gid)}`);
+      if (!graph || typeof graph !== "object" || graph.goal !== gid) continue;
+      const entryBytes = Buffer.byteLength(JSON.stringify({ [gid]: graph })) + 2;
+      if (payloadBytes + entryBytes > CONFIG.runsMaxPayloadBytes) break;
+      graphs[gid] = graph;
+      payloadBytes += entryBytes;
+    }
+
+    await setStore("hermes-conveyor-runs", { source: "chatdev-conveyor", index: goals, graphs, syncedAt });
+  } catch (error) {
+    log("conveyor runs mirror failed:", error.message);
+    await setStore("hermes-conveyor-runs", { source: "chatdev-conveyor", index: [], graphs: {}, syncedAt });
+  }
+}
+
+async function fetchLoopbackJson(url) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), CONFIG.fetchTimeoutMs);
+  try {
+    const response = await fetch(url, { signal: controller.signal, redirect: "error" });
+    if (!response.ok) throw new Error(`loopback HTTP ${response.status}`);
+    const text = await response.text();
+    if (Buffer.byteLength(text) > 4_000_000) throw new Error("loopback payload exceeds cap");
+    return JSON.parse(text);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export function sanitizeAdmissionStatus(value) {
   const root = asRecord(value);
   const integer = (item) => {
@@ -538,6 +579,7 @@ async function mirrorTick() {
   try { snapshot = await mirrorNative(); } catch (error) { log("native mirror failed:", error.message); }
   try { await mirrorCrons(); } catch (error) { log("cron mirror failed:", error.message); }
   try { await mirrorRuns(); } catch (error) { log("runs mirror failed:", error.message); }
+  try { await mirrorConveyorRuns(); } catch (error) { log("conveyor runs mirror failed:", error.message); }
   try { await mirrorAdmission(); } catch (error) { log("admission mirror failed:", error.message); }
   try { await mirrorProcesses(); } catch (error) { log("process mirror failed:", error.message); }
   try { if (snapshot) await scoutFailedGoals(snapshot, { log }); } catch (error) { log("langfuse scout failed:", error.message); }
