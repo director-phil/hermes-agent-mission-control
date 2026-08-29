@@ -8,6 +8,7 @@ import {
   Home,
   Twitter,
   Play,
+  Plug,
   Bot,
   Network,
   Lightbulb,
@@ -51,6 +52,7 @@ const navGroups = [
     name: "System",
     items: [
       { href: "/floor", label: "Floor", icon: Network },
+      { href: "/plugins", label: "Plugins", icon: Plug },
       { href: "/observability", label: "Observability", icon: Activity },
       { href: "/evaluators", label: "Evaluators", icon: FlaskConical },
       { href: "/agents", label: "Agents", icon: Bot },
