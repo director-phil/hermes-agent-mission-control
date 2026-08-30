@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Hermy HQ — System Stack (full inventory mockup)</title>
+<style>
+  :root{
+    --bg:#0a0b0d; --surface-1:#101113; --surface-2:#16181b;
+    --line:rgba(255,255,255,.08); --line-strong:rgba(255,255,255,.13);
+    --text:#e7e8ea; --text-2:#a0a3a8; --text-3:#6b6e74; --text-4:#4b4e54;
+    --accent:#6ea8fe; --up:#5fd0a0; --down:#f28b82; --warn:#f5c451; --violet:#a78bfa;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--text);font:14px/1.5 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;-webkit-font-smoothing:antialiased}
+  .app{display:flex;min-height:100vh}
+
+  /* Sidebar */
+  aside{width:220px;flex:0 0 220px;border-right:1px solid var(--line);padding:16px 12px;position:sticky;top:0;height:100vh;overflow-y:auto}
+  .logo{display:flex;align-items:center;gap:8px;padding:6px 8px;margin-bottom:14px}
+  .logo .mark{width:22px;height:22px;border-radius:6px;background:var(--text);color:#0a0b0d;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:12px}
+  .logo .name{font-weight:600;font-size:14px}
+  .nav-group{font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--text-4);padding:10px 8px 4px}
+  .nav-item{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:7px;color:var(--text-2);font-size:13px;text-decoration:none}
+  .nav-item:hover{background:var(--surface-1);color:var(--text)}
+  .nav-item.active{background:var(--surface-2);color:var(--text)}
+  .nav-item .dot{width:6px;height:6px;border-radius:50%;background:var(--text-4);flex:0 0 6px}
+  .nav-item .dot.live{background:var(--up)}
+
+  /* Main */
+  main{flex:1;min-width:0;padding:28px 36px;max-width:1200px}
+  .eyebrow{font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--accent);margin-bottom:4px}
+  h1{font-size:22px;font-weight:600;letter-spacing:-.02em}
+  .sub{color:var(--text-3);font-size:13px;margin-top:2px;margin-bottom:22px}
+  .sub .accent{color:var(--text-2)}
+
+  /* Summary strip */
+  .summary{display:grid;grid-template-columns:repeat(6,1fr);gap:1px;background:var(--line);border:1px solid var(--line);border-radius:10px;overflow:hidden;margin-bottom:24px}
+  .summary .cell{background:var(--surface-1);padding:12px 14px}
+  .summary .cell .k{font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--text-4)}
+  .summary .cell .v{font-size:20px;font-weight:600;margin-top:2px}
+  .summary .cell .v small{font-size:12px;font-weight:400;color:var(--text-3)}
+
+  /* Layers */
+  .layer{margin-bottom:10px}
+  .layer-head{display:flex;align-items:center;gap:10px;padding:4px 2px}
+  .layer-head .idx{font-size:11px;color:var(--text-4);font-variant-numeric:tabular-nums;width:18px;flex:0 0 18px;text-align:right}
+  .layer-head h2{font-size:12px;letter-spacing:.1em;text-transform:uppercase;color:var(--text-3);font-weight:600}
+  .layer-head .rule{flex:1;height:1px;background:var(--line)}
+  .layer-head .tag{font-size:10px;padding:2px 7px;border-radius:99px;border:1px solid var(--line);color:var(--text-3)}
+  .layer-head .tag.live{color:var(--up);border-color:rgba(95,208,160,.3)}
+  .layer-head .tag.rec{color:var(--warn);border-color:rgba(245,196,81,.3)}
+
+  .cards{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+  .card{background:var(--surface-1);border:1px solid var(--line);border-radius:9px;padding:11px 12px;position:relative;transition:border-color .15s}
+  .card:hover{border-color:var(--line-strong)}
+  .card.busy{border-color:rgba(110,168,254,.35)}
+  .card.deferred{opacity:.62;background:transparent;border-style:dashed}
+  .card .top{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:3px}
+  .card .nm{font-size:13px;font-weight:600;color:var(--text)}
+  .card .nm code{font-family:ui-monospace,"SF Mono",Menlo,monospace;font-size:12px}
+  .status{display:inline-flex;align-items:center;gap:5px;font-size:10px;color:var(--text-3)}
+  .status .dot{width:7px;height:7px;border-radius:50%;background:var(--text-4)}
+  .status .dot.ok{background:var(--up)}
+  .status .dot.busy{background:var(--accent);box-shadow:0 0 0 0 rgba(110,168,254,.5);animation:pulse 1.6s infinite}
+  .status .dot.warn{background:var(--warn)}
+  @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(110,168,254,.5)}70%{box-shadow:0 0 0 6px rgba(110,168,254,0)}100%{box-shadow:0 0 0 0 rgba(110,168,254,0)}}
+  .card .fn{font-size:11.5px;color:var(--text-3);line-height:1.45}
+  .card .meta{display:flex;gap:10px;margin-top:7px;font-size:10.5px;color:var(--text-4);font-variant-numeric:tabular-nums}
+  .card .meta b{color:var(--text-2);font-weight:600}
+  .rec-badge{font-size:9px;text-transform:uppercase;letter-spacing:.08em;color:var(--warn);border:1px solid rgba(245,196,81,.3);padding:1px 6px;border-radius:99px}
+
+  /* Right rail: activity + considering */
+  .cols{display:grid;grid-template-columns:1fr 300px;gap:24px;align-items:start;margin-top:4px}
+  .rail-panel{background:var(--surface-1);border:1px solid var(--line);border-radius:10px;padding:14px;margin-bottom:16px}
+  .rail-panel h3{font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--text-3);margin-bottom:10px;font-weight:600}
+  .feed{display:flex;flex-direction:column;gap:2px}
+  .feed-item{display:flex;gap:9px;padding:6px 4px;border-radius:6px;font-size:12px}
+  .feed-item:hover{background:var(--surface-2)}
+  .feed-item .t{font-variant-numeric:tabular-nums;color:var(--text-4);font-size:11px;flex:0 0 40px}
+  .feed-item .w{color:var(--text-2)}
+  .feed-item code{color:var(--accent);font-family:ui-monospace,Menlo,monospace;font-size:11.5px}
+  .rec-item{display:flex;justify-content:space-between;gap:8px;padding:7px 0;border-bottom:1px solid var(--line);font-size:12px}
+  .rec-item:last-child{border-bottom:0}
+  .rec-item .rn{color:var(--text-2);font-weight:500}
+  .rec-item .why{color:var(--text-4);font-size:11px;margin-top:1px}
+  .rec-item .st{font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--text-4);flex:0 0 auto}
+
+  @media(max-width:900px){.cards{grid-template-columns:repeat(2,1fr)}.cols{grid-template-columns:1fr}.summary{grid-template-columns:repeat(3,1fr)}}
+</style>
+</head>
+<body>
+<div class="app">
+  <aside>
+    <div class="logo"><div class="mark">H</div><div class="name">Hermy HQ</div></div>
+    <div class="nav-group">Overview</div>
+    <a class="nav-item" href="#"><span class="dot"></span>Dashboard</a>
+    <a class="nav-item" href="#"><span class="dot live"></span>Hermes</a>
+    <a class="nav-item" href="#"><span class="dot"></span>Tasks</a>
+    <div class="nav-group">Content</div>
+    <a class="nav-item" href="#"><span class="dot"></span>X</a>
+    <a class="nav-item" href="#"><span class="dot"></span>Pipeline</a>
+    <a class="nav-item" href="#"><span class="dot"></span>Articles</a>
+    <a class="nav-item" href="#"><span class="dot"></span>YouTube</a>
+    <div class="nav-group">Data</div>
+    <a class="nav-item" href="#"><span class="dot"></span>Client Pulse</a>
+    <div class="nav-group">System</div>
+    <a class="nav-item" href="#"><span class="dot live"></span>Floor</a>
+    <a class="nav-item active" href="#"><span class="dot live"></span>Stack</a>
+    <a class="nav-item" href="#"><span class="dot"></span>Observability</a>
+    <a class="nav-item" href="#"><span class="dot"></span>Evaluators</a>
+    <a class="nav-item" href="#"><span class="dot"></span>Agents</a>
+    <a class="nav-item" href="#"><span class="dot"></span>Memory Wiki</a>
+    <a class="nav-item" href="#"><span class="dot"></span>Ideas</a>
+    <a class="nav-item" href="#"><span class="dot"></span>Garden</a>
+  </aside>
+
+  <main>
+    <div class="eyebrow">System · Stack</div>
+    <h1>System stack</h1>
+    <div class="sub">Every local-orchestration component — where it sits, what it does, and when it's in use. <span class="accent">Live usage is mock data; wire to Langfuse/event log when built.</span></div>
+
+    <div class="summary">
+      <div class="cell"><div class="k">Active goals</div><div class="v">2</div></div>
+      <div class="cell"><div class="k">Tool calls / min</div><div class="v">11</div></div>
+      <div class="cell"><div class="k">Model seats</div><div class="v">3 <small>loaded</small></div></div>
+      <div class="cell"><div class="k">Boxes</div><div class="v">2 <small>up</small></div></div>
+      <div class="cell"><div class="k">Repo map</div><div class="v">2,601 <small>files</small></div></div>
+      <div class="cell"><div class="k">Conveyor</div><div class="v">running</div></div>
+    </div>
+
+    <div class="cols">
+      <div>
+        <!-- LAYER 1 -->
+        <div class="layer">
+          <div class="layer-head"><span class="idx">1</span><h2>Desktop plugins</h2><span class="rule"></span><span class="tag live">live</span></div>
+          <div class="cards">
+            <div class="card"><div class="top"><span class="nm">hermes-achievements</span><span class="status"><span class="dot ok"></span>ok</span></div><div class="fn">Gamification / streak panes in the Hermes desktop app.</div><div class="meta"><span>loaded</span><span><b>active</b> this session</span></div></div>
+            <div class="card"><div class="top"><span class="nm">rt-extensions</span><span class="status"><span class="dot ok"></span>ok</span></div><div class="fn">Reliable Tradies extension surface (extension-tiles header state).</div><div class="meta"><span>loaded</span><span><b>0</b> tiles live</span></div></div>
+            <div class="card"><div class="top"><span class="nm">ai-document-extraction</span><span class="status"><span class="dot ok"></span>idle</span></div><div class="fn">OCR / document ingestion pipeline (Gemini + OCR).</div><div class="meta"><span>loaded</span><span><b>0</b> docs today</span></div></div>
+          </div>
+        </div>
+
+        <!-- LAYER 2 -->
+        <div class="layer">
+          <div class="layer-head"><span class="idx">2</span><h2>Orchestration</h2><span class="rule"></span><span class="tag live">live</span></div>
+          <div class="cards">
+            <div class="card busy"><div class="top"><span class="nm">goal-conveyor</span><span class="status"><span class="dot busy"></span>running</span></div><div class="fn">rt-goal-queue keeper → <code>escalate.py</code>. Serially dispatches goals into worktrees + PRs.</div><div class="meta"><span><b>1</b> running</span><span><b>4</b> staged</span></div></div>
+            <div class="card"><div class="top"><span class="nm">native-goal-runner</span><span class="status"><span class="dot ok"></span>idle</span></div><div class="fn">hermes-native-goal-runner.service — watches native-runtime ready queue.</div><div class="meta"><span>systemd</span><span><b>0</b> ready</span></div></div>
+            <div class="card"><div class="top"><span class="nm">structured_json</span><span class="status"><span class="dot ok"></span>ok</span></div><div class="fn">Constrained JSON helper for DeepSeek/LM Studio <code>json_schema</code> grammar. <i>(recommendation #1 — implemented)</i></div><div class="meta"><span><b>6/6</b> grammar-valid</span></div></div>
+          </div>
+        </div>
+
+        <!-- LAYER 3 -->
+        <div class="layer">
+          <div class="layer-head"><span class="idx">3</span><h2>Agents</h2><span class="rule"></span><span class="tag live">live</span></div>
+          <div class="cards">
+            <div class="card"><div class="top"><span class="nm">planner</span><span class="status"><span class="dot ok"></span>ok</span></div><div class="fn"><code>local-planner</code> → qwen3.8-27b. Decomposes goals into a DAG.</div><div class="meta"><span>qwen3.8-27b</span><span><b>1</b> turn</span></div></div>
+            <div class="card busy"><div class="top"><span class="nm">coder</span><span class="status"><span class="dot busy"></span>working</span></div><div class="fn"><code>local-coder</code> → qwen3-coder-next. Implements via the tool layer below.</div><div class="meta"><span>qwen3-coder-next</span><span><b>7</b> tool calls</span></div></div>
+            <div class="card"><div class="top"><span class="nm">reviewer</span><span class="status"><span class="dot ok"></span>ok</span></div><div class="fn"><code>local-reviewer</code> → qwen3.8-27b. Independent gate before merge.</div><div class="meta"><span>qwen3.8-27b</span><span><b>0</b> pending</span></div></div>
+          </div>
+        </div>
+
+        <!-- LAYER 4 -->
+        <div class="layer">
+          <div class="layer-head"><span class="idx">4</span><h2>Tools <span style="text-transform:none;letter-spacing:0;color:var(--text-4)">— specialist bridge + graft</span></h2><span class="rule"></span><span class="tag live">live</span></div>
+          <div class="cards">
+            <div class="card busy"><div class="top"><span class="nm"><code>graft_repo_map</code></span><span class="status"><span class="dot busy"></span>in use</span></div><div class="fn">Builds the full repository graph (2,601 files) for orientation.</div><div class="meta"><span><b>3×</b> this turn</span><span>~45s</span></div></div>
+            <div class="card"><div class="top"><span class="nm"><code>graft_find_code</code></span><span class="status"><span class="dot ok"></span>ok</span></div><div class="fn">Searches the repo graph for symbols, routes, definitions.</div><div class="meta"><span><b>11×</b> this turn</span></div></div>
+            <div class="card"><div class="top"><span class="nm"><code>read_pack</code></span><span class="status"><span class="dot ok"></span>ok</span></div><div class="fn">Reads the task packet / corrections / crosswalk before work.</div><div class="meta"><span><b>1×</b></span><span>mandatory</span></div></div>
+            <div class="card"><div class="top"><span class="nm"><code>read_repo_file</code></span><span class="status"><span class="dot ok"></span>ok</span></div><div class="fn">Reads a file inside the worktree.</div><div class="meta"><span><b>9×</b></span></div></div>
+            <div class="card"><div class="top"><span class="nm"><code>write_repo_file</code></span><span class="status"><span class="dot ok"></span>ok</span></div><div class="fn">Writes / overwrites a worktree file.</div><div class="meta"><span><b>2×</b></span></div></div>
+            <div class="card"><div class="top"><span class="nm"><code>apply_patch</code></span><span class="status"><span class="dot ok"></span>ok</span></div><div class="fn">Applies a targeted diff.</div><div class="meta"><span><b>4×</b></span></div></div>
+            <div class="card"><div class="top"><span class="nm"><code>move_repo_file</code></span><span class="status"><span class="dot ok"></span>idle</span></div><div class="fn">Rename (content unchanged) — added to fix rename-only goals.</div><div class="meta"><span><b>0×</b></span><span>new</span></div></div>
+            <div class="card"><div class="top"><span class="nm"><code>list_allowed_directory</code></span><span class="status"><span class="dot ok"></span>ok</span></div><div class="fn">Lists the goal's allowed-file surface.</div><div class="meta"><span><b>1×</b></span></div></div>
+            <div class="card"><div class="top"><span class="nm"><code>latest_migration</code></span><span class="status"><span class="dot ok"></span>ok</span></div><div class="fn">Returns the newest Supabase migration prefix.</div><div class="meta"><span><b>1×</b></span></div></div>
+          </div>
+        </div>
+
+        <!-- LAYER 5 -->
+        <div class="layer">
+          <div class="layer-head"><span class="idx">5</span><h2>MCP servers</h2><span class="rule"></span><span class="tag live">on demand</span></div>
+          <div class="cards">
+            <div class="card"><div class="top"><span class="nm">playwright</span><span class="status"><span class="dot ok"></span>idle</span></div><div class="fn">Browser automation — 24 tools (snapshot, click, fill, eval).</div><div class="meta"><span>24 tools</span><span><b>0</b> calls</span></div></div>
+            <div class="card"><div class="top"><span class="nm">posthog</span><span class="status"><span class="dot ok"></span>idle</span></div><div class="fn">Product analytics — 5 tools (exec, prompts, resources).</div><div class="meta"><span>5 tools</span></div></div>
+            <div class="card"><div class="top"><span class="nm">langfuse-docs</span><span class="status"><span class="dot ok"></span>idle</span></div><div class="fn">Langfuse documentation RAG — 4 tools.</div><div class="meta"><span>4 tools</span></div></div>
+            <div class="card"><div class="top"><span class="nm">smart-connections</span><span class="status"><span class="dot ok"></span>idle</span></div><div class="fn">Obsidian vault semantic search — 3 tools.</div><div class="meta"><span>3 tools</span></div></div>
+            <div class="card"><div class="top"><span class="nm">wordpress</span><span class="status"><span class="dot ok"></span>idle</span></div><div class="fn">WordPress abilities — 7 tools.</div><div class="meta"><span>7 tools</span></div></div>
+            <div class="card"><div class="top"><span class="nm">x_search / rss / video</span><span class="status"><span class="dot ok"></span>idle</span></div><div class="fn">X search, RSS feeds, video analysis/generation.</div><div class="meta"><span>4 tools</span></div></div>
+          </div>
+        </div>
+
+        <!-- LAYER 6 -->
+        <div class="layer">
+          <div class="layer-head"><span class="idx">6</span><h2>Gateway + models</h2><span class="rule"></span><span class="tag live">live</span></div>
+          <div class="cards">
+            <div class="card"><div class="top"><span class="nm">admission-gateway</span><span class="status"><span class="dot ok"></span>ok</span></div><div class="fn"><code>127.0.0.1:19875</code> — routes seats to physical boxes, enforces capacity.</div><div class="meta"><span>auth'd</span><span><b>3</b> seats</span></div></div>
+            <div class="card"><div class="top"><span class="nm">qwen3-coder-next</span><span class="status"><span class="dot busy"></span>loaded</span></div><div class="fn">Coder model — iq4_nl quant, gb10-coder.</div><div class="meta"><span>coder-box</span><span>131k ctx</span></div></div>
+            <div class="card"><div class="top"><span class="nm">qwen3.8-27b</span><span class="status"><span class="dot ok"></span>loaded</span></div><div class="fn">Planner + reviewer — gb10-reviewer.</div><div class="meta"><span>reviewer-box</span><span>131k ctx</span></div></div>
+            <div class="card"><div class="top"><span class="nm">text-embedding-bge-m3</span><span class="status"><span class="dot ok"></span>loaded</span></div><div class="fn">Embeddings for RAG retrieval.</div><div class="meta"><span>embedding-local</span></div></div>
+          </div>
+        </div>
+
+        <!-- LAYER 7 -->
+        <div class="layer">
+          <div class="layer-head"><span class="idx">7</span><h2>Physical boxes</h2><span class="rule"></span><span class="tag live">live</span></div>
+          <div class="cards">
+            <div class="card"><div class="top"><span class="nm">gb10-coder</span><span class="status"><span class="dot ok"></span>up</span></div><div class="fn">LM Studio :1234 — serves coder + embeddings; also runs Langfuse Docker.</div><div class="meta"><span>GB10 Box 1</span></div></div>
+            <div class="card"><div class="top"><span class="nm">gb10-reviewer</span><span class="status"><span class="dot ok"></span>up</span></div><div class="fn">Serves planner + reviewer models.</div><div class="meta"><span>GB10 Box 2</span></div></div>
+          </div>
+        </div>
+
+        <!-- LAYER 8 -->
+        <div class="layer">
+          <div class="layer-head"><span class="idx">8</span><h2>Data + observability</h2><span class="rule"></span><span class="tag live">live</span></div>
+          <div class="cards">
+            <div class="card"><div class="top"><span class="nm">Langfuse</span><span class="status"><span class="dot ok"></span>up</span></div><div class="fn">Self-hosted traces + evals — per-goal/tool/model observations.</div><div class="meta"><span>v4</span><span>~5 GiB</span></div></div>
+            <div class="card"><div class="top"><span class="nm">Qdrant</span><span class="status"><span class="dot ok"></span>up</span></div><div class="fn">Vectors: rt-bugs, rt-patterns, rt-decisions, rt-vault-knowledge.</div><div class="meta"><span>4 collections</span></div></div>
+            <div class="card"><div class="top"><span class="nm">Skills</span><span class="status"><span class="dot ok"></span>ok</span></div><div class="fn">~/.hermes/skills — 60+ procedural memory modules.</div><div class="meta"><span>60+ skills</span></div></div>
+            <div class="card"><div class="top"><span class="nm">Supabase</span><span class="status"><span class="dot ok"></span>ok</span></div><div class="fn">V2 raw_* source tables + read-models.</div><div class="meta"><span>raw layer</span></div></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Right rail -->
+      <div>
+        <div class="rail-panel">
+          <h3>Live tool-call feed</h3>
+          <div class="feed">
+            <div class="feed-item"><span class="t">now</span><span class="w"><code>graft_repo_map</code> → 2,601 files <span style="color:var(--text-4)">(coder · cb3-embed)</span></span></div>
+            <div class="feed-item"><span class="t">2s</span><span class="w"><code>write_repo_file</code> → src/app/embed/route.ts <span style="color:var(--text-4)">(coder)</span></span></div>
+            <div class="feed-item"><span class="t">5s</span><span class="w"><code>apply_patch</code> → +14 −3 <span style="color:var(--text-4)">(coder)</span></span></div>
+            <div class="feed-item"><span class="t">11s</span><span class="w"><code>graft_find_code</code> → "reservation" <span style="color:var(--text-4)">(coder)</span></span></div>
+            <div class="feed-item"><span class="t">18s</span><span class="w">planner → DAG of 3 tickets <span style="color:var(--text-4)">(qwen3.8-27b)</span></span></div>
+            <div class="feed-item"><span class="t">31s</span><span class="w"><code>read_pack</code> → packet loaded <span style="color:var(--text-4)">(coder)</span></span></div>
+            <div class="feed-item"><span class="t">1m</span><span class="w">reviewer → pass <span style="color:var(--text-4)">(qwen3.8-27b)</span></span></div>
+          </div>
+        </div>
+
+        <div class="rail-panel">
+          <h3>Recommended · not yet implemented</h3>
+          <div class="rec-item"><div><div class="rn">Graphiti / Zep</div><div class="why">Temporal knowledge graph for cross-session memory.</div></div><span class="st">deferred</span></div>
+          <div class="rec-item"><div><div class="rn">llguidance</div><div class="why">Structured generation — already covered by LM Studio json_schema.</div></div><span class="st">covered</span></div>
+          <div class="rec-item"><div><div class="rn">OnlyCLI</div><div class="why">Programmatic GitHub/CLI automation (works, no immediate fit).</div></div><span class="st">deferred</span></div>
+          <div class="rec-item"><div><div class="rn">Deer-flow</div><div class="why">Workflow orchestration engine.</div></div><span class="st">deferred</span></div>
+          <div class="rec-item"><div><div class="rn">BossConsole / JAT</div><div class="why">Agent-task orchestration UI.</div></div><span class="st">deferred</span></div>
+          <div class="rec-item"><div><div class="rn">UI kit / mockup→build</div><div class="why">Design-to-implementation pipeline for dashboard surfaces.</div></div><span class="st">in progress</span></div>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+</body>
+</html>
