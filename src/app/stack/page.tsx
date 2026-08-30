@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import {
   Bot,
   Boxes,
+  Brain,
   Cpu,
   Database,
   GitBranch,
@@ -118,15 +119,28 @@ const LAYERS: Layer[] = [
     hint: "telemetry + memory",
     components: [
       { name: "Langfuse", detail: "traces + evals" },
-      { name: "Qdrant", detail: "bugs / patterns / decisions / vault" },
-      { name: "Skills", detail: "60+ procedural skills" },
+      { name: "Qdrant", detail: "vector store" },
       { name: "Supabase", detail: "raw source tables" },
+    ],
+  },
+  {
+    name: "Knowledge graph",
+    icon: Brain,
+    hint: "DevChat-style static index → dynamic query",
+    components: [
+      { name: "rt-vault-knowledge", detail: "static+dynamic · ops knowledge" },
+      { name: "rt-bugs", detail: "static+dynamic · confirmed bugs" },
+      { name: "rt-patterns", detail: "static+dynamic · proven solutions" },
+      { name: "rt-decisions", detail: "static+dynamic · ADRs" },
+      { name: "skills", detail: "static · 60+ SKILL.md" },
+      { name: "vault records", detail: "static · change records" },
+      { name: "user profile", detail: "static · durable facts" },
     ],
   },
 ];
 
 const DEFERRED = [
-  { name: "Graphiti / Zep", detail: "temporal knowledge graph", reason: "local models drift on pydantic JSON" },
+  { name: "Graphiti / Zep", detail: "temporal knowledge graph", reason: "superseded by local knowledge pattern (DevChat-style)" },
   { name: "llguidance", detail: "structured generation", reason: "covered by LM Studio json_schema" },
   { name: "OnlyCLI", detail: "CLI automation", reason: "works, no immediate fit" },
   { name: "Deer-flow", detail: "workflow engine", reason: "deferred" },
