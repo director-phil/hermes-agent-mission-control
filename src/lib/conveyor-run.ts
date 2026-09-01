@@ -89,6 +89,8 @@ export interface ConveyorAttemptGraph {
   touches: TouchTrace[];
   timeline: TimelineEntry[];
   messages: DialogueMessage[];
+  /** Terminal-style transcript of this attempt's live events (model output + tool calls). */
+  terminalLines: string[];
   currentAgent: string | null;
   currentActivity: CurrentActivity | null;
   counts: { events: number; modelCalls: number; toolCalls: number };
@@ -129,6 +131,8 @@ export interface ConveyorRunGraph {
   attempts: ConveyorAttemptGraph[];
   learnings: AttemptLearnings[];
   completion: ConveyorCompletion | null;
+  /** Tail of the latest attempt's live transcript, for terminal-style streaming. */
+  liveTerminal: string[];
   syncedAt: string;
 }
 
@@ -167,6 +171,7 @@ interface RawEvent {
       tool_name?: string;
       output?: string;
       output_size?: number;
+      stage?: string;
       arguments?: unknown;
       tool_result?: unknown;
       success?: boolean | null;
@@ -204,6 +209,7 @@ function parseAttemptGraph(
   let modelCalls = 0;
   let toolCalls = 0;
   const messages: DialogueMessage[] = [];
+  const terminalLines: string[] = [];
 
   const agentFor = (nodeId: string | null | undefined): AgentTrace | null => {
     if (!nodeId) return null;
@@ -250,11 +256,13 @@ function parseAttemptGraph(
         lastNode = nodeId;
       }
       timeline.push({ seq: timeline.length + 1, node: nodeId ?? "?", kind: "node_start", tool: null, file: null, at });
+      terminalLines.push(`▶ ${nodeId ?? "?"}`);
       if (!startedAt) startedAt = at;
     } else if (kind === "NODE_END") {
       const agent = agentFor(nodeId);
       if (agent && !agent.endedAt) agent.endedAt = at;
       timeline.push({ seq: timeline.length + 1, node: nodeId ?? "?", kind: "node_end", tool: null, file: null, at });
+      terminalLines.push(`■ ${nodeId ?? "?"} done`);
       endedAt = at;
     } else if (kind === "MODEL_CALL") {
       const agent = agentFor(nodeId);
@@ -271,6 +279,13 @@ function parseAttemptGraph(
         ? output.replace(/\s+/g, " ").trim().slice(0, 300)
         : null;
       if (modelText) messages.push({ seq: messages.length + 1, node: nodeId ?? "?", kind: "model", text: modelText, tool: null, file: null, success: null, at });
+      // Terminal transcript: surface the model's actual response (stage "after"),
+      // so the live view reads like watching the agent think.
+      if (safeString(data.details?.stage) === "after" && typeof output === "string" && output.trim()) {
+        const clean = output.replace(/\s+/g, " ").trim().slice(0, 700);
+        const model = safeString(data.details?.model_name) ?? "model";
+        terminalLines.push(`${nodeId ?? "?"} · ${model}: ${clean}`);
+      }
     } else if (kind === "TOOL_CALL") {
       const toolName = safeString(data.details?.tool_name) ?? "tool";
       const filePath = relPathOf(data.details?.arguments);
@@ -283,6 +298,18 @@ function parseAttemptGraph(
       currentActivity = { node: nodeId ?? "?", kind: "tool", tool: toolName, file: filePath, at };
       timeline.push({ seq: timeline.length + 1, node: nodeId ?? "?", kind: "tool", tool: toolName, file: filePath, at });
       messages.push({ seq: messages.length + 1, node: nodeId ?? "?", kind: "tool", text: null, tool: toolName, file: filePath, success: data.details?.success ?? null, at });
+
+      const args = data.details?.arguments;
+      let argSummary = filePath ?? "";
+      if (!argSummary && args && typeof args === "object") {
+        try {
+          const s = JSON.stringify(args);
+          argSummary = s.length > 120 ? `${s.slice(0, 120)}…` : s;
+        } catch {
+          argSummary = "";
+        }
+      }
+      terminalLines.push(`${nodeId ?? "?"} · $ ${toolName}${argSummary ? ` ${argSummary}` : ""}`);
 
       const op = OP_OF_TOOL[toolName] ?? "read";
       if (filePath) {
@@ -327,6 +354,7 @@ function parseAttemptGraph(
     touches: touchList,
     timeline: timeline.slice(-100),
     messages: messages.slice(-200),
+    terminalLines: terminalLines.slice(-120),
     currentAgent: lastNode,
     currentActivity: isLatest ? currentActivity : null,
     counts: { events, modelCalls, toolCalls },
@@ -577,12 +605,15 @@ export async function readConveyorRun(goal: string): Promise<ConveyorRunGraph | 
     // no scribe — empty learnings
   }
 
+  const latestTerminal = attempts.length > 0 ? attempts[attempts.length - 1].terminalLines : [];
+
   return {
     goal,
     source: "conveyor-run",
     attempts,
     learnings,
     completion: await readGoalLedger(goal),
+    liveTerminal: latestTerminal,
     syncedAt: new Date().toISOString(),
   };
 }

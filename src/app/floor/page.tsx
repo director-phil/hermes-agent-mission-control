@@ -145,6 +145,7 @@ interface ConveyorAttemptGraph {
   touches: TouchTrace[];
   timeline: TimelineEntry[];
   messages: DialogueMessage[];
+  terminalLines: string[];
   currentAgent: string | null;
   currentActivity: CurrentActivity | null;
   counts: { events: number; modelCalls: number; toolCalls: number };
@@ -156,6 +157,7 @@ interface ConveyorRunGraph {
   attempts: ConveyorAttemptGraph[];
   learnings: AttemptLearnings[];
   completion: ConveyorCompletion | null;
+  liveTerminal: string[];
   syncedAt: string;
 }
 
@@ -1041,9 +1043,56 @@ function ShippedBanner({ completion }: { completion: ConveyorCompletion | null }
   );
 }
 
+function TerminalPanel({ lines }: { lines: string[] }) {
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    }
+  }, [lines]);
+  if (lines.length === 0) return null;
+  return (
+    <div className="overflow-hidden rounded-xl border border-[var(--line)] bg-[#0d1117]">
+      <div className="flex items-center justify-between gap-3 border-b border-[var(--line)] px-4 py-2">
+        <div className="flex items-center gap-2.5">
+          <span className="flex gap-1.5">
+            <span className="h-2.5 w-2.5 rounded-full bg-[#ff5f56]" />
+            <span className="h-2.5 w-2.5 rounded-full bg-[#ffbd2e]" />
+            <span className="h-2.5 w-2.5 rounded-full bg-[#27c93f]" />
+          </span>
+          <Eyebrow>Live output</Eyebrow>
+        </div>
+        <Pill tone="neutral" className="!py-0.5 !text-[10px]">{lines.length} lines · tail</Pill>
+      </div>
+      <div ref={scrollRef} className="max-h-80 overflow-y-auto px-4 py-3 font-mono text-[11.5px] leading-[1.7]">
+        {lines.map((line, i) => {
+          const isNodeStart = line.startsWith("▶");
+          const isNodeEnd = line.startsWith("■");
+          const isTool = line.includes(" · $ ");
+          return (
+            <div
+              key={i}
+              className={
+                isNodeStart
+                  ? "font-semibold text-[#7ee787]"
+                  : isNodeEnd
+                    ? "text-[#8b949e]"
+                    : isTool
+                      ? "text-[#79c0ff]"
+                      : "text-[#c9d1d9]"
+              }
+            >
+              {line}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function DialoguePanel({ graph }: { graph: RunGraph | null }) {
   const messages = graph?.messages ?? [];
-  if (messages.length === 0) return null;
   return (
     <div className="border-t border-[var(--line)] px-5 py-4">
       <div className="mb-2 flex items-center justify-between gap-3">
@@ -1619,6 +1668,12 @@ export default function FloorPage() {
         </div>
         <LearningPanel graph={isConveyorView ? null : graph} conveyor={isConveyorView ? conveyor : null} attempt={conveyorAttempt?.attempt ?? 0} />
       </section>
+
+      {isConveyorView ? (
+        <section className="mt-4">
+          <TerminalPanel lines={conveyor?.liveTerminal ?? []} />
+        </section>
+      ) : null}
     </div>
   );
 }
