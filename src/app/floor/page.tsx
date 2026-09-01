@@ -98,10 +98,38 @@ interface NativeGoalsPayload {
   };
 }
 
+interface AttemptVerdict {
+  relevance: number | null;
+  toolQuality: number | null;
+  contextBloat: number | null;
+  hallucination: number | null;
+  summary: string | null;
+}
+
+interface AttemptLearnings {
+  attempt: number;
+  learned: string[];
+  inferred: string[];
+  observed: string[];
+  verdict: AttemptVerdict | null;
+}
+
+interface ConveyorCompletion {
+  status: string;
+  shippedPr: string | null;
+  prNumber: number | null;
+  deploymentId: string | null;
+  productionUrl: string | null;
+  mergeSha: string | null;
+  health: string | null;
+  completedAt: string | null;
+}
+
 interface ConveyorGoalSummary {
   goal: string;
   attempts: number;
   updatedAt: string | null;
+  completion: ConveyorCompletion | null;
 }
 
 interface ConveyorAttemptGraph {
@@ -125,7 +153,8 @@ interface ConveyorRunGraph {
   goal: string;
   source: "conveyor-run";
   attempts: ConveyorAttemptGraph[];
-  learnings: Array<{ attempt: number; learned: string[]; inferred: string[] }>;
+  learnings: AttemptLearnings[];
+  completion: ConveyorCompletion | null;
   syncedAt: string;
 }
 
@@ -148,7 +177,7 @@ function conveyorAttemptToRunGraph(goal: string, attempt: ConveyorAttemptGraph, 
     touches: attempt.touches,
     learnings: learnings
       .filter((item) => item.attempt === attempt.attempt)
-      .map((item) => ({ attempt: item.attempt, learned: item.learned, inferred: item.inferred })),
+      .map((item) => ({ attempt: item.attempt, learned: item.learned, inferred: item.inferred, observed: item.observed, verdict: item.verdict })),
     currentAgent: attempt.currentAgent,
     currentActivity: attempt.currentActivity,
     timeline: attempt.timeline,
@@ -220,6 +249,8 @@ interface LearningTrace {
   attempt: number;
   learned: string[];
   inferred: string[];
+  observed: string[];
+  verdict: AttemptVerdict | null;
 }
 
 interface CurrentActivity {
@@ -260,6 +291,8 @@ interface RunGraph {
 type AgentNodeData = {
   agent: AgentTrace;
   running: boolean;
+  stage: number;
+  activity: string | null;
 };
 
 type FileNodeData = {
@@ -279,6 +312,35 @@ const OP_COLOR: Record<FileOp, string> = {
 };
 
 const FLOW_COLOR = "color-mix(in srgb, var(--accent) 70%, var(--text) 30%)";
+
+// Stage pipeline for the walking-agent floor. Agent node labels map onto a
+// left→right lane so sprites "walk" the process as the run progresses.
+const AGENT_STAGES = [
+  { key: "plan", label: "Plan", emoji: "🧠", rx: /planner|plan|architect|dispatch|context|rag|retriev/i },
+  { key: "code", label: "Code", emoji: "⌨️", rx: /implement|cod|specialist|writer/i },
+  { key: "gate", label: "Gate", emoji: "🧪", rx: /gate|test|diagnos|verif|check|runner/i },
+  { key: "review", label: "Review", emoji: "🔎", rx: /review/i },
+  { key: "pr", label: "PR", emoji: "🚀", rx: /\bpr\b|ship|open|merge|loop/i },
+] as const;
+
+function agentStageIndex(label: string): number {
+  const n = label.toLowerCase();
+  const index = AGENT_STAGES.findIndex((stage) => stage.rx.test(n));
+  return index >= 0 ? index : 1; // default to the Code desk
+}
+
+function agentEmoji(label: string): string {
+  const n = label.toLowerCase();
+  if (/planner|plan|architect|dispatch/.test(n)) return "🧠";
+  if (/implement|cod|specialist/.test(n)) return "⌨️";
+  if (/gate|test|verif|check|runner/.test(n)) return "🧪";
+  if (/review/.test(n)) return "🔎";
+  if (/\bpr\b|ship|open|merge|loop/.test(n)) return "🚀";
+  return "🤖";
+}
+
+const AGENT_LANE_X = 300;
+const FILE_COLUMN_X = AGENT_STAGES.length * AGENT_LANE_X + 40;
 
 async function getJSON<T>(url: string): Promise<T | null> {
   try {
@@ -332,6 +394,19 @@ function fmtRelative(value: string | null) {
   return new Date(time).toLocaleDateString();
 }
 
+function fmtDateTime(value: string | null) {
+  if (!value) return null;
+  const time = Date.parse(value);
+  if (!Number.isFinite(time)) return null;
+  return new Date(time).toLocaleString("en-AU", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
 function shortPath(value: string) {
   const parts = value.split("/").filter(Boolean);
   if (parts.length <= 3) return value;
@@ -347,33 +422,58 @@ function safeId(prefix: string, value: string) {
 }
 
 function AgentTraceNode({ data }: NodeProps<AgentNode>) {
+  const emoji = agentEmoji(data.agent.label);
+  const stage = AGENT_STAGES[data.stage] ?? AGENT_STAGES[1];
   const toolEntries = Object.entries(data.agent.tools).sort((a, b) => b[1] - a[1]).slice(0, 3);
   return (
     <div className={`floor-node floor-node-agent ${data.running ? "is-running" : ""}`}>
       <Handle type="target" position={Position.Left} className="floor-handle" />
       <Handle type="source" position={Position.Right} className="floor-handle" />
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="flex items-center gap-2">
-            <Bot className="h-4 w-4 text-[var(--accent)]" />
-            <h3 className="truncate text-[13px] font-semibold text-[var(--text)]">{data.agent.label}</h3>
-          </div>
-          <p className="mt-1 truncate text-[11.5px] text-[var(--text-3)]">{data.agent.model || "model pending"}</p>
+
+      {/* speech bubble — the active agent announces what it's doing */}
+      {data.activity && (
+        <div className="pointer-events-none absolute -top-10 left-1/2 z-20 max-w-[260px] -translate-x-1/2 whitespace-nowrap rounded-md border border-[var(--line-strong)] bg-[var(--surface-2)] px-2.5 py-1 text-[10.5px] text-[var(--text-2)] shadow-lg">
+          <span className="truncate">{data.activity}</span>
+          <span className="absolute left-1/2 top-full -translate-x-1/2 border-[5px] border-transparent border-t-[var(--line-strong)]" />
         </div>
-        <Pill tone={data.running ? "accent" : "neutral"} className="!py-0.5 !text-[10px]">
-          {data.running ? "active turn" : "seen"}
-        </Pill>
+      )}
+
+      <div className="flex items-start gap-2.5">
+        <div
+          className={`floor-avatar h-11 w-11 text-[20px] ${data.running ? "stepping" : ""}`}
+          style={{
+            border: `1px solid ${data.running ? "var(--accent)" : "var(--line)"}`,
+            background: "color-mix(in srgb, var(--accent) 10%, transparent)",
+          }}
+          title={data.agent.label}
+        >
+          {emoji}
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center justify-between gap-2">
+            <h3 className="truncate text-[13px] font-semibold text-[var(--text)]">{data.agent.label}</h3>
+            <Pill tone={data.running ? "accent" : "neutral"} className="!py-0.5 !text-[10px]">
+              {data.running ? "working" : "done"}
+            </Pill>
+          </div>
+          <p className="mt-0.5 truncate text-[10.5px] text-[var(--text-4)]">
+            {stage.emoji} {stage.label} stage
+          </p>
+          <p className="mt-0.5 truncate text-[11px] text-[var(--text-3)]">{data.agent.model || "model pending"}</p>
+        </div>
       </div>
-      <div className="mt-4 grid grid-cols-2 gap-2">
+
+      <div className="mt-3 grid grid-cols-2 gap-2">
         <div>
           <Eyebrow>Model calls</Eyebrow>
-          <p className="num mt-1 text-[18px] font-semibold text-[var(--text)]">{data.agent.modelCalls}</p>
+          <p className="num mt-1 text-[16px] font-semibold text-[var(--text)]">{data.agent.modelCalls}</p>
         </div>
         <div>
           <Eyebrow>Tool calls</Eyebrow>
-          <p className="num mt-1 text-[18px] font-semibold text-[var(--accent)]">{data.agent.toolCalls}</p>
+          <p className="num mt-1 text-[16px] font-semibold text-[var(--accent)]">{data.agent.toolCalls}</p>
         </div>
       </div>
+
       <div className="mt-3 flex flex-wrap gap-1.5">
         {toolEntries.length ? toolEntries.map(([tool, count]) => (
           <span key={tool} className="rounded-full border border-[var(--line)] px-2 py-1 text-[10.5px] text-[var(--text-2)]">
@@ -423,13 +523,28 @@ function buildGraph(graph: RunGraph): { nodes: FloorNode[]; edges: Edge[] } {
   const nodes: FloorNode[] = [];
   const edges: Edge[] = [];
 
-  graph.agents.forEach((agent, index) => {
+  // Current activity string for the active agent's speech bubble.
+  let activityLabel: string | null = null;
+  if (graph.currentActivity) {
+    const act = graph.currentActivity;
+    const pieces = [act.kind === "tool" ? (act.tool || "tool") : act.kind === "model" ? "thinking…" : "idle"];
+    if (act.file) pieces.push("→ " + shortPath(act.file));
+    activityLabel = pieces.join(" · ");
+  }
+
+  // Lay agents out left→right across the stage lane; agents sharing a stage
+  // (e.g. Gate Script + Gate Runner) stack vertically so none overlap.
+  const stageCounts = new Map<number, number>();
+  graph.agents.forEach((agent) => {
+    const stage = agentStageIndex(agent.label);
     const running = graph.currentAgent ? agent.label === graph.currentAgent : graph.running && !agent.endedAt;
+    const offset = stageCounts.get(stage) ?? 0;
+    stageCounts.set(stage, offset + 1);
     nodes.push({
       id: safeId("agent", agent.label),
       type: "agent",
-      position: { x: 0, y: index * 168 },
-      data: { agent, running },
+      position: { x: stage * AGENT_LANE_X, y: offset * 190 },
+      data: { agent, running, stage, activity: running ? activityLabel : null },
     });
   });
 
@@ -437,7 +552,7 @@ function buildGraph(graph: RunGraph): { nodes: FloorNode[]; edges: Edge[] } {
     nodes.push({
       id: fileIdByPath.get(file.path) || safeId("file", file.path),
       type: "file",
-      position: { x: 480 + (index % 2) * 280, y: Math.floor(index / 2) * 124 },
+      position: { x: FILE_COLUMN_X, y: index * 124 },
       data: { file, active: graph.currentActivity?.file === file.path },
     });
   });
@@ -677,16 +792,94 @@ function RunRail({
   );
 }
 
+function verdictScore(value: number | null) {
+  if (value == null) return "—";
+  return value.toFixed(2);
+}
+
+function LearningBody({ learning }: { learning: LearningTrace }) {
+  const verdict = learning.verdict;
+  const hasObserved = learning.observed.length > 0;
+  const hasLearned = learning.learned.length > 0;
+  const hasInferred = learning.inferred.length > 0;
+  return (
+    <div className="max-h-[calc(100vh-250px)] space-y-6 overflow-y-auto pr-1">
+      {verdict && (
+        <div>
+          <Eyebrow>Evaluator verdict</Eyebrow>
+          <div className="mt-3 grid grid-cols-2 gap-2">
+            {[
+              ["Relevance", verdict.relevance],
+              ["Tool quality", verdict.toolQuality],
+              ["Context bloat", verdict.contextBloat],
+              ["Hallucination", verdict.hallucination],
+            ].map(([label, value]) => (
+              <div key={label} className="rounded-[var(--r-sm)] border border-[var(--line)] bg-[var(--surface-1)] px-3 py-2">
+                <p className="text-[10px] uppercase tracking-wide text-[var(--text-4)]">{label}</p>
+                <p className="num mt-1 text-[16px] font-semibold text-[var(--text)]">{verdictScore(value as number | null)}</p>
+              </div>
+            ))}
+          </div>
+          {verdict.summary && (
+            <p className="mt-3 rounded-[var(--r-sm)] border border-[var(--line)] bg-[var(--surface-1)] px-3 py-2 text-[12px] leading-relaxed text-[var(--text-2)]">
+              {verdict.summary}
+            </p>
+          )}
+        </div>
+      )}
+
+      {hasObserved && (
+        <div>
+          <Eyebrow>Observed — why it failed</Eyebrow>
+          <ul className="mt-3 space-y-2">
+            {learning.observed.slice(0, 20).map((item) => (
+              <li key={item} className="rounded-[var(--r-sm)] border border-[var(--line)] bg-[var(--surface-1)] px-3 py-2 text-[12px] leading-relaxed text-[var(--text-2)]">
+                {item}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {hasLearned && (
+        <div>
+          <Eyebrow>Learned</Eyebrow>
+          <ul className="mt-3 space-y-2">
+            {learning.learned.slice(0, 10).map((item) => (
+              <li key={item} className="rounded-[var(--r-sm)] border border-[var(--line)] bg-[var(--surface-1)] px-3 py-2 text-[12px] leading-relaxed text-[var(--text-2)]">
+                {item}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {hasInferred && (
+        <div>
+          <Eyebrow>Inferred</Eyebrow>
+          <ul className="mt-3 space-y-2">
+            {learning.inferred.slice(0, 8).map((item) => (
+              <li key={item} className="rounded-[var(--r-sm)] border border-[var(--line)] bg-[var(--surface-1)] px-3 py-2 text-[12px] leading-relaxed text-[var(--text-2)]">
+                {item}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function LearningPanel({ graph, conveyor, attempt }: { graph: RunGraph | null; conveyor: ConveyorRunGraph | null; attempt: number }) {
   const learning = conveyor?.learnings.find((item) => item.attempt === attempt) ?? null;
-  const latest = graph?.learnings.at(-1);
-  const hasLearning = Boolean(learning && (learning.learned.length > 0 || learning.inferred.length > 0));
+  const latest = graph?.learnings.at(-1) ?? null;
+  const hasLearning = Boolean(learning && (learning.learned.length > 0 || learning.inferred.length > 0 || learning.observed.length > 0 || learning.verdict));
 
   return (
     <Panel className="h-full min-h-[620px] overflow-hidden p-5">
       <SectionHeader
         label="Session evidence"
-        title="Learned / inferred metadata"
+        title="Learned / observed metadata"
         action={
           conveyor ? (
             <Pill tone="neutral">attempt {attempt}</Pill>
@@ -696,69 +889,21 @@ function LearningPanel({ graph, conveyor, attempt }: { graph: RunGraph | null; c
         }
       />
       {conveyor ? (
-        !hasLearning ? (
+        !hasLearning || !learning ? (
           <EmptyState
             icon={<Info className="h-6 w-6" />}
-            title="No learning metadata"
-            hint="This attempt has no learned or inferred metadata recorded yet."
+            title="No session evidence"
+            hint="This attempt has no learned, inferred, or observed metadata recorded yet."
           />
         ) : (
-          <div className="max-h-[calc(100vh-250px)] overflow-y-auto pr-1">
-            <div>
-              <Eyebrow>Learned</Eyebrow>
-              <ul className="mt-3 space-y-2">
-                {learning!.learned.slice(0, 10).map((item) => (
-                  <li key={item} className="rounded-[var(--r-sm)] border border-[var(--line)] bg-[var(--surface-1)] px-3 py-2 text-[12px] leading-relaxed text-[var(--text-2)]">
-                    {item}
-                  </li>
-                ))}
-                {learning!.learned.length === 0 && (
-                  <li className="text-[11px] text-[var(--text-4)]">Nothing learned this attempt.</li>
-                )}
-              </ul>
-            </div>
-            <div className="mt-6">
-              <Eyebrow>Inferred</Eyebrow>
-              <ul className="mt-3 space-y-2">
-                {learning!.inferred.slice(0, 8).map((item) => (
-                  <li key={item} className="rounded-[var(--r-sm)] border border-[var(--line)] bg-[var(--surface-1)] px-3 py-2 text-[12px] leading-relaxed text-[var(--text-2)]">
-                    {item}
-                  </li>
-                ))}
-                {learning!.inferred.length === 0 && (
-                  <li className="text-[11px] text-[var(--text-4)]">No inferences this attempt.</li>
-                )}
-              </ul>
-            </div>
-          </div>
+          <LearningBody learning={learning} />
         )
       ) : !graph ? (
         <EmptyState icon={<Info className="h-6 w-6" />} title="Select a goal" hint="Bounded attempt evidence appears beside the execution graph." />
       ) : !latest ? (
-        <EmptyState icon={<Info className="h-6 w-6" />} title="No learning metadata" hint="Hermes has not recorded learned or inferred metadata for this session." />
+        <EmptyState icon={<Info className="h-6 w-6" />} title="No session evidence" hint="Hermes has not recorded learned or inferred metadata for this session." />
       ) : (
-        <div className="max-h-[calc(100vh-250px)] overflow-y-auto pr-1">
-          <div>
-            <Eyebrow>Learned</Eyebrow>
-            <ul className="mt-3 space-y-2">
-              {latest.learned.slice(0, 10).map((item) => (
-                <li key={item} className="rounded-[var(--r-sm)] border border-[var(--line)] bg-[var(--surface-1)] px-3 py-2 text-[12px] leading-relaxed text-[var(--text-2)]">
-                  {item}
-                </li>
-              ))}
-            </ul>
-          </div>
-          <div className="mt-6">
-            <Eyebrow>Inferred</Eyebrow>
-            <ul className="mt-3 space-y-2">
-              {latest.inferred.slice(0, 8).map((item) => (
-                <li key={item} className="rounded-[var(--r-sm)] border border-[var(--line)] bg-[var(--surface-1)] px-3 py-2 text-[12px] leading-relaxed text-[var(--text-2)]">
-                  {item}
-                </li>
-              ))}
-            </ul>
-          </div>
-        </div>
+        <LearningBody learning={latest} />
       )}
     </Panel>
   );
@@ -851,15 +996,50 @@ function PipelineStrip({ run }: { run: RunIndex | null }) {
   );
 }
 
+function ShippedBanner({ completion }: { completion: ConveyorCompletion | null }) {
+  if (!completion) return null;
+  const shipped = completion.status === "done" || completion.shippedPr || completion.deploymentId;
+  if (!shipped) return null;
+  const when = fmtDateTime(completion.completedAt);
+  return (
+    <div className="flex flex-wrap items-center gap-x-4 gap-y-2 rounded-[var(--r-md)] border border-[var(--up)]/30 px-4 py-2.5 text-[12px]"
+      style={{ background: "color-mix(in srgb, var(--up) 8%, transparent)" }}>
+      <span className="flex items-center gap-1.5 font-semibold text-[var(--up)]">
+        <Check className="h-3.5 w-3.5" /> Shipped
+      </span>
+      {completion.prNumber && completion.shippedPr ? (
+        <a href={completion.shippedPr} target="_blank" rel="noreferrer" className="flex items-center gap-1 text-[var(--text-2)] hover:text-[var(--accent)]">
+          <GitBranch className="h-3.5 w-3.5" /> PR #{completion.prNumber} <ExternalLink className="h-3 w-3" />
+        </a>
+      ) : completion.shippedPr ? (
+        <a href={completion.shippedPr} target="_blank" rel="noreferrer" className="flex items-center gap-1 text-[var(--text-2)] hover:text-[var(--accent)]">
+          <GitBranch className="h-3.5 w-3.5" /> PR <ExternalLink className="h-3 w-3" />
+        </a>
+      ) : null}
+      {completion.deploymentId && (
+        <span className="num flex items-center gap-1 text-[var(--text-2)]">
+          <Radio className="h-3.5 w-3.5" /> Deploy {completion.deploymentId}
+        </span>
+      )}
+      {when && <span className="num text-[var(--text-3)]">Completed {when}</span>}
+      {completion.health && <span className="num text-[var(--text-3)]">health: {completion.health}</span>}
+    </div>
+  );
+}
+
 function FlowCanvas({ graph, loaded, selectedRun }: { graph: RunGraph | null; loaded: boolean; selectedRun: RunIndex | null }) {
   const built = useMemo(() => graph ? buildGraph(graph) : { nodes: [], edges: [] }, [graph]);
   const [nodes, setNodes, onNodesChange] = useNodesState<FloorNode>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
   const flowRef = useRef<ReactFlowInstance<FloorNode, Edge> | null>(null);
   const fittedGoalRef = useRef<string | null>(null);
+  const [selectedAgentLabel, setSelectedAgentLabel] = useState<string | null>(null);
   const timeline = graph?.timeline?.slice(-15).reverse() ?? [];
   const headerStatus = selectedRun?.status || graph?.status || "unknown";
   const headerRunning = isTrulyRunning(selectedRun);
+
+  const selectedAgent = graph?.agents.find((agent) => agent.label === selectedAgentLabel) ?? null;
+  const selectedTouches = graph?.touches.filter((touch) => touch.agent === selectedAgentLabel) ?? [];
 
   useEffect(() => {
     if (!graph) {
@@ -934,6 +1114,10 @@ function FlowCanvas({ graph, loaded, selectedRun }: { graph: RunGraph | null; lo
             onNodesChange={onNodesChange}
             onEdgesChange={onEdgesChange}
             onInit={(instance) => { flowRef.current = instance; }}
+            onNodeClick={(_, node) => {
+              if (node.type === "agent") setSelectedAgentLabel((node.data as AgentNodeData).agent.label);
+              else setSelectedAgentLabel(null);
+            }}
             nodeTypes={nodeTypes}
             minZoom={0.25}
             maxZoom={1.4}
@@ -968,6 +1152,40 @@ function FlowCanvas({ graph, loaded, selectedRun }: { graph: RunGraph | null; lo
           </ol>
         </div>
       )}
+
+      {selectedAgent && (
+        <div className="border-t border-[var(--line)] px-5 py-4">
+          <div className="mb-2 flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2">
+              <span className="text-[18px]">{agentEmoji(selectedAgent.label)}</span>
+              <Eyebrow>{selectedAgent.label} — read/write activity</Eyebrow>
+            </div>
+            <button type="button" onClick={() => setSelectedAgentLabel(null)} className="text-[11px] text-[var(--text-3)] hover:text-[var(--text)]">
+              clear
+            </button>
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            {Object.entries(selectedAgent.tools).sort((a, b) => b[1] - a[1]).map(([tool, count]) => (
+              <span key={tool} className="rounded-full border border-[var(--line)] px-2 py-1 text-[10.5px] text-[var(--text-2)]">
+                {tool} <span className="num text-[var(--text-3)]">x{count}</span>
+              </span>
+            ))}
+            {Object.keys(selectedAgent.tools).length === 0 && (
+              <span className="text-[11px] text-[var(--text-4)]">No tool activity recorded.</span>
+            )}
+          </div>
+          {selectedTouches.length > 0 && (
+            <ul className="mt-3 max-h-36 space-y-1 overflow-y-auto pr-1">
+              {selectedTouches.slice(0, 30).map((touch) => (
+                <li key={`${touch.path}-${touch.op}`} className="flex items-center gap-2 text-[11px]">
+                  <span className="num w-16 shrink-0" style={{ color: OP_COLOR[touch.op] }}>{touch.op} ×{touch.count}</span>
+                  <span className="truncate text-[var(--text-3)]">{shortPath(touch.path)}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
     </Panel>
   );
 }
@@ -975,13 +1193,16 @@ function FlowCanvas({ graph, loaded, selectedRun }: { graph: RunGraph | null; lo
 function GoalTile({
   goal,
   tone,
+  completion,
   onSelect,
 }: {
   goal: NativeGoal;
   tone: "accent" | "neutral" | "down" | "up";
+  completion?: ConveyorCompletion | null;
   onSelect: (goal: NativeGoal) => void;
 }) {
   const stateLabel = tone === "accent" ? "working" : tone === "down" ? "failed" : tone === "up" ? "done" : "ready";
+  const when = fmtDateTime(completion?.completedAt ?? null);
   return (
     <button
       type="button"
@@ -995,6 +1216,13 @@ function GoalTile({
       <p className="num mt-1.5 text-[10.5px] text-[var(--text-4)]">
         {goal.status ?? goal.state}{goal.updatedAt ? ` · ${fmtRelative(goal.updatedAt)}` : ""}
       </p>
+      {completion && (completion.prNumber || completion.deploymentId || when) && (
+        <p className="num mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[10.5px] text-[var(--text-3)]">
+          {completion.prNumber && <span className="text-[var(--up)]">PR #{completion.prNumber}</span>}
+          {completion.deploymentId && <span>deploy {completion.deploymentId}</span>}
+          {when && <span>{when}</span>}
+        </p>
+      )}
     </button>
   );
 }
@@ -1002,10 +1230,12 @@ function GoalTile({
 function NativeGoalsPanel({
   goals,
   selectedGoal,
+  completionByGoal,
   onSelect,
 }: {
   goals: NativeGoalsPayload | null;
   selectedGoal: string | null;
+  completionByGoal: Map<string, ConveyorCompletion>;
   onSelect: (goal: NativeGoal) => void;
 }) {
   const live = goals?.goals.live ?? { ready: [], running: [], done: [], failed: [] };
@@ -1016,6 +1246,7 @@ function NativeGoalsPanel({
   const recentFailed = goals?.goals.recentFailed ?? [];
 
   const selectedIdOf = (goal: NativeGoal) => goalIdOf(goal) ?? goal.id;
+  const completionOf = (goal: NativeGoal) => completionByGoal.get(goalIdOf(goal) ?? goal.id) ?? null;
 
   return (
     <Panel className="h-full min-h-[620px] overflow-hidden p-5">
@@ -1033,7 +1264,7 @@ function NativeGoalsPanel({
             <ul className="mt-3 space-y-2">
               {running.map((goal) => (
                 <li key={goal.id} className={selectedGoal === selectedIdOf(goal) ? "ring-2 ring-[var(--accent)] rounded-[var(--r-md)]" : ""}>
-                  <GoalTile goal={goal} tone="accent" onSelect={onSelect} />
+                  <GoalTile goal={goal} tone="accent" completion={completionOf(goal)} onSelect={onSelect} />
                 </li>
               ))}
             </ul>
@@ -1048,7 +1279,7 @@ function NativeGoalsPanel({
             <ul className="mt-3 space-y-2">
               {ready.slice(0, 8).map((goal) => (
                 <li key={goal.id} className={selectedGoal === selectedIdOf(goal) ? "ring-2 ring-[var(--accent)] rounded-[var(--r-md)]" : ""}>
-                  <GoalTile goal={goal} tone="neutral" onSelect={onSelect} />
+                  <GoalTile goal={goal} tone="neutral" completion={completionOf(goal)} onSelect={onSelect} />
                 </li>
               ))}
             </ul>
@@ -1061,7 +1292,7 @@ function NativeGoalsPanel({
             <ul className="mt-3 space-y-2">
               {done.slice(0, 8).map((goal) => (
                 <li key={goal.id} className={selectedGoal === selectedIdOf(goal) ? "ring-2 ring-[var(--accent)] rounded-[var(--r-md)]" : ""}>
-                  <GoalTile goal={goal} tone="up" onSelect={onSelect} />
+                  <GoalTile goal={goal} tone="up" completion={completionOf(goal)} onSelect={onSelect} />
                 </li>
               ))}
             </ul>
@@ -1077,7 +1308,7 @@ function NativeGoalsPanel({
             <ul className="mt-3 space-y-2">
               {recentFailed.slice(0, 5).map((goal) => (
                 <li key={goal.id} className={selectedGoal === selectedIdOf(goal) ? "ring-2 ring-[var(--accent)] rounded-[var(--r-md)]" : ""}>
-                  <GoalTile goal={goal} tone="down" onSelect={onSelect} />
+                  <GoalTile goal={goal} tone="down" completion={completionOf(goal)} onSelect={onSelect} />
                 </li>
               ))}
             </ul>
@@ -1141,14 +1372,20 @@ export default function FloorPage() {
 
   const loadGraph = useCallback(async (goal: string) => {
     const data = await getJSON<RunGraph>(`/api/runs/${encodeURIComponent(goal)}`);
-    setGraph(data);
+    // Guard against transient null responses: a failed poll must not wipe the
+    // graph to the "No graph loaded" empty state.
+    if (data) setGraph(data);
     setGraphLoaded(true);
   }, []);
 
-  const loadConveyor = useCallback(async (goal: string) => {
+  const loadConveyor = useCallback(async (goal: string, opts?: { preserveAttempt?: boolean }) => {
     const data = await getJSON<ConveyorRunGraph>(`/api/goals/${encodeURIComponent(goal)}`);
+    if (!data) {
+      setGraphLoaded(true);
+      return;
+    }
     setConveyor(data);
-    if (data?.attempts?.length) {
+    if (!opts?.preserveAttempt && data.attempts?.length) {
       setAttemptIndex(data.attempts.length - 1);
     }
     setGraphLoaded(true);
@@ -1194,7 +1431,7 @@ export default function FloorPage() {
   // Poll the selected conveyor run while it is live (running attempt).
   useEffect(() => {
     if (!conveyorSource) return;
-    const poll = () => void loadConveyor(conveyorSource);
+    const poll = () => void loadConveyor(conveyorSource, { preserveAttempt: true });
     const latest = conveyor?.attempts[conveyor.attempts.length - 1];
     const interval = setInterval(poll, latest?.running ? 4_000 : 10_000);
     return () => clearInterval(interval);
@@ -1268,6 +1505,12 @@ export default function FloorPage() {
   const liveProcesses = processes?.processes.filter((item) => item.live).length ?? 0;
   const scheduledJobs = crons?.jobs.filter((job) => job.status === "active").length ?? 0;
 
+  const completionByGoal = useMemo(() => {
+    const map = new Map<string, ConveyorCompletion>();
+    for (const item of conveyorGoals) if (item.completion) map.set(item.goal, item.completion);
+    return map;
+  }, [conveyorGoals]);
+
   return (
     <div className="relative z-10 w-full mx-auto p-8 pb-16 text-[var(--text)]">
       <div className="hq-rise flex flex-wrap items-end justify-between gap-6" style={rise(0)}>
@@ -1308,9 +1551,10 @@ export default function FloorPage() {
       </div>
 
       <section className="mt-6 grid grid-cols-1 gap-4 xl:grid-cols-[340px_minmax(0,1fr)_340px]">
-        <NativeGoalsPanel goals={goals} selectedGoal={conveyorSource ?? selectedGoal} onSelect={selectGoal} />
+        <NativeGoalsPanel goals={goals} selectedGoal={conveyorSource ?? selectedGoal} completionByGoal={completionByGoal} onSelect={selectGoal} />
         <div className="flex min-w-0 flex-col gap-2">
           {attemptSelector}
+          <ShippedBanner completion={conveyor?.completion ?? null} />
           <FlowCanvas graph={derivedGraph} loaded={graphLoaded} selectedRun={selectedRun} />
         </div>
         <LearningPanel graph={isConveyorView ? null : graph} conveyor={isConveyorView ? conveyor : null} attempt={conveyorAttempt?.attempt ?? 0} />

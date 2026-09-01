@@ -80,11 +80,41 @@ export interface ConveyorAttemptGraph {
   counts: { events: number; modelCalls: number; toolCalls: number };
 }
 
+export interface AttemptVerdict {
+  relevance: number | null;
+  toolQuality: number | null;
+  contextBloat: number | null;
+  hallucination: number | null;
+  summary: string | null;
+}
+
+export interface AttemptLearnings {
+  attempt: number;
+  learned: string[];
+  inferred: string[];
+  /** Raw `- observed:` trace lines — the "what happened / why it failed" record. */
+  observed: string[];
+  /** LLM-as-judge evaluator verdict (DeepSeek) for this attempt, if present. */
+  verdict: AttemptVerdict | null;
+}
+
+export interface ConveyorCompletion {
+  status: string;
+  shippedPr: string | null;
+  prNumber: number | null;
+  deploymentId: string | null;
+  productionUrl: string | null;
+  mergeSha: string | null;
+  health: string | null;
+  completedAt: string | null;
+}
+
 export interface ConveyorRunGraph {
   goal: string;
   source: "conveyor-run";
   attempts: ConveyorAttemptGraph[];
-  learnings: Array<{ attempt: number; learned: string[]; inferred: string[] }>;
+  learnings: AttemptLearnings[];
+  completion: ConveyorCompletion | null;
   syncedAt: string;
 }
 
@@ -279,47 +309,152 @@ function parseAttemptGraph(
   };
 }
 
-function parseScribe(text: string): Array<{ attempt: number; learned: string[]; inferred: string[] }> {
-  const result: Array<{ attempt: number; learned: string[]; inferred: string[] }> = [];
-  let currentAttempt = 0;
-  let section: "learned" | "inferred" | null = null;
-  const buckets: Record<number, { learned: string[]; inferred: string[] }> = {};
+function numOrNull(value: string): number | null {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
 
-  const ensure = (attempt: number) => {
-    if (!buckets[attempt]) buckets[attempt] = { learned: [], inferred: [] };
-    return buckets[attempt];
+function parseScribe(text: string): AttemptLearnings[] {
+  type Bucket = { learned: string[]; inferred: string[]; observed: string[]; verdict: AttemptVerdict | null };
+  const buckets = new Map<number, Bucket>();
+  let currentAttempt = 0;
+  let section: "learned" | "inferred" | "verdict" | null = null;
+
+  const ensure = (attempt: number): Bucket => {
+    let bucket = buckets.get(attempt);
+    if (!bucket) {
+      bucket = { learned: [], inferred: [], observed: [], verdict: null };
+      buckets.set(attempt, bucket);
+    }
+    return bucket;
   };
 
   for (const line of text.split("\n")) {
-    const attemptMatch = line.match(/^## Attempt (\d+)/);
+    // `## Attempt N (...)` starts a new attempt bucket.
+    const attemptMatch = line.match(/^##\s+Attempt\s+(\d+)/i);
     if (attemptMatch) {
       currentAttempt = Number(attemptMatch[1]);
       section = null;
       continue;
     }
-    const learned = line.match(/^### Learned/);
-    const inferred = line.match(/^### Inferred/);
-    if (learned) { section = "learned"; continue; }
-    if (inferred) { section = "inferred"; continue; }
-    if (/^## / .test(line)) { section = null; continue; }
+    if (/^###\s+Learned/i.test(line)) { section = "learned"; continue; }
+    if (/^###\s+Inferred/i.test(line)) { section = "inferred"; continue; }
+    if (/^##\s+Evaluator\s+verdict/i.test(line)) { section = "verdict"; continue; }
+    // any other h2/h3 heading (## / ###) resets the section
+    if (/^#{2,3}\s/.test(line)) { section = null; continue; }
+
+    if (currentAttempt <= 0) continue;
+    const bucket = ensure(currentAttempt);
+
+    // `- observed:` lines are always captured — they are the raw "what happened".
+    const observed = line.match(/^-\s*observed:\s*(.+)$/i);
+    if (observed) {
+      const item = observed[1].trim().slice(0, 500);
+      if (item) bucket.observed.push(item);
+      continue;
+    }
+
+    if (section === "verdict") {
+      const field = line.match(/^-\s*([a-z_]+):\s*(.+)$/i);
+      if (field) {
+        const key = field[1].toLowerCase();
+        const value = field[2].trim();
+        if (!bucket.verdict) {
+          bucket.verdict = { relevance: null, toolQuality: null, contextBloat: null, hallucination: null, summary: null };
+        }
+        if (key === "goal_relevance" || key === "relevance") bucket.verdict.relevance = numOrNull(value);
+        else if (key === "tool_call_quality" || key === "tool_quality") bucket.verdict.toolQuality = numOrNull(value);
+        else if (key === "context_bloat") bucket.verdict.contextBloat = numOrNull(value);
+        else if (key === "hallucination") bucket.verdict.hallucination = numOrNull(value);
+        else if (key === "summary") bucket.verdict.summary = value.slice(0, 400);
+      }
+      continue;
+    }
+
     const bullet = line.match(/^-\s+(.+)$/);
-    if (bullet && section && currentAttempt > 0) {
-      const bucket = ensure(currentAttempt);
+    if (bullet) {
       const item = bullet[1].trim().slice(0, 400);
-      if (item) bucket[section].push(item);
+      if (item && section === "learned") bucket.learned.push(item);
+      else if (item && section === "inferred") bucket.inferred.push(item);
     }
   }
 
-  for (const [attemptStr, bucket] of Object.entries(buckets)) {
-    result.push({ attempt: Number(attemptStr), learned: bucket.learned.slice(0, 20), inferred: bucket.inferred.slice(0, 20) });
-  }
-  return result.sort((a, b) => a.attempt - b.attempt);
+  return [...buckets.entries()]
+    .filter(([, bucket]) => bucket.learned.length || bucket.inferred.length || bucket.observed.length || bucket.verdict)
+    .map(([attempt, bucket]) => ({
+      attempt,
+      learned: bucket.learned.slice(0, 20),
+      inferred: bucket.inferred.slice(0, 20),
+      observed: bucket.observed.slice(0, 60),
+      verdict: bucket.verdict,
+    }))
+    .sort((a, b) => a.attempt - b.attempt);
 }
 
 export interface ConveyorRunSummary {
   goal: string;
   attempts: number;
   updatedAt: string | null;
+  completion: ConveyorCompletion | null;
+}
+
+const GOALS_STATE_ROOT = path.join(CHATDEV_ROOT, "goals", "state");
+
+function safeTimestamp(value: unknown): string | null {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    const ms = value > 1e12 ? value : value * 1000;
+    return new Date(ms).toISOString();
+  }
+  if (typeof value === "string") {
+    const t = Date.parse(value);
+    return Number.isFinite(t) ? new Date(t).toISOString() : null;
+  }
+  return null;
+}
+
+function prNumberFromUrl(url: string | null): number | null {
+  if (!url) return null;
+  const match = url.match(/\/pull\/(\d+)/);
+  return match ? Number(match[1]) : null;
+}
+
+/**
+ * Read a goal's state ledger (`~/ChatDev/goals/state/<goal>.json`) and extract
+ * the completion record — PR URL/number, Vercel deployment id, production URL,
+ * merge SHA, health, and completion time. This is the authoritative "shipped"
+ * truth the event stream never carries.
+ */
+async function readGoalLedger(goal: string): Promise<ConveyorCompletion | null> {
+  if (!GOAL_ID.test(goal)) return null;
+  const file = path.join(GOALS_STATE_ROOT, `${goal}.json`);
+  let text: string;
+  try {
+    text = await fs.readFile(file, "utf8");
+  } catch {
+    return null;
+  }
+  let record: Record<string, unknown>;
+  try {
+    record = JSON.parse(text) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+  const shipping = (record.shipping && typeof record.shipping === "object" ? record.shipping : {}) as Record<string, unknown>;
+  const shippedPr = typeof record.shipped_pr === "string" ? record.shipped_pr : null;
+  const pr = typeof shipping.pr === "string" ? (shipping.pr as string) : shippedPr;
+  const completedAt =
+    safeTimestamp(record.completed_at ?? record.completedAt ?? record.finishedAt) ??
+    safeTimestamp(record.queue_runner_updated_at);
+  return {
+    status: typeof record.status === "string" ? record.status : "unknown",
+    shippedPr: pr,
+    prNumber: prNumberFromUrl(pr),
+    deploymentId: shipping.deployment_id != null ? String(shipping.deployment_id) : null,
+    productionUrl: typeof shipping.production_url === "string" ? (shipping.production_url as string) : null,
+    mergeSha: typeof shipping.merge_sha === "string" ? (shipping.merge_sha as string) : null,
+    health: typeof shipping.health === "string" ? (shipping.health as string) : null,
+    completedAt,
+  };
 }
 
 /**
@@ -368,6 +503,7 @@ export async function listConveyorRuns(): Promise<ConveyorRunSummary[]> {
       goal,
       attempts: attemptFiles.length,
       updatedAt: latestMtimeMs ? new Date(latestMtimeMs).toISOString() : null,
+      completion: await readGoalLedger(goal),
     });
   }
 
@@ -422,6 +558,7 @@ export async function readConveyorRun(goal: string): Promise<ConveyorRunGraph | 
     source: "conveyor-run",
     attempts,
     learnings,
+    completion: await readGoalLedger(goal),
     syncedAt: new Date().toISOString(),
   };
 }
