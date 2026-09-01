@@ -144,6 +144,7 @@ interface ConveyorAttemptGraph {
   flow: Array<{ from: string; to: string }>;
   touches: TouchTrace[];
   timeline: TimelineEntry[];
+  messages: DialogueMessage[];
   currentAgent: string | null;
   currentActivity: CurrentActivity | null;
   counts: { events: number; modelCalls: number; toolCalls: number };
@@ -181,6 +182,7 @@ function conveyorAttemptToRunGraph(goal: string, attempt: ConveyorAttemptGraph, 
     currentAgent: attempt.currentAgent,
     currentActivity: attempt.currentActivity,
     timeline: attempt.timeline,
+    messages: attempt.messages,
     counts: attempt.counts,
   };
 }
@@ -270,6 +272,17 @@ interface TimelineEntry {
   at: string | null;
 }
 
+interface DialogueMessage {
+  seq: number;
+  node: string;
+  kind: "model" | "tool";
+  text: string | null;
+  tool: string | null;
+  file: string | null;
+  success: boolean | null;
+  at: string | null;
+}
+
 interface RunGraph {
   goal: string;
   attempt: number;
@@ -285,6 +298,7 @@ interface RunGraph {
   currentAgent?: string | null;
   currentActivity?: CurrentActivity | null;
   timeline?: TimelineEntry[];
+  messages?: DialogueMessage[];
   counts: { events: number; modelCalls: number; toolCalls: number };
 }
 
@@ -329,14 +343,12 @@ function agentStageIndex(label: string): number {
   return index >= 0 ? index : 1; // default to the Code desk
 }
 
-function agentEmoji(label: string): string {
-  const n = label.toLowerCase();
-  if (/planner|plan|architect|dispatch/.test(n)) return "🧠";
-  if (/implement|cod|specialist/.test(n)) return "⌨️";
-  if (/gate|test|verif|check|runner/.test(n)) return "🧪";
-  if (/review/.test(n)) return "🔎";
-  if (/\bpr\b|ship|open|merge|loop/.test(n)) return "🚀";
-  return "🤖";
+// Deterministically bind an agent label to one of the 12 2D-human sprite
+// characters so the same role always gets the same character across reloads.
+function characterForAgent(label: string): number {
+  let hash = 0;
+  for (let i = 0; i < label.length; i += 1) hash = (hash * 31 + label.charCodeAt(i)) >>> 0;
+  return (hash % 12) + 1;
 }
 
 const AGENT_LANE_X = 300;
@@ -422,46 +434,48 @@ function safeId(prefix: string, value: string) {
 }
 
 function AgentTraceNode({ data }: NodeProps<AgentNode>) {
-  const emoji = agentEmoji(data.agent.label);
+  const character = characterForAgent(data.agent.label);
   const stage = AGENT_STAGES[data.stage] ?? AGENT_STAGES[1];
   const toolEntries = Object.entries(data.agent.tools).sort((a, b) => b[1] - a[1]).slice(0, 3);
+  const [frame, setFrame] = useState(2);
+
+  useEffect(() => {
+    if (!data.running) {
+      setFrame(2);
+      return;
+    }
+    const id = setInterval(() => setFrame((f) => (f === 2 ? 3 : 2)), 500);
+    return () => clearInterval(id);
+  }, [data.running]);
+
+  const sprite = data.running ? `/sprites/${character}-D-${frame}.png` : `/sprites/${character}-D-1.png`;
+
   return (
     <div className={`floor-node floor-node-agent ${data.running ? "is-running" : ""}`}>
       <Handle type="target" position={Position.Left} className="floor-handle" />
       <Handle type="source" position={Position.Right} className="floor-handle" />
 
+      {/* 2D-human sprite standing on the node — walks (frame anim) when active */}
+      <div className="floor-sprite">
+        <img src={sprite} alt={data.agent.label} width={32} height={40} style={{ imageRendering: "pixelated" }} />
+      </div>
+
       {/* speech bubble — the active agent announces what it's doing */}
       {data.activity && (
-        <div className="pointer-events-none absolute -top-10 left-1/2 z-20 max-w-[260px] -translate-x-1/2 whitespace-nowrap rounded-md border border-[var(--line-strong)] bg-[var(--surface-2)] px-2.5 py-1 text-[10.5px] text-[var(--text-2)] shadow-lg">
+        <div className="pointer-events-none absolute -top-12 left-1/2 z-20 max-w-[240px] -translate-x-1/2 whitespace-nowrap rounded-md border border-[var(--line-strong)] bg-[var(--surface-2)] px-2.5 py-1 text-[10.5px] text-[var(--text-2)] shadow-lg">
           <span className="truncate">{data.activity}</span>
           <span className="absolute left-1/2 top-full -translate-x-1/2 border-[5px] border-transparent border-t-[var(--line-strong)]" />
         </div>
       )}
 
-      <div className="flex items-start gap-2.5">
-        <div
-          className={`floor-avatar h-11 w-11 text-[20px] ${data.running ? "stepping" : ""}`}
-          style={{
-            border: `1px solid ${data.running ? "var(--accent)" : "var(--line)"}`,
-            background: "color-mix(in srgb, var(--accent) 10%, transparent)",
-          }}
-          title={data.agent.label}
-        >
-          {emoji}
-        </div>
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center justify-between gap-2">
-            <h3 className="truncate text-[13px] font-semibold text-[var(--text)]">{data.agent.label}</h3>
-            <Pill tone={data.running ? "accent" : "neutral"} className="!py-0.5 !text-[10px]">
-              {data.running ? "working" : "done"}
-            </Pill>
-          </div>
-          <p className="mt-0.5 truncate text-[10.5px] text-[var(--text-4)]">
-            {stage.emoji} {stage.label} stage
-          </p>
-          <p className="mt-0.5 truncate text-[11px] text-[var(--text-3)]">{data.agent.model || "model pending"}</p>
-        </div>
+      <div className="flex items-center justify-between gap-2">
+        <h3 className="truncate text-[13px] font-semibold text-[var(--text)]">{data.agent.label}</h3>
+        <Pill tone={data.running ? "accent" : "neutral"} className="!py-0.5 !text-[10px]">
+          {data.running ? "working" : "done"}
+        </Pill>
       </div>
+      <p className="mt-0.5 truncate text-[10.5px] text-[var(--text-4)]">{stage.label} stage</p>
+      <p className="mt-0.5 truncate text-[11px] text-[var(--text-3)]">{data.agent.model || "model pending"}</p>
 
       <div className="mt-3 grid grid-cols-2 gap-2">
         <div>
@@ -1027,6 +1041,50 @@ function ShippedBanner({ completion }: { completion: ConveyorCompletion | null }
   );
 }
 
+function DialoguePanel({ graph }: { graph: RunGraph | null }) {
+  const messages = graph?.messages ?? [];
+  if (messages.length === 0) return null;
+  return (
+    <div className="border-t border-[var(--line)] px-5 py-4">
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <Eyebrow>Dialogue</Eyebrow>
+        <Pill tone="neutral" className="!py-0.5 !text-[10px]">last {messages.length}</Pill>
+      </div>
+      <div className="max-h-64 space-y-2 overflow-y-auto pr-1">
+        {messages.slice(-40).reverse().map((msg) => (
+          <div key={msg.seq} className="flex items-start gap-2">
+            <img
+              src={`/sprites/${characterForAgent(msg.node)}-D-1.png`}
+              alt={msg.node}
+              width={20}
+              height={25}
+              style={{ imageRendering: "pixelated" }}
+              className="mt-0.5 shrink-0"
+            />
+            <div className="min-w-0 flex-1">
+              <div className="flex items-baseline gap-2">
+                <span className="text-[11px] font-semibold text-[var(--text)]">{msg.node}</span>
+                <span className="num text-[10px] text-[var(--text-4)]">{fmtRelative(msg.at)}</span>
+              </div>
+              {msg.kind === "model" ? (
+                <p className="mt-0.5 text-[11.5px] leading-relaxed text-[var(--text-2)]">{msg.text}</p>
+              ) : (
+                <p className="mt-0.5 text-[11px] text-[var(--text-3)]">
+                  <span className="text-[var(--accent)]">{msg.tool}</span>
+                  {msg.file ? <> → {shortPath(msg.file)}</> : null}
+                  {msg.success != null && (
+                    <span className={msg.success ? "text-[var(--up)]" : "text-[var(--down)]"}>{msg.success ? " ✓" : " ✗"}</span>
+                  )}
+                </p>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function FlowCanvas({ graph, loaded, selectedRun }: { graph: RunGraph | null; loaded: boolean; selectedRun: RunIndex | null }) {
   const built = useMemo(() => graph ? buildGraph(graph) : { nodes: [], edges: [] }, [graph]);
   const [nodes, setNodes, onNodesChange] = useNodesState<FloorNode>([]);
@@ -1136,6 +1194,8 @@ function FlowCanvas({ graph, loaded, selectedRun }: { graph: RunGraph | null; lo
         )}
       </div>
 
+      <DialoguePanel graph={graph} />
+
       {graph && timeline.length > 0 && (
         <div className="border-t border-[var(--line)] px-5 py-4">
           <div className="mb-2 flex items-center justify-between gap-3">
@@ -1157,7 +1217,7 @@ function FlowCanvas({ graph, loaded, selectedRun }: { graph: RunGraph | null; lo
         <div className="border-t border-[var(--line)] px-5 py-4">
           <div className="mb-2 flex items-center justify-between gap-3">
             <div className="flex items-center gap-2">
-              <span className="text-[18px]">{agentEmoji(selectedAgent.label)}</span>
+              <img src={`/sprites/${characterForAgent(selectedAgent.label)}-D-1.png`} alt={selectedAgent.label} width={24} height={30} style={{ imageRendering: "pixelated" }} />
               <Eyebrow>{selectedAgent.label} — read/write activity</Eyebrow>
             </div>
             <button type="button" onClick={() => setSelectedAgentLabel(null)} className="text-[11px] text-[var(--text-3)] hover:text-[var(--text)]">

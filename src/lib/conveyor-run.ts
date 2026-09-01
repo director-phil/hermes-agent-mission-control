@@ -55,6 +55,19 @@ interface TimelineEntry {
   at: string | null;
 }
 
+/** A single agent message/action — the actual "dialogue" (not just counts). */
+export interface DialogueMessage {
+  seq: number;
+  node: string;
+  kind: "model" | "tool";
+  /** MODEL_CALL output text (truncated) — what the agent actually said. */
+  text: string | null;
+  tool: string | null;
+  file: string | null;
+  success: boolean | null;
+  at: string | null;
+}
+
 interface CurrentActivity {
   node: string;
   kind: "model" | "tool" | "idle";
@@ -75,6 +88,7 @@ export interface ConveyorAttemptGraph {
   flow: Array<{ from: string; to: string }>;
   touches: TouchTrace[];
   timeline: TimelineEntry[];
+  messages: DialogueMessage[];
   currentAgent: string | null;
   currentActivity: CurrentActivity | null;
   counts: { events: number; modelCalls: number; toolCalls: number };
@@ -154,6 +168,8 @@ interface RawEvent {
       output?: string;
       output_size?: number;
       arguments?: unknown;
+      tool_result?: unknown;
+      success?: boolean | null;
     };
   };
 }
@@ -187,6 +203,7 @@ function parseAttemptGraph(
   let events = 0;
   let modelCalls = 0;
   let toolCalls = 0;
+  const messages: DialogueMessage[] = [];
 
   const agentFor = (nodeId: string | null | undefined): AgentTrace | null => {
     if (!nodeId) return null;
@@ -249,6 +266,11 @@ function parseAttemptGraph(
       modelCalls += 1;
       currentActivity = { node: nodeId ?? "?", kind: "model", tool: null, file: null, at };
       timeline.push({ seq: timeline.length + 1, node: nodeId ?? "?", kind: "model", tool: null, file: null, at });
+      const output = data.details?.output;
+      const modelText = typeof output === "string" && output.trim()
+        ? output.replace(/\s+/g, " ").trim().slice(0, 300)
+        : null;
+      if (modelText) messages.push({ seq: messages.length + 1, node: nodeId ?? "?", kind: "model", text: modelText, tool: null, file: null, success: null, at });
     } else if (kind === "TOOL_CALL") {
       const toolName = safeString(data.details?.tool_name) ?? "tool";
       const filePath = relPathOf(data.details?.arguments);
@@ -260,6 +282,7 @@ function parseAttemptGraph(
       toolCalls += 1;
       currentActivity = { node: nodeId ?? "?", kind: "tool", tool: toolName, file: filePath, at };
       timeline.push({ seq: timeline.length + 1, node: nodeId ?? "?", kind: "tool", tool: toolName, file: filePath, at });
+      messages.push({ seq: messages.length + 1, node: nodeId ?? "?", kind: "tool", text: null, tool: toolName, file: filePath, success: data.details?.success ?? null, at });
 
       const op = OP_OF_TOOL[toolName] ?? "read";
       if (filePath) {
@@ -303,6 +326,7 @@ function parseAttemptGraph(
     flow,
     touches: touchList,
     timeline: timeline.slice(-100),
+    messages: messages.slice(-200),
     currentAgent: lastNode,
     currentActivity: isLatest ? currentActivity : null,
     counts: { events, modelCalls, toolCalls },

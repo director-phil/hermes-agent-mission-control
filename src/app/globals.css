@@ -430,17 +430,13 @@ textarea, input {
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 18%, transparent), inset 0 1px 0 rgba(255, 255, 255, 0.03);
 }
 
-.floor-avatar {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex: 0 0 auto;
-  border-radius: var(--r-md);
-  line-height: 1;
-}
-
-.floor-avatar.stepping {
-  animation: floor-step 0.5s steps(2) infinite;
+.floor-sprite {
+  position: absolute;
+  top: -32px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 10;
+  pointer-events: none;
 }
 
 .floor-now-strip {
