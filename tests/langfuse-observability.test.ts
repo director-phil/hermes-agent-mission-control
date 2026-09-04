@@ -160,6 +160,14 @@ test("collects paginated Langfuse observations into safe aggregates", async () =
     } else {
       seenAuth.push("");
     }
+    // The collector also queries the v4 metrics endpoint after paginating
+    // observations; return an empty metrics payload so the overlay stays inert.
+    if (url.pathname === "/api/public/v2/metrics") {
+      return new Response(JSON.stringify({ data: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
     const page = pages[seenUrls.length - 1];
     return new Response(JSON.stringify(page), {
       status: 200,
@@ -172,11 +180,12 @@ test("collects paginated Langfuse observations into safe aggregates", async () =
     fetchImpl,
   });
 
-  assert.equal(seenUrls.length, 2);
+  assert.equal(seenUrls.length, 3);
   assert.equal(pages[0].data.length, 1000);
   assert.equal(seenUrls[0].pathname, "/api/public/v2/observations");
   assert.equal(seenUrls[0].searchParams.get("limit"), "1000");
   assert.equal(seenUrls[0].searchParams.get("fields"), LANGFUSE_OBSERVATION_FIELDS);
+  assert.equal(seenUrls[2].pathname, "/api/public/v2/metrics");
   assert.equal(seenUrls[0].searchParams.get("fields")?.includes("io"), false);
   assert.equal(seenUrls[0].searchParams.has("fromStartTime"), true);
   assert.equal(seenUrls[0].searchParams.has("toStartTime"), true);
@@ -1501,4 +1510,80 @@ test("builds graft cohort lens from operation-tagged tool activity", async () =>
   const opB = result.operations.find((operation) => operation.operationId === "op-b");
   assert.equal(opA?.cohort, "graft");
   assert.equal(opB?.cohort, "baseline");
+});
+
+test("overlays per-model token/cost from metrics when observations null model/usage (events_only)", async () => {
+  setLangfuseEnv();
+  // events_only signature: /observations returns structural rows but NO model,
+  // usage, or cost — exactly what Langfuse v4 projects (all null).
+  const observationsPage = {
+    data: [
+      {
+        id: "obs-1",
+        traceId: "trace-1",
+        sessionId: "session-1",
+        startTime: "2026-08-05T11:40:00.000Z",
+        endTime: "2026-08-05T11:40:01.000Z",
+        type: "SPAN",
+        name: "workflow step",
+        level: "DEFAULT",
+        usageDetails: {},
+        metadata: {},
+      },
+    ],
+  };
+  const metricsPage = {
+    data: [
+      {
+        providedModelName: "qwen3-coder-next",
+        count_count: 40,
+        sum_inputTokens: 1000,
+        sum_outputTokens: 500,
+        sum_totalTokens: 1500,
+        sum_totalCost: 0,
+      },
+      {
+        providedModelName: "deepseek-v4-pro",
+        count_count: 10,
+        sum_inputTokens: 2000,
+        sum_outputTokens: 1000,
+        sum_totalTokens: 3000,
+        sum_totalCost: 1.25,
+      },
+    ],
+  };
+
+  const fetchImpl: typeof fetch = async (input) => {
+    const url = new URL(String(input));
+    if (url.pathname === "/api/public/v2/metrics") {
+      return new Response(JSON.stringify(metricsPage), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return new Response(JSON.stringify(observationsPage), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  };
+
+  const result = await collectHermesObservability("24h", {
+    now: NOW,
+    fetchImpl,
+  });
+
+  // Observations contributed no model/token evidence, so the metrics overlay
+  // must be the authoritative source for the headline totals + byModel.
+  assert.equal(result.totals?.inputTokens, 3000);
+  assert.equal(result.totals?.outputTokens, 1500);
+  assert.equal(result.totals?.totalTokens, 4500);
+  assert.equal(result.totals?.effectiveCost, 1.25);
+  assert.equal(result.byModel.length, 2);
+  assert.deepEqual(
+    result.byModel.map((m) => [m.model, m.totalTokens, m.effectiveCost]),
+    [
+      ["deepseek-v4-pro", 3000, 1.25],
+      ["qwen3-coder-next", 1500, 0],
+    ],
+  );
 });

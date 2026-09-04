@@ -511,7 +511,25 @@ export async function collectHermesObservability(
       maxRows,
       timeoutMs: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
     });
-    return aggregateObservations(window, range, pageResult);
+    const result = aggregateObservations(window, range, pageResult);
+    // Langfuse v4 `events_only` mode does not project model/usage/cost onto the
+    // `/observations` list rows (all null), so per-model tokens/cost would read
+    // as zero. The metrics endpoint is the authoritative v4 read path for those
+    // fields. Only overlay when the observations path produced no model data
+    // (the events_only signature) — never overwrite healthy per-observation data.
+    try {
+      const metrics = await fetchModelMetrics(config, range, {
+        fetchImpl: options.fetchImpl ?? fetch,
+        timeoutMs: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+      });
+      if (metrics.size > 0 && result.byModel.length === 0) {
+        overlayModelMetrics(result, metrics);
+      }
+    } catch {
+      // Fail-open: the metrics overlay is best-effort. Structural data
+      // (traces/sessions/tools/operations) still stands from the observations.
+    }
+    return result;
   } catch (error) {
     return failurePayload(window, range, safeFailureMessage(error));
   }
@@ -664,6 +682,123 @@ function parseObservation(value: unknown): Observation {
     latency: numberValue(row.latency),
     metadata,
   };
+}
+
+interface ModelMetricsRow {
+  calls: number;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  totalCost: number;
+}
+
+/**
+ * Query Langfuse v4 `/api/public/v2/metrics` for per-model token/cost totals.
+ * In `events_only` mode the `/observations` list does not project model/usage,
+ * so this metrics endpoint is the only authoritative per-model read path.
+ */
+async function fetchModelMetrics(
+  config: LangfuseConfig,
+  range: { fromStartTime: string; toStartTime: string },
+  options: Required<Pick<CollectOptions, "fetchImpl" | "timeoutMs">>,
+): Promise<Map<string, ModelMetricsRow>> {
+  const query = {
+    view: "observations",
+    fromTimestamp: range.fromStartTime,
+    toTimestamp: range.toStartTime,
+    dimensions: [{ field: "providedModelName" }],
+    metrics: [
+      { measure: "count", aggregation: "count" },
+      { measure: "inputTokens", aggregation: "sum" },
+      { measure: "outputTokens", aggregation: "sum" },
+      { measure: "totalTokens", aggregation: "sum" },
+      { measure: "totalCost", aggregation: "sum" },
+    ],
+  };
+  const url = new URL("/api/public/v2/metrics", config.baseUrl);
+  url.searchParams.set("query", JSON.stringify(query));
+
+  const payload = await fetchLangfuseJson(url, config, options);
+  const root = asRecord(payload);
+  const rows = arrayValue(root.data) ?? [];
+  const map = new Map<string, ModelMetricsRow>();
+  for (const value of rows) {
+    const row = asRecord(value);
+    const model = safeText(row.providedModelName);
+    if (!model) continue;
+    map.set(model, {
+      calls: numberValue(row.count_count) ?? 0,
+      inputTokens: numberValue(row.sum_inputTokens) ?? 0,
+      outputTokens: numberValue(row.sum_outputTokens) ?? 0,
+      totalTokens: numberValue(row.sum_totalTokens) ?? 0,
+      totalCost: numberValue(row.sum_totalCost) ?? 0,
+    });
+  }
+  return map;
+}
+
+/**
+ * Overlay authoritative per-model metrics onto the aggregate result's headline
+ * totals and byModel breakdown. Local models carry zero API cost; cloud/unknown
+ * models carry their reported cost straight through.
+ */
+function overlayModelMetrics(
+  result: HermesObservability,
+  metrics: Map<string, ModelMetricsRow>,
+): void {
+  if (!result.totals) return;
+
+  const byModel: ModelAggregate[] = [];
+  const costBases = new Set<CostBasis>();
+  let totalInput = 0;
+  let totalOutput = 0;
+  let totalTokens = 0;
+  let totalCost = 0;
+
+  for (const [model, row] of metrics) {
+    const modelClass = inferModelClass(null, model);
+    const isLocal = modelClass === "local";
+    const costBasis: CostBasis = isLocal
+      ? "local_zero"
+      : modelClass === "cloud"
+        ? "reported_only_unknown_cloud"
+        : "reported_only_unknown";
+    const reportedCost = roundMoney(Math.max(0, row.totalCost));
+    byModel.push({
+      model,
+      provider: null,
+      calls: row.calls,
+      inputTokens: row.inputTokens,
+      outputTokens: row.outputTokens,
+      totalTokens: row.totalTokens || row.inputTokens + row.outputTokens,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      reportedCost,
+      estimatedCost: null,
+      effectiveCost: isLocal ? 0 : reportedCost,
+      costBasis,
+      cost: isLocal ? 0 : reportedCost,
+    });
+    totalInput += row.inputTokens;
+    totalOutput += row.outputTokens;
+    totalTokens += row.totalTokens || row.inputTokens + row.outputTokens;
+    totalCost += reportedCost;
+    costBases.add(costBasis);
+  }
+
+  if (byModel.length === 0) return;
+
+  byModel
+    .sort((a, b) => b.effectiveCost - a.effectiveCost || b.totalTokens - a.totalTokens);
+
+  result.totals.inputTokens = totalInput;
+  result.totals.outputTokens = totalOutput;
+  result.totals.totalTokens = totalTokens;
+  result.totals.reportedCost = roundMoney(totalCost);
+  result.totals.effectiveCost = roundMoney(totalCost);
+  result.totals.totalCost = roundMoney(totalCost);
+  result.totals.costBasis = costBases.size === 1 ? [...costBases][0] : "mixed";
+  result.byModel = byModel.slice(0, 12);
 }
 
 function aggregateObservations(
