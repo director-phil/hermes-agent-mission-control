@@ -522,7 +522,7 @@ export async function collectHermesObservability(
         fetchImpl: options.fetchImpl ?? fetch,
         timeoutMs: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
       });
-      if (metrics.size > 0 && result.byModel.length === 0) {
+      if (metrics.size > 0) {
         overlayModelMetrics(result, metrics);
       }
     } catch {
@@ -726,11 +726,17 @@ async function fetchModelMetrics(
     const row = asRecord(value);
     const model = safeText(row.providedModelName);
     if (!model) continue;
+    // A metrics row must carry aggregate fields (count_count / sum_totalTokens).
+    // Observations-shaped rows (which some callers pass back for any URL) lack
+    // these and must not be mistaken for real per-model metrics.
+    const count = numberValue(row.count_count);
+    const totalTokens = numberValue(row.sum_totalTokens);
+    if (count == null && totalTokens == null) continue;
     map.set(model, {
-      calls: numberValue(row.count_count) ?? 0,
+      calls: count ?? 0,
       inputTokens: numberValue(row.sum_inputTokens) ?? 0,
       outputTokens: numberValue(row.sum_outputTokens) ?? 0,
-      totalTokens: numberValue(row.sum_totalTokens) ?? 0,
+      totalTokens: totalTokens ?? 0,
       totalCost: numberValue(row.sum_totalCost) ?? 0,
     });
   }
@@ -764,15 +770,19 @@ function overlayModelMetrics(
         ? "reported_only_unknown_cloud"
         : "reported_only_unknown";
     const reportedCost = roundMoney(Math.max(0, row.totalCost));
+    // Carry over richer per-observation fields (provider, cache tokens) when the
+    // observations path already had a row for this model, so the overlay does not
+    // regress healthy-mode detail while still replacing incomplete token/cost.
+    const existing = result.byModel.find((m) => m.model === model);
     byModel.push({
       model,
-      provider: null,
+      provider: existing?.provider ?? null,
       calls: row.calls,
       inputTokens: row.inputTokens,
       outputTokens: row.outputTokens,
       totalTokens: row.totalTokens || row.inputTokens + row.outputTokens,
-      cacheReadTokens: 0,
-      cacheWriteTokens: 0,
+      cacheReadTokens: existing?.cacheReadTokens ?? 0,
+      cacheWriteTokens: existing?.cacheWriteTokens ?? 0,
       reportedCost,
       estimatedCost: null,
       effectiveCost: isLocal ? 0 : reportedCost,
