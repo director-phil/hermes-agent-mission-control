@@ -1364,6 +1364,12 @@ function NativeGoalsPanel({
         title="What locals are working on"
         action={<Pill tone={running.length ? "accent" : "neutral"}>{counts.running} working</Pill>}
       />
+      <div className="mt-3 flex flex-wrap gap-1.5">
+        <Pill tone={counts.running ? "accent" : "neutral"}>{counts.running} running</Pill>
+        <Pill tone="neutral">{ready.length} ready</Pill>
+        <Pill tone="up">{counts.done} done</Pill>
+        <Pill tone={counts.failed ? "down" : "neutral"}>{counts.failed} failed</Pill>
+      </div>
       <div className="mt-4 max-h-[calc(100vh-300px)] space-y-5 overflow-y-auto pr-1">
         <div>
           <Eyebrow>Working now</Eyebrow>
@@ -1395,25 +1401,31 @@ function NativeGoalsPanel({
           )}
         </div>
 
-        {done.length > 0 && (
-          <div>
-            <Eyebrow>Completed</Eyebrow>
-            <ul className="mt-3 space-y-2">
-              {done.slice(0, 8).map((goal) => (
-                <li key={goal.id} className={selectedGoal === selectedIdOf(goal) ? "ring-2 ring-[var(--accent)] rounded-[var(--r-md)]" : ""}>
-                  <GoalTile goal={goal} tone="up" completion={completionOf(goal)} onSelect={onSelect} />
-                </li>
-              ))}
-            </ul>
-            {done.length > 8 && (
-              <p className="num mt-2 text-[10.5px] text-[var(--text-4)]">+{done.length - 8} more completed</p>
-            )}
-          </div>
-        )}
+        <div>
+          <Eyebrow>Completed</Eyebrow>
+          {done.length === 0 ? (
+            <p className="mt-2 text-[12px] text-[var(--text-4)]">No completed goals.</p>
+          ) : (
+            <>
+              <ul className="mt-3 space-y-2">
+                {done.slice(0, 8).map((goal) => (
+                  <li key={goal.id} className={selectedGoal === selectedIdOf(goal) ? "ring-2 ring-[var(--accent)] rounded-[var(--r-md)]" : ""}>
+                    <GoalTile goal={goal} tone="up" completion={completionOf(goal)} onSelect={onSelect} />
+                  </li>
+                ))}
+              </ul>
+              {done.length > 8 && (
+                <p className="num mt-2 text-[10.5px] text-[var(--text-4)]">+{done.length - 8} more completed</p>
+              )}
+            </>
+          )}
+        </div>
 
-        {recentFailed.length > 0 && (
-          <div>
-            <Eyebrow>Failed</Eyebrow>
+        <div>
+          <Eyebrow>Failed</Eyebrow>
+          {recentFailed.length === 0 ? (
+            <p className="mt-2 text-[12px] text-[var(--text-4)]">No failed goals.</p>
+          ) : (
             <ul className="mt-3 space-y-2">
               {recentFailed.slice(0, 5).map((goal) => (
                 <li key={goal.id} className={selectedGoal === selectedIdOf(goal) ? "ring-2 ring-[var(--accent)] rounded-[var(--r-md)]" : ""}>
@@ -1421,8 +1433,8 @@ function NativeGoalsPanel({
                 </li>
               ))}
             </ul>
-          </div>
-        )}
+          )}
+        </div>
       </div>
     </Panel>
   );
