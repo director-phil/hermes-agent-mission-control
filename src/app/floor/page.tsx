@@ -1516,6 +1516,9 @@ export default function FloorPage() {
     conveyorGoalRef.current = gid;
     setConveyorSource(gid);
     setSelectedGoal(gid);
+    // Clear the previous goal's conveyor data immediately so the Shipped banner
+    // and process graph never show a stale goal while the new one loads.
+    setConveyor(null);
     setGraphLoaded(false);
     void loadConveyor(gid);
   }, [loadConveyor]);

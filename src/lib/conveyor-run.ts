@@ -188,11 +188,19 @@ function parseEvent(line: string): RawEvent | null {
   }
 }
 
+function attemptStatusForLatest(ledgerStatus: string | null | undefined): "running" | "done" | "failed" {
+  const s = String(ledgerStatus || "").toLowerCase();
+  if (["shipping", "running", "active", "deploying", "pending", "paused", "in_progress"].includes(s)) return "running";
+  if (["failed", "error", "crash"].includes(s) || s.includes("fail")) return "failed";
+  return "done";
+}
+
 function parseAttemptGraph(
   goal: string,
   text: string,
   attempt: number,
   isLatest: boolean,
+  latestStatus: "running" | "done" | "failed" = "done",
 ): ConveyorAttemptGraph | null {
   const agents = new Map<string, AgentTrace>();
   const files = new Map<string, FileTrace>();
@@ -343,11 +351,11 @@ function parseAttemptGraph(
 
   return {
     attempt,
-    status: isLatest ? "running" : "failed",
+    status: isLatest ? latestStatus : "failed",
     rung: null,
     startedAt,
     endedAt,
-    running: isLatest,
+    running: isLatest && latestStatus === "running",
     agents: agentList,
     files: fileList,
     flow,
@@ -355,8 +363,8 @@ function parseAttemptGraph(
     timeline: timeline.slice(-100),
     messages: messages.slice(-200),
     terminalLines: terminalLines.slice(-120),
-    currentAgent: lastNode,
-    currentActivity: isLatest ? currentActivity : null,
+    currentAgent: isLatest && latestStatus === "running" ? lastNode : null,
+    currentActivity: isLatest && latestStatus === "running" ? currentActivity : null,
     counts: { events, modelCalls, toolCalls },
   };
 }
@@ -581,6 +589,11 @@ export async function readConveyorRun(goal: string): Promise<ConveyorRunGraph | 
 
   if (attemptFiles.length === 0) return null;
 
+  // Read the authoritative ledger first so the latest attempt's status reflects
+  // the goal's actual terminal state (done/failed) instead of always "running".
+  const completion = await readGoalLedger(goal);
+  const latestStatus = attemptStatusForLatest(completion?.status);
+
   const attempts: ConveyorAttemptGraph[] = [];
   for (let i = 0; i < attemptFiles.length; i += 1) {
     const { name, attempt } = attemptFiles[i];
@@ -593,7 +606,7 @@ export async function readConveyorRun(goal: string): Promise<ConveyorRunGraph | 
     } catch {
       continue;
     }
-    const graph = parseAttemptGraph(goal, text, attempt, isLatest);
+    const graph = parseAttemptGraph(goal, text, attempt, isLatest, latestStatus);
     if (graph) attempts.push(graph);
   }
 
@@ -612,7 +625,7 @@ export async function readConveyorRun(goal: string): Promise<ConveyorRunGraph | 
     source: "conveyor-run",
     attempts,
     learnings,
-    completion: await readGoalLedger(goal),
+    completion,
     liveTerminal: latestTerminal,
     syncedAt: new Date().toISOString(),
   };
