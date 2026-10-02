@@ -22,6 +22,7 @@ import {
   FlaskConical,
   Menu,
   X,
+  Server,
 } from "lucide-react";
 
 const navGroups = [
@@ -53,6 +54,7 @@ const navGroups = [
     items: [
       { href: "/floor", label: "Floor", icon: Network },
       { href: "/stack", label: "Stack", icon: Layers },
+      { href: "/services", label: "Services", icon: Server },
       { href: "/observability", label: "Observability", icon: Activity },
       { href: "/evaluators", label: "Evaluators", icon: FlaskConical },
       { href: "/agents", label: "Agents", icon: Bot },
