@@ -4,7 +4,7 @@
  * The probe engine (a systemd service in the `hermes-mission-control` repo)
  * continuously probes internal + external services and writes results to
  * `~/.hermes/mission-control/monitoring.db`. This module opens that file
- * read-only (better-sqlite3, WAL-safe) and returns a render-ready snapshot.
+ * read-only (node:sqlite, WAL-safe) and returns a render-ready snapshot.
  */
 
 import { DatabaseSync } from "node:sqlite";
@@ -26,15 +26,27 @@ export interface ProbeDef {
 // Canonical registry. Keep in sync with:
 //   hermes-mission-control/apps/web/lib/monitoring/config.ts
 const PROBES: ProbeDef[] = [
+  // internal
   { id: "gb10-seat-1", name: "GB10 #1 model seat", kind: "loopback-http", target: "http://gb10-box-1:1234/v1/models", cadenceSeconds: 30, group: "internal" },
   { id: "gb10-seat-2", name: "GB10 #2 model seat", kind: "loopback-http", target: "http://gb10-box-2:1234/v1/models", cadenceSeconds: 30, group: "internal" },
-  { id: "hermes-admission", name: "Hermes admission", kind: "loopback-http", target: "http://127.0.0.1:19875/healthz", cadenceSeconds: 30, group: "internal" },
+  { id: "hermes-admission", name: "Hermes admission gateway", kind: "loopback-http", target: "http://127.0.0.1:19875/healthz", cadenceSeconds: 30, group: "internal" },
   { id: "qdrant", name: "Qdrant vector DB", kind: "loopback-http", target: "http://127.0.0.1:6333/collections", cadenceSeconds: 30, group: "internal" },
   { id: "goal-conveyor", name: "Goal conveyor", kind: "local-file", target: "/home/phillip_downs/ChatDev/goals/state/queue-runner-status.json", cadenceSeconds: 30, group: "internal" },
+  { id: "hermes-host", name: "Hermes host", kind: "server", target: "local", cadenceSeconds: 60, group: "internal" },
+  // external — RT plane
   { id: "rt-dashboard", name: "RT dashboard", kind: "http", target: "https://dashboards.reliabletradies.app/", cadenceSeconds: 60, group: "external" },
   { id: "rt-login", name: "RT login", kind: "http", target: "https://login.reliabletradies.app/", cadenceSeconds: 60, group: "external" },
+  { id: "rt-api-health", name: "RT API health", kind: "http", target: "https://dashboards.reliabletradies.app/api/health", cadenceSeconds: 60, group: "external" },
   { id: "supabase-rest", name: "Supabase REST", kind: "http", target: "https://erakxiolnoigptfemedv.supabase.co/rest/v1/", cadenceSeconds: 60, group: "external" },
+  { id: "supabase-auth", name: "Supabase auth", kind: "http", target: "https://erakxiolnoigptfemedv.supabase.co/auth/v1/health", cadenceSeconds: 60, group: "external" },
+  { id: "servicetitan-api", name: "ServiceTitan API", kind: "http", target: "https://api.servicetitan.io/", cadenceSeconds: 300, group: "external" },
+  { id: "xero-api", name: "Xero API", kind: "http", target: "https://api.xero.com/", cadenceSeconds: 300, group: "external" },
+  // external — Vercel
+  { id: "vercel-platform", name: "Vercel platform", kind: "http", target: "https://www.vercel-status.com/api/v2/status.json", cadenceSeconds: 300, group: "external" },
+  { id: "vercel-deploy", name: "Vercel latest deploy", kind: "vercel-deploy", target: "reliable-tradies-ops-v2", cadenceSeconds: 300, group: "external" },
+  // external — SSL
   { id: "rt-dashboard-ssl", name: "RT dashboard SSL", kind: "ssl", target: "dashboards.reliabletradies.app", cadenceSeconds: 21600, group: "external" },
+  { id: "rt-login-ssl", name: "RT login SSL", kind: "ssl", target: "login.reliabletradies.app", cadenceSeconds: 21600, group: "external" },
 ];
 
 const DB_PATH = process.env.MONITORING_DB_PATH ?? join(homedir(), ".hermes", "mission-control", "monitoring.db");
@@ -53,6 +65,7 @@ export interface Incident {
   probe_id: string;
   probe_name: string;
   opened_ts: string;
+  resolved_ts: string | null;
   state: string;
   last_status: ProbeStatus;
   last_error: string | null;
@@ -62,6 +75,8 @@ export interface ServiceStatus {
   probe: ProbeDef;
   latest: LatestResult | null;
   uptimePct24h: number | null;
+  uptimePct7d: number | null;
+  uptimePct30d: number | null;
   incident: Incident | null;
 }
 
@@ -70,10 +85,24 @@ export interface MonitoringSnapshot {
   global_status: "healthy" | "warning" | "critical";
   services: ServiceStatus[];
   open_incidents: Incident[];
+  recent_incidents: Incident[];
   total: number;
   up: number;
   degraded: number;
   down: number;
+}
+
+function pct(db: DatabaseSync, probeId: string, windowMs: number): number | null {
+  const since = new Date(Date.now() - windowMs).toISOString();
+  const row = db
+    .prepare(
+      `SELECT COUNT(*) AS total,
+              SUM(CASE WHEN status != 'down' THEN 1 ELSE 0 END) AS ok
+       FROM probe_results WHERE probe_id = ? AND ts >= ?`,
+    )
+    .get(probeId, since) as { total: number; ok: number } | undefined;
+  if (!row || !row.total) return null;
+  return Math.round((row.ok / row.total) * 1000) / 10;
 }
 
 export function buildSnapshot(dbPath: string = DB_PATH): MonitoringSnapshot {
@@ -83,31 +112,34 @@ export function buildSnapshot(dbPath: string = DB_PATH): MonitoringSnapshot {
       `SELECT ts, status, latency_ms, http_status, metric, error
        FROM probe_results WHERE probe_id = ? ORDER BY id DESC LIMIT 1`,
     );
-    const uptimeStmt = db.prepare(
-      `SELECT COUNT(*) AS total,
-              SUM(CASE WHEN status != 'down' THEN 1 ELSE 0 END) AS ok
-       FROM probe_results WHERE probe_id = ? AND ts >= ?`,
-    );
     const incidentStmt = db.prepare(
-      `SELECT id, probe_id, probe_name, opened_ts, state, last_status, last_error
+      `SELECT id, probe_id, probe_name, opened_ts, resolved_ts, state, last_status, last_error
        FROM incidents WHERE probe_id = ? AND state = 'open' ORDER BY id DESC LIMIT 1`,
     );
     const openIncidentsStmt = db.prepare(
-      `SELECT id, probe_id, probe_name, opened_ts, state, last_status, last_error
+      `SELECT id, probe_id, probe_name, opened_ts, resolved_ts, state, last_status, last_error
        FROM incidents WHERE state = 'open' ORDER BY id DESC`,
     );
-
-    const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    const recentIncidentsStmt = db.prepare(
+      `SELECT id, probe_id, probe_name, opened_ts, resolved_ts, state, last_status, last_error
+       FROM incidents WHERE state = 'resolved' ORDER BY id DESC LIMIT 20`,
+    );
 
     const services: ServiceStatus[] = PROBES.map((probe) => {
       const latest = (latestStmt.get(probe.id) as LatestResult | undefined) ?? null;
-      const uptimeRow = uptimeStmt.get(probe.id, since) as { total: number; ok: number } | undefined;
       const incident = (incidentStmt.get(probe.id) as Incident | undefined) ?? null;
-      const uptimePct24h = uptimeRow && uptimeRow.total > 0 ? Math.round((uptimeRow.ok / uptimeRow.total) * 1000) / 10 : null;
-      return { probe, latest, uptimePct24h, incident };
+      return {
+        probe,
+        latest,
+        uptimePct24h: pct(db, probe.id, 24 * 60 * 60 * 1000),
+        uptimePct7d: pct(db, probe.id, 7 * 24 * 60 * 60 * 1000),
+        uptimePct30d: pct(db, probe.id, 30 * 24 * 60 * 60 * 1000),
+        incident,
+      };
     });
 
     const open_incidents = openIncidentsStmt.all() as Incident[];
+    const recent_incidents = recentIncidentsStmt.all() as Incident[];
     const up = services.filter((s) => s.latest?.status === "up").length;
     const degraded = services.filter((s) => s.latest?.status === "degraded").length;
     const down = services.filter((s) => s.latest?.status === "down").length;
@@ -121,6 +153,7 @@ export function buildSnapshot(dbPath: string = DB_PATH): MonitoringSnapshot {
       global_status,
       services,
       open_incidents,
+      recent_incidents,
       total: services.length,
       up,
       degraded,
