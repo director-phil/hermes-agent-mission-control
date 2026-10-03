@@ -115,7 +115,7 @@ function pct(db: DatabaseSync, probeId: string, windowMs: number): number | null
 }
 
 export function buildSnapshot(dbPath: string = DB_PATH): MonitoringSnapshot {
-  const db = new DatabaseSync(dbPath, { readOnly: true });
+  const db = new DatabaseSync(dbPath, { readOnly: true, timeout: 5000 });
   try {
     const latestStmt = db.prepare(
       `SELECT ts, status, latency_ms, http_status, metric, error
