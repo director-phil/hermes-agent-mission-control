@@ -12,6 +12,8 @@ import {
   HardDrive,
   Lock,
   MemoryStick,
+  PauseCircle,
+  PlayCircle,
   Server,
   ShieldCheck,
 } from "lucide-react";
@@ -164,6 +166,20 @@ export default function ServicesPage() {
     return () => clearInterval(timer);
   }, [load]);
 
+  const toggleMaintenance = useCallback(async (probeId: string, active: boolean) => {
+    try {
+      const res = await fetch("/api/services", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ probe_id: probeId, active }),
+      });
+      if (!res.ok) throw new Error(`POST ${res.status}`);
+      void load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "failed to toggle maintenance");
+    }
+  }, [load]);
+
   const globalTone: Tone =
     data?.global_status === "critical" ? "down" : data?.global_status === "warning" ? "warn" : "up";
 
@@ -241,6 +257,7 @@ export default function ServicesPage() {
                     <th className="px-3 py-2 text-right font-semibold">7d</th>
                     <th className="px-3 py-2 text-right font-semibold">30d</th>
                     <th className="py-2 pl-3 font-semibold">Detail</th>
+                    <th className="py-2 pl-3 text-right font-semibold">Action</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-[var(--line)]">
@@ -250,7 +267,11 @@ export default function ServicesPage() {
                     return (
                       <tr key={service.probe.id} className="text-[12px] text-[var(--text-2)]">
                         <td className="py-3 pr-3">
-                          <Pill tone={tone} className="!py-0.5 !text-[10px]">{statusLabel(service.latest?.status ?? null)}</Pill>
+                          {service.maintenance ? (
+                            <Pill tone="neutral" className="!py-0.5 !text-[10px]"><PauseCircle className="h-3 w-3" />paused</Pill>
+                          ) : (
+                            <Pill tone={tone} className="!py-0.5 !text-[10px]">{statusLabel(service.latest?.status ?? null)}</Pill>
+                          )}
                         </td>
                         <td className="px-3 py-3">
                           <div className="flex items-center gap-2">
@@ -271,6 +292,16 @@ export default function ServicesPage() {
                         <td className="max-w-[260px] py-3 pl-3">
                           {service.latest?.metric && <p className="truncate font-mono text-[11px] text-[var(--text-3)]">{service.latest.metric}</p>}
                           {service.latest?.error && <p className="truncate font-mono text-[11px] text-[var(--down)]" title={service.latest.error}>{service.latest.error}</p>}
+                        </td>
+                        <td className="py-3 pl-3 text-right">
+                          <button
+                            type="button"
+                            onClick={() => toggleMaintenance(service.probe.id, !service.maintenance)}
+                            className="inline-flex items-center gap-1 rounded-md border border-[var(--line)] px-2 py-1 text-[10.5px] text-[var(--text-2)] transition-colors hover:border-[var(--up)] hover:text-[var(--text)]"
+                            title={service.maintenance ? "Resume monitoring" : "Pause monitoring"}
+                          >
+                            {service.maintenance ? <><PlayCircle className="h-3 w-3" />Resume</> : <><PauseCircle className="h-3 w-3" />Pause</>}
+                          </button>
                         </td>
                       </tr>
                     );

@@ -71,6 +71,14 @@ export interface Incident {
   last_error: string | null;
 }
 
+export interface Maintenance {
+  id: number;
+  probe_id: string;
+  note: string | null;
+  created_ts: string;
+  active: number;
+}
+
 export interface ServiceStatus {
   probe: ProbeDef;
   latest: LatestResult | null;
@@ -78,6 +86,7 @@ export interface ServiceStatus {
   uptimePct7d: number | null;
   uptimePct30d: number | null;
   incident: Incident | null;
+  maintenance: Maintenance | null;
 }
 
 export interface MonitoringSnapshot {
@@ -116,6 +125,10 @@ export function buildSnapshot(dbPath: string = DB_PATH): MonitoringSnapshot {
       `SELECT id, probe_id, probe_name, opened_ts, resolved_ts, state, last_status, last_error
        FROM incidents WHERE probe_id = ? AND state = 'open' ORDER BY id DESC LIMIT 1`,
     );
+    const maintenanceStmt = db.prepare(
+      `SELECT id, probe_id, note, created_ts, active
+       FROM maintenance WHERE probe_id = ? AND active = 1 ORDER BY id DESC LIMIT 1`,
+    );
     const openIncidentsStmt = db.prepare(
       `SELECT id, probe_id, probe_name, opened_ts, resolved_ts, state, last_status, last_error
        FROM incidents WHERE state = 'open' ORDER BY id DESC`,
@@ -128,6 +141,7 @@ export function buildSnapshot(dbPath: string = DB_PATH): MonitoringSnapshot {
     const services: ServiceStatus[] = PROBES.map((probe) => {
       const latest = (latestStmt.get(probe.id) as LatestResult | undefined) ?? null;
       const incident = (incidentStmt.get(probe.id) as Incident | undefined) ?? null;
+      const maintenance = (maintenanceStmt.get(probe.id) as Maintenance | undefined) ?? null;
       return {
         probe,
         latest,
@@ -135,18 +149,20 @@ export function buildSnapshot(dbPath: string = DB_PATH): MonitoringSnapshot {
         uptimePct7d: pct(db, probe.id, 7 * 24 * 60 * 60 * 1000),
         uptimePct30d: pct(db, probe.id, 30 * 24 * 60 * 60 * 1000),
         incident,
+        maintenance,
       };
     });
 
     const open_incidents = openIncidentsStmt.all() as Incident[];
     const recent_incidents = recentIncidentsStmt.all() as Incident[];
-    const up = services.filter((s) => s.latest?.status === "up").length;
-    const degraded = services.filter((s) => s.latest?.status === "degraded").length;
-    const down = services.filter((s) => s.latest?.status === "down").length;
+    const active = services.filter((s) => !s.maintenance);
+    const up = active.filter((s) => s.latest?.status === "up").length;
+    const degraded = active.filter((s) => s.latest?.status === "degraded").length;
+    const down = active.filter((s) => s.latest?.status === "down").length;
 
     let global_status: MonitoringSnapshot["global_status"] = "healthy";
     if (down > 0) global_status = "critical";
-    else if (degraded > 0 || services.some((s) => !s.latest)) global_status = "warning";
+    else if (degraded > 0 || active.some((s) => !s.latest)) global_status = "warning";
 
     return {
       generated_ts: new Date().toISOString(),
@@ -159,6 +175,34 @@ export function buildSnapshot(dbPath: string = DB_PATH): MonitoringSnapshot {
       degraded,
       down,
     };
+  } finally {
+    db.close();
+  }
+}
+
+/**
+ * Pause (active=true) or resume (active=false) monitoring for a probe.
+ * Opens the DB read-write; the engine skips paused probes so no false incidents
+ * are raised during planned maintenance.
+ */
+export function setMaintenance(probeId: string, active: boolean, note: string | null): void {
+  const db = new DatabaseSync(DB_PATH);
+  try {
+    db.exec(
+      `CREATE TABLE IF NOT EXISTS maintenance (
+         id INTEGER PRIMARY KEY AUTOINCREMENT,
+         probe_id TEXT NOT NULL,
+         note TEXT,
+         created_ts TEXT NOT NULL,
+         active INTEGER NOT NULL DEFAULT 1
+       );
+       CREATE INDEX IF NOT EXISTS idx_maintenance_probe ON maintenance (probe_id, active);`,
+    );
+    const ts = new Date().toISOString();
+    db.prepare(`UPDATE maintenance SET active = 0 WHERE probe_id = ? AND active = 1`).run(probeId);
+    if (active) {
+      db.prepare(`INSERT INTO maintenance (probe_id, note, created_ts, active) VALUES (?, ?, ?, 1)`).run(probeId, note, ts);
+    }
   } finally {
     db.close();
   }
