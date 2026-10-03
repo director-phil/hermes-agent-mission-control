@@ -19,6 +19,7 @@ export interface ProbeDef {
   name: string;
   kind: string;
   target: string;
+  url?: string;
   cadenceSeconds: number;
   group: ProbeGroup;
 }
@@ -32,7 +33,7 @@ const PROBES: ProbeDef[] = [
   { id: "hermes-admission", name: "Hermes admission gateway", kind: "loopback-http", target: "http://127.0.0.1:19875/healthz", cadenceSeconds: 30, group: "internal" },
   { id: "qdrant", name: "Qdrant vector DB", kind: "loopback-http", target: "http://127.0.0.1:6333/collections", cadenceSeconds: 30, group: "internal" },
   { id: "goal-conveyor", name: "Goal conveyor", kind: "local-file", target: "/home/phillip_downs/ChatDev/goals/state/queue-runner-status.json", cadenceSeconds: 30, group: "internal" },
-  { id: "checkcle", name: "CheckCle monitor", kind: "loopback-http", target: "http://127.0.0.1:8091/", cadenceSeconds: 60, group: "internal" },
+  { id: "checkcle", name: "CheckCle monitor", kind: "loopback-http", target: "http://127.0.0.1:8091/", url: "https://gb10-coder.taile151d3.ts.net:8091", cadenceSeconds: 60, group: "internal" },
   { id: "hermes-host", name: "Hermes host", kind: "server", target: "local", cadenceSeconds: 60, group: "internal" },
   // external — RT plane
   { id: "rt-dashboard", name: "RT dashboard", kind: "http", target: "https://dashboards.reliabletradies.app/", cadenceSeconds: 60, group: "external" },
