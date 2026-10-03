@@ -284,7 +284,15 @@ export default function ServicesPage() {
                             </div>
                           </div>
                         </td>
-                        <td className="max-w-[240px] px-3 py-3 font-mono text-[11px] text-[var(--text-3)]">{service.probe.target}</td>
+                        <td className="max-w-[240px] px-3 py-3 font-mono text-[11px] text-[var(--text-3)]">
+                          {service.probe.url ? (
+                            <a href={service.probe.url} target="_blank" rel="noreferrer" className="block truncate text-[var(--accent)] hover:underline">{service.probe.target}</a>
+                          ) : service.probe.target.startsWith("https://") ? (
+                            <a href={service.probe.target} target="_blank" rel="noreferrer" className="block truncate text-[var(--accent)] hover:underline">{service.probe.target}</a>
+                          ) : (
+                            service.probe.target
+                          )}
+                        </td>
                         <td className="num px-3 py-3 text-right">{service.latest?.latency_ms != null ? `${service.latest.latency_ms}ms` : "—"}</td>
                         <td className="num px-3 py-3 text-right">{service.uptimePct24h != null ? `${service.uptimePct24h}%` : "—"}</td>
                         <td className="num px-3 py-3 text-right">{service.uptimePct7d != null ? `${service.uptimePct7d}%` : "—"}</td>
