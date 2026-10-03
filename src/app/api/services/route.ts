@@ -11,10 +11,19 @@ export async function GET() {
       headers: { "Cache-Control": "no-store, no-cache, must-revalidate" },
     });
   } catch (err) {
-    return NextResponse.json(
-      { error: err instanceof Error ? err.message : String(err) },
-      { status: 500 },
-    );
+    // The engine writes to the SQLite DB in WAL mode; a rare checkpoint can
+    // momentarily lock the file. Retry once before surfacing a 500.
+    try {
+      const snapshot = buildSnapshot();
+      return NextResponse.json(snapshot, {
+        headers: { "Cache-Control": "no-store, no-cache, must-revalidate" },
+      });
+    } catch {
+      return NextResponse.json(
+        { error: err instanceof Error ? err.message : String(err) },
+        { status: 500 },
+      );
+    }
   }
 }
 
