@@ -47,6 +47,7 @@ const PROBES: ProbeDef[] = [
   // external — Vercel
   { id: "vercel-platform", name: "Vercel platform", kind: "http", target: "https://www.vercel-status.com/api/v2/status.json", cadenceSeconds: 300, group: "external" },
   { id: "vercel-deploy", name: "Vercel latest deploy", kind: "vercel-deploy", target: "reliable-tradies-ops-v2", cadenceSeconds: 300, group: "external" },
+  { id: "vercel-metrics", name: "Vercel Speed Insights (slow pages)", kind: "vercel-metrics", target: "reliable-tradies-ops-v2", cadenceSeconds: 1800, group: "external" },
   // external — SSL
   { id: "rt-dashboard-ssl", name: "RT dashboard SSL", kind: "ssl", target: "dashboards.reliabletradies.app", cadenceSeconds: 21600, group: "external" },
   { id: "rt-login-ssl", name: "RT login SSL", kind: "ssl", target: "login.reliabletradies.app", cadenceSeconds: 21600, group: "external" },
@@ -93,6 +94,8 @@ export interface ServiceStatus {
   maintenance: Maintenance | null;
   /** For `page-sweep` probes: parsed per-route breakdown from the metric JSON. */
   pageSweep?: PageSweepResult | null;
+  /** For `vercel-metrics` probes: parsed real-user LCP per route from Speed Insights. */
+  vercelMetrics?: VercelMetricsResult | null;
 }
 
 export interface PageSweepRoute {
@@ -108,6 +111,20 @@ export interface PageSweepResult {
   degraded: number;
   down: number;
   routes: PageSweepRoute[];
+}
+
+export interface VercelMetricsRoute {
+  route: string;
+  lcp_ms: number;
+}
+
+export interface VercelMetricsResult {
+  total: number;
+  slow: number;
+  poor: number;
+  good_ms: number;
+  poor_ms: number;
+  routes: VercelMetricsRoute[];
 }
 
 export interface MonitoringSnapshot {
@@ -155,6 +172,16 @@ function parseSweep(metric: string | null): PageSweepResult | null {
   if (!metric) return null;
   try {
     const m = JSON.parse(metric) as PageSweepResult;
+    return Array.isArray(m.routes) ? m : null;
+  } catch {
+    return null;
+  }
+}
+
+function parseVercelMetrics(metric: string | null): VercelMetricsResult | null {
+  if (!metric) return null;
+  try {
+    const m = JSON.parse(metric) as VercelMetricsResult;
     return Array.isArray(m.routes) ? m : null;
   } catch {
     return null;
@@ -217,6 +244,7 @@ export function buildSnapshot(dbPath: string = DB_PATH): MonitoringSnapshot {
       const incident = (incidentStmt.get(probe.id) as Incident | undefined) ?? null;
       const maintenance = (maintenanceStmt.get(probe.id) as Maintenance | undefined) ?? null;
       const pageSweep = probe.kind === "page-sweep" ? parseSweep(latest?.metric ?? null) : undefined;
+      const vercelMetrics = probe.kind === "vercel-metrics" ? parseVercelMetrics(latest?.metric ?? null) : undefined;
       return {
         probe,
         latest,
@@ -226,6 +254,7 @@ export function buildSnapshot(dbPath: string = DB_PATH): MonitoringSnapshot {
         incident,
         maintenance,
         pageSweep,
+        vercelMetrics,
       };
     });
 
