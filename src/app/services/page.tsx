@@ -138,6 +138,76 @@ function HostMetricsPanel({ service }: { service: ServiceStatus | undefined }) {
   );
 }
 
+function PageSweepPanel({ service }: { service: ServiceStatus | undefined }) {
+  const [showAll, setShowAll] = useState(false);
+  const sweep = service?.pageSweep ?? null;
+  if (!service) return null;
+
+  const issues = sweep ? sweep.routes.filter((r) => r.status !== "up") : [];
+  const routes = sweep?.routes ?? [];
+
+  return (
+    <Panel className="mt-8 p-5">
+      <SectionHeader
+        label="RT pages"
+        title="All routes — load issues & failures"
+        action={sweep ? <Pill tone={statusTone(service.latest?.status ?? null)}>{statusLabel(service.latest?.status ?? null)}</Pill> : undefined}
+      />
+      {!sweep ? (
+        <EmptyState icon={<Globe className="h-6 w-6" />} title="No page sweep yet" hint="The route sweep runs every 5 minutes." />
+      ) : (
+        <>
+          <div className="mt-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
+            <MetricTile label="Routes" value={String(sweep.total)} tone="neutral" />
+            <MetricTile label="Up" value={String(sweep.up)} tone="up" />
+            <MetricTile label="Slow" value={String(sweep.degraded)} tone="warn" />
+            <MetricTile label="Failing" value={String(sweep.down)} tone="down" />
+          </div>
+
+          <div className="mt-5">
+            <div className="flex items-center justify-between">
+              <p className="text-[12px] font-medium text-[var(--text-2)]">
+                {issues.length > 0 ? `${issues.length} route(s) with load issues or failures` : "No load issues or failures"}
+              </p>
+              <button
+                type="button"
+                onClick={() => setShowAll((v) => !v)}
+                className="inline-flex items-center gap-1 rounded-md border border-[var(--line)] px-2 py-1 text-[10.5px] text-[var(--text-2)] transition-colors hover:border-[var(--accent)] hover:text-[var(--text)]"
+              >
+                {showAll ? "Show issues only" : `Show all ${sweep.total} routes`}
+              </button>
+            </div>
+            <div className="mt-3 overflow-x-auto">
+              <table className="w-full min-w-[620px] text-left">
+                <thead className="border-b border-[var(--line)] text-[10.5px] uppercase tracking-[0.14em] text-[var(--text-4)]">
+                  <tr>
+                    <th className="py-2 pr-3 font-semibold">Route</th>
+                    <th className="px-3 py-2 font-semibold">Status</th>
+                    <th className="px-3 py-2 text-right font-semibold">HTTP</th>
+                    <th className="py-2 pl-3 text-right font-semibold">Latency</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-[var(--line)]">
+                  {(showAll ? routes : issues).map((r) => (
+                    <tr key={r.path} className="text-[12px] text-[var(--text-2)]">
+                      <td className="max-w-[320px] py-2 pr-3 font-mono text-[11px] text-[var(--text)]">
+                        <a href={`https://dashboards.reliabletradies.app${r.path}`} target="_blank" rel="noreferrer" className="truncate hover:underline">{r.path}</a>
+                      </td>
+                      <td className="px-3 py-2"><Pill tone={statusTone(r.status)} className="!py-0.5 !text-[10px]">{r.status}</Pill></td>
+                      <td className="num px-3 py-2 text-right text-[var(--text-3)]">{r.http ?? "—"}</td>
+                      <td className={`num py-2 pl-3 text-right ${r.ms > 1000 ? "text-[var(--warn)]" : "text-[var(--text-3)]"}`}>{r.ms}ms</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </>
+      )}
+    </Panel>
+  );
+}
+
 export default function ServicesPage() {
   const [data, setData] = useState<MonitoringSnapshot | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -184,8 +254,9 @@ export default function ServicesPage() {
     data?.global_status === "critical" ? "down" : data?.global_status === "warning" ? "warn" : "up";
 
   const hostService = data?.services.find((s) => s.probe.kind === "server");
+  const pageSweepService = data?.services.find((s) => s.probe.kind === "page-sweep");
   const sslServices = data?.services.filter((s) => s.probe.kind === "ssl") ?? [];
-  const nonSslServices = data?.services.filter((s) => s.probe.kind !== "ssl" && s.probe.kind !== "server") ?? [];
+  const nonSslServices = data?.services.filter((s) => s.probe.kind !== "ssl" && s.probe.kind !== "server" && s.probe.kind !== "page-sweep") ?? [];
 
   return (
     <div className="relative z-10 w-full mx-auto pb-16">
@@ -233,6 +304,8 @@ export default function ServicesPage() {
           <div className="mt-8">
             <HostMetricsPanel service={hostService} />
           </div>
+
+          <PageSweepPanel service={pageSweepService} />
 
           <Panel className="mt-8 overflow-hidden p-5">
             <SectionHeader

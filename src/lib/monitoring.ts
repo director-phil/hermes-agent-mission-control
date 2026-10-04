@@ -39,6 +39,7 @@ const PROBES: ProbeDef[] = [
   { id: "rt-dashboard", name: "RT dashboard", kind: "http", target: "https://dashboards.reliabletradies.app/", cadenceSeconds: 60, group: "external" },
   { id: "rt-login", name: "RT login", kind: "http", target: "https://login.reliabletradies.app/", cadenceSeconds: 60, group: "external" },
   { id: "rt-api-health", name: "RT API health", kind: "http", target: "https://dashboards.reliabletradies.app/api/health", cadenceSeconds: 60, group: "external" },
+  { id: "rt-page-sweep", name: "RT pages (all routes)", kind: "page-sweep", target: "https://dashboards.reliabletradies.app", cadenceSeconds: 300, group: "external" },
   { id: "supabase-rest", name: "Supabase REST", kind: "http", target: "https://erakxiolnoigptfemedv.supabase.co/rest/v1/", cadenceSeconds: 60, group: "external" },
   { id: "supabase-auth", name: "Supabase auth", kind: "http", target: "https://erakxiolnoigptfemedv.supabase.co/auth/v1/health", cadenceSeconds: 60, group: "external" },
   { id: "servicetitan-api", name: "ServiceTitan API", kind: "http", target: "https://api.servicetitan.io/", cadenceSeconds: 300, group: "external" },
@@ -89,6 +90,23 @@ export interface ServiceStatus {
   uptimePct30d: number | null;
   incident: Incident | null;
   maintenance: Maintenance | null;
+  /** For `page-sweep` probes: parsed per-route breakdown from the metric JSON. */
+  pageSweep?: PageSweepResult | null;
+}
+
+export interface PageSweepRoute {
+  path: string;
+  http: number | null;
+  ms: number;
+  status: ProbeStatus;
+}
+
+export interface PageSweepResult {
+  total: number;
+  up: number;
+  degraded: number;
+  down: number;
+  routes: PageSweepRoute[];
 }
 
 export interface MonitoringSnapshot {
@@ -114,6 +132,16 @@ function pct(db: DatabaseSync, probeId: string, windowMs: number): number | null
     .get(probeId, since) as { total: number; ok: number } | undefined;
   if (!row || !row.total) return null;
   return Math.round((row.ok / row.total) * 1000) / 10;
+}
+
+function parseSweep(metric: string | null): PageSweepResult | null {
+  if (!metric) return null;
+  try {
+    const m = JSON.parse(metric) as PageSweepResult;
+    return Array.isArray(m.routes) ? m : null;
+  } catch {
+    return null;
+  }
 }
 
 export function buildSnapshot(dbPath: string = DB_PATH): MonitoringSnapshot {
@@ -144,6 +172,7 @@ export function buildSnapshot(dbPath: string = DB_PATH): MonitoringSnapshot {
       const latest = (latestStmt.get(probe.id) as LatestResult | undefined) ?? null;
       const incident = (incidentStmt.get(probe.id) as Incident | undefined) ?? null;
       const maintenance = (maintenanceStmt.get(probe.id) as Maintenance | undefined) ?? null;
+      const pageSweep = probe.kind === "page-sweep" ? parseSweep(latest?.metric ?? null) : undefined;
       return {
         probe,
         latest,
@@ -152,6 +181,7 @@ export function buildSnapshot(dbPath: string = DB_PATH): MonitoringSnapshot {
         uptimePct30d: pct(db, probe.id, 30 * 24 * 60 * 60 * 1000),
         incident,
         maintenance,
+        pageSweep,
       };
     });
 
