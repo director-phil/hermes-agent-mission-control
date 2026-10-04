@@ -208,6 +208,74 @@ function PageSweepPanel({ service }: { service: ServiceStatus | undefined }) {
   );
 }
 
+function fmtLcp(ms: number): string {
+  if (ms >= 1000) return `${(ms / 1000).toFixed(1)}s`;
+  return `${Math.round(ms)}ms`;
+}
+
+function VercelMetricsPanel({ service }: { service: ServiceStatus | undefined }) {
+  const metrics = service?.vercelMetrics ?? null;
+  if (!service) return null;
+  const routes = metrics?.routes ?? [];
+  const goodMs = metrics?.good_ms ?? 2500;
+  const poorMs = metrics?.poor_ms ?? 4000;
+
+  return (
+    <Panel className="mt-8 p-5">
+      <SectionHeader
+        label="Real-user load"
+        title="Slowest pages — Speed Insights LCP (p75 · 7d)"
+        action={metrics ? <Pill tone={statusTone(service.latest?.status ?? null)}>{statusLabel(service.latest?.status ?? null)}</Pill> : undefined}
+      />
+      {!metrics ? (
+        <EmptyState icon={<Gauge className="h-6 w-6" />} title="No Speed Insights data yet" hint="The metrics probe runs every 30 minutes." />
+      ) : (
+        <>
+          <div className="mt-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
+            <MetricTile label="Routes" value={String(metrics.total)} tone="neutral" />
+            <MetricTile label="Slow (≥2.5s)" value={String(metrics.slow)} tone="warn" />
+            <MetricTile label="Poor (≥4s)" value={String(metrics.poor)} tone="down" />
+            <MetricTile label="Good (<2.5s)" value={String(Math.max(0, metrics.total - metrics.slow))} tone="up" />
+          </div>
+
+          <div className="mt-5">
+            <p className="text-[12px] font-medium text-[var(--text-2)]">
+              Real-user Largest Contentful Paint per route — the authenticated post-login load the page sweep can&apos;t see (it only measures the login redirect).
+            </p>
+            <div className="mt-3 overflow-x-auto">
+              <table className="w-full min-w-[520px] text-left">
+                <thead className="border-b border-[var(--line)] text-[10.5px] uppercase tracking-[0.14em] text-[var(--text-4)]">
+                  <tr>
+                    <th className="py-2 pr-3 font-semibold">Route</th>
+                    <th className="px-3 py-2 font-semibold">Rating</th>
+                    <th className="py-2 pl-3 text-right font-semibold">LCP (p75)</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-[var(--line)]">
+                  {routes.map((r) => {
+                    const poor = r.lcp_ms >= poorMs;
+                    const slow = r.lcp_ms >= goodMs;
+                    const rating: { tone: Tone; label: string } = poor ? { tone: "down", label: "poor" } : slow ? { tone: "warn", label: "slow" } : { tone: "up", label: "ok" };
+                    return (
+                      <tr key={r.route} className="text-[12px] text-[var(--text-2)]">
+                        <td className="max-w-[360px] py-2 pr-3 font-mono text-[11px] text-[var(--text)]">
+                          <a href={`https://dashboards.reliabletradies.app${r.route}`} target="_blank" rel="noreferrer" className="truncate hover:underline">{r.route}</a>
+                        </td>
+                        <td className="px-3 py-2"><Pill tone={rating.tone} className="!py-0.5 !text-[10px]">{rating.label}</Pill></td>
+                        <td className={`num py-2 pl-3 text-right font-medium ${poor ? "text-[var(--warn)]" : slow ? "text-[var(--warn)]" : "text-[var(--text-3)]"}`}>{fmtLcp(r.lcp_ms)}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </>
+      )}
+    </Panel>
+  );
+}
+
 function checkcleTone(status: string, rt: number | null): Tone {
   if (status === "down") return "down";
   if (status === "warning") return "warn";
@@ -316,8 +384,9 @@ export default function ServicesPage() {
 
   const hostService = data?.services.find((s) => s.probe.kind === "server");
   const pageSweepService = data?.services.find((s) => s.probe.kind === "page-sweep");
+  const vercelMetricsService = data?.services.find((s) => s.probe.kind === "vercel-metrics");
   const sslServices = data?.services.filter((s) => s.probe.kind === "ssl") ?? [];
-  const nonSslServices = data?.services.filter((s) => s.probe.kind !== "ssl" && s.probe.kind !== "server" && s.probe.kind !== "page-sweep") ?? [];
+  const nonSslServices = data?.services.filter((s) => s.probe.kind !== "ssl" && s.probe.kind !== "server" && s.probe.kind !== "page-sweep" && s.probe.kind !== "vercel-metrics") ?? [];
 
   return (
     <div className="relative z-10 w-full mx-auto pb-16">
@@ -367,6 +436,8 @@ export default function ServicesPage() {
           </div>
 
           <PageSweepPanel service={pageSweepService} />
+
+          <VercelMetricsPanel service={vercelMetricsService} />
 
           <CheckClePanel checkcle={data.checkcle} />
 
