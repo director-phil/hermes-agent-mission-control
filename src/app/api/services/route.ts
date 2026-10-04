@@ -1,29 +1,45 @@
 import { NextResponse } from "next/server";
+import { appendFileSync } from "node:fs";
 import { buildSnapshot, setMaintenance } from "@/lib/monitoring";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
+const ERR_LOG = "/home/phillip_downs/.hermes/mission-control/reader-errors.log";
+
+function logError(msg: string) {
+  try {
+    appendFileSync(ERR_LOG, `${new Date().toISOString()} ${msg}\n`);
+  } catch {
+    /* never let logging break the response */
+  }
+}
+
+async function buildWithRetry(retries = 3): Promise<ReturnType<typeof buildSnapshot>> {
+  let lastErr: unknown;
+  for (let i = 0; i < retries; i++) {
+    try {
+      return buildSnapshot();
+    } catch (err) {
+      lastErr = err;
+      if (i < retries - 1) {
+        await new Promise((r) => setTimeout(r, 120 * (i + 1)));
+      }
+    }
+  }
+  throw lastErr;
+}
+
 export async function GET() {
   try {
-    const snapshot = buildSnapshot();
+    const snapshot = await buildWithRetry();
     return NextResponse.json(snapshot, {
       headers: { "Cache-Control": "no-store, no-cache, must-revalidate" },
     });
   } catch (err) {
-    // The engine writes to the SQLite DB in WAL mode; a rare checkpoint can
-    // momentarily lock the file. Retry once before surfacing a 500.
-    try {
-      const snapshot = buildSnapshot();
-      return NextResponse.json(snapshot, {
-        headers: { "Cache-Control": "no-store, no-cache, must-revalidate" },
-      });
-    } catch {
-      return NextResponse.json(
-        { error: err instanceof Error ? err.message : String(err) },
-        { status: 500 },
-      );
-    }
+    const msg = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+    logError(`GET /api/services failed after 3 retries: ${msg}`);
+    return NextResponse.json({ error: msg }, { status: 500 });
   }
 }
 
