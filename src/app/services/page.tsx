@@ -18,7 +18,7 @@ import {
   ShieldCheck,
 } from "lucide-react";
 import { EmptyState, Eyebrow, Panel, Pill, SectionHeader, Skeleton, rise } from "@/components/ui/kit";
-import type { MonitoringSnapshot, ProbeStatus, ServiceStatus } from "@/lib/monitoring";
+import type { CheckCleSnapshot, MonitoringSnapshot, ProbeStatus, ServiceStatus } from "@/lib/monitoring";
 
 type Tone = "up" | "down" | "warn" | "neutral" | "accent";
 
@@ -208,6 +208,67 @@ function PageSweepPanel({ service }: { service: ServiceStatus | undefined }) {
   );
 }
 
+function checkcleTone(status: string, rt: number | null): Tone {
+  if (status === "down") return "down";
+  if (status === "warning") return "warn";
+  if (status === "paused") return "neutral";
+  if (status === "up" && (rt ?? 0) > 1000) return "warn";
+  return "up";
+}
+
+function CheckClePanel({ checkcle }: { checkcle: CheckCleSnapshot | null | undefined }) {
+  if (!checkcle) return null;
+  const services = checkcle.services ?? [];
+  const page = checkcle.page;
+  return (
+    <Panel className="mt-8 p-5">
+      <SectionHeader
+        label="CheckCle"
+        title="Independent external monitor"
+        action={page?.slug ? (
+          <a href={`https://gb10-coder.taile151d3.ts.net:8091/public/${page.slug}`} target="_blank" rel="noreferrer">
+            <Pill tone="neutral"><Globe className="h-3 w-3" />public status page</Pill>
+          </a>
+        ) : undefined}
+      />
+      {services.length === 0 ? (
+        <EmptyState icon={<Globe className="h-6 w-6" />} title="No CheckCle services" hint="CheckCle's independent checks will appear here." />
+      ) : (
+        <div className="mt-4 overflow-x-auto">
+          <table className="w-full min-w-[640px] text-left">
+            <thead className="border-b border-[var(--line)] text-[10.5px] uppercase tracking-[0.14em] text-[var(--text-4)]">
+              <tr>
+                <th className="py-2 pr-3 font-semibold">Service</th>
+                <th className="px-3 py-2 font-semibold">Type</th>
+                <th className="px-3 py-2 font-semibold">Status</th>
+                <th className="px-3 py-2 text-right font-semibold">Latency</th>
+                <th className="py-2 pl-3 font-semibold">Last checked</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-[var(--line)]">
+              {services.map((s) => (
+                <tr key={s.name} className="text-[12px] text-[var(--text-2)]">
+                  <td className="max-w-[280px] py-2.5 pr-3">
+                    {s.url ? (
+                      <a href={s.url} target="_blank" rel="noreferrer" className="block truncate font-mono text-[11px] text-[var(--text)] hover:underline">{s.name}</a>
+                    ) : (
+                      <span className="font-mono text-[11px] text-[var(--text)]">{s.name}</span>
+                    )}
+                  </td>
+                  <td className="px-3 py-2.5 text-[var(--text-3)]">{s.service_type}</td>
+                  <td className="px-3 py-2.5"><Pill tone={checkcleTone(s.status, s.response_time)} className="!py-0.5 !text-[10px]">{s.status}</Pill></td>
+                  <td className={`num px-3 py-2.5 text-right ${(s.response_time ?? 0) > 1000 ? "text-[var(--warn)]" : "text-[var(--text-3)]"}`}>{s.response_time != null ? `${s.response_time}ms` : "—"}</td>
+                  <td className="py-2.5 pl-3 text-[var(--text-3)]">{s.last_checked ? timeAgo(s.last_checked) : "—"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Panel>
+  );
+}
+
 export default function ServicesPage() {
   const [data, setData] = useState<MonitoringSnapshot | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -306,6 +367,8 @@ export default function ServicesPage() {
           </div>
 
           <PageSweepPanel service={pageSweepService} />
+
+          <CheckClePanel checkcle={data.checkcle} />
 
           <Panel className="mt-8 overflow-hidden p-5">
             <SectionHeader

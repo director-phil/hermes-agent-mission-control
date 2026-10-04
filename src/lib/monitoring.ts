@@ -53,6 +53,7 @@ const PROBES: ProbeDef[] = [
 ];
 
 const DB_PATH = process.env.MONITORING_DB_PATH ?? join(homedir(), ".hermes", "mission-control", "monitoring.db");
+const CHECKCLE_DB_PATH = process.env.CHECKCLE_DB_PATH ?? "/opt/checkcle_pb_data/data.db";
 
 export interface LatestResult {
   ts: string;
@@ -119,6 +120,22 @@ export interface MonitoringSnapshot {
   up: number;
   degraded: number;
   down: number;
+  /** CheckCle (independent external monitor) services + status page, read from its PocketBase SQLite. */
+  checkcle?: CheckCleSnapshot | null;
+}
+
+export interface CheckCleService {
+  name: string;
+  status: string;
+  service_type: string;
+  response_time: number | null;
+  url: string | null;
+  last_checked: string | null;
+}
+
+export interface CheckCleSnapshot {
+  services: CheckCleService[];
+  page: { title: string; slug: string; is_public: string; status: string } | null;
 }
 
 function pct(db: DatabaseSync, probeId: string, windowMs: number): number | null {
@@ -139,6 +156,33 @@ function parseSweep(metric: string | null): PageSweepResult | null {
   try {
     const m = JSON.parse(metric) as PageSweepResult;
     return Array.isArray(m.routes) ? m : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Read CheckCle's PocketBase SQLite directly (read-only) so its independent
+ * per-service status can be surfaced alongside the native probes in one board.
+ * Returns null when CheckCle isn't running or its DB is unreadable.
+ */
+function readCheckCle(): CheckCleSnapshot | null {
+  try {
+    const db = new DatabaseSync(CHECKCLE_DB_PATH, { readOnly: true, timeout: 3000 });
+    try {
+      const services = db
+        .prepare(
+          `SELECT name, status, service_type, response_time, url, last_checked
+           FROM services ORDER BY name`,
+        )
+        .all() as CheckCleService[];
+      const page = db
+        .prepare(`SELECT title, slug, is_public, status FROM operational_page LIMIT 1`)
+        .get() as CheckCleSnapshot["page"];
+      return { services, page };
+    } finally {
+      db.close();
+    }
   } catch {
     return null;
   }
@@ -206,6 +250,7 @@ export function buildSnapshot(dbPath: string = DB_PATH): MonitoringSnapshot {
       up,
       degraded,
       down,
+      checkcle: readCheckCle(),
     };
   } finally {
     db.close();
