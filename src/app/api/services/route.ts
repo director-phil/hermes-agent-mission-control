@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { appendFileSync } from "node:fs";
-import { buildSnapshot, setMaintenance } from "@/lib/monitoring";
+import { buildSnapshot, setMaintenance, type MonitoringSnapshot } from "@/lib/monitoring";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -15,17 +15,28 @@ function logError(msg: string) {
   }
 }
 
-async function buildWithRetry(retries = 3): Promise<ReturnType<typeof buildSnapshot>> {
+// Last successful snapshot — served as a stale fallback when the probe engine is
+// mid-write (SQLite WAL checkpoint contention) so the board never 500s, it just
+// renders data a few seconds old.
+let lastGood: MonitoringSnapshot | null = null;
+
+async function buildWithRetry(retries = 3): Promise<MonitoringSnapshot> {
   let lastErr: unknown;
   for (let i = 0; i < retries; i++) {
     try {
-      return buildSnapshot();
+      const snap = buildSnapshot();
+      lastGood = snap;
+      return snap;
     } catch (err) {
       lastErr = err;
       if (i < retries - 1) {
         await new Promise((r) => setTimeout(r, 120 * (i + 1)));
       }
     }
+  }
+  if (lastGood) {
+    logError(`GET /api/services returning stale snapshot after ${retries} failed builds: ${String(lastErr)}`);
+    return lastGood;
   }
   throw lastErr;
 }
