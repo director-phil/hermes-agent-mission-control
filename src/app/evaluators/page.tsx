@@ -187,13 +187,26 @@ export default function EvaluatorsPage() {
   const sourceStatus = data?.source?.status ?? "unavailable";
 
   const evaluatorScores = useMemo(
-    () => aggregates.filter((a) => a.source === "EVAL" || a.name.toLowerCase().includes("live")),
+    () =>
+      aggregates.filter(
+        (a) =>
+          a.source === "EVAL" ||
+          a.name.toLowerCase().includes("live") ||
+          a.name.toLowerCase().startsWith("eval_"),
+      ),
     [aggregates],
   );
   const liveEvaluatorNames = useMemo(
     () => new Set(evaluatorScores.map((a) => a.name)),
     [evaluatorScores],
   );
+  const judgeHealth = useMemo(() => {
+    const agg = aggregates.find((a) => a.name === "eval_judge_status");
+    if (!agg?.categorical?.length) return null;
+    const ok = agg.categorical.find((c) => c.value === "ok")?.count ?? 0;
+    const error = agg.categorical.find((c) => c.value === "error")?.count ?? 0;
+    return { ok, error };
+  }, [aggregates]);
 
   const chartData = useMemo(
     () =>
@@ -293,6 +306,12 @@ export default function EvaluatorsPage() {
               <p className="mt-2 truncate text-[12px] text-[var(--text-3)]">
                 {Array.from(liveEvaluatorNames).slice(0, 3).join(" · ") || "none detected"}
               </p>
+              {judgeHealth && (
+                <p className="mt-1 text-[11px] text-[var(--text-4)]">
+                  per-goal judge: <span className="text-[var(--up)]">{judgeHealth.ok} ok</span> ·{" "}
+                  <span className={judgeHealth.error ? "text-[var(--down)]" : ""}>{judgeHealth.error} error</span>
+                </p>
+              )}
             </Panel>
             <Panel className="p-5">
               <div className="mb-4 flex items-center justify-between gap-3">
