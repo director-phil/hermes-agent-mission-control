@@ -81,7 +81,7 @@ interface CronPayload {
 interface NativeGoal {
   id: string;
   title: string;
-  state: "ready" | "running" | "done" | "failed";
+  state: "ready" | "running" | "stalled" | "done" | "failed";
   source: "live-native" | "archive";
   status: string | null;
   updatedAt: string | null;
@@ -91,8 +91,8 @@ interface NativeGoal {
 
 interface NativeGoalsPayload {
   goals: {
-    live: Record<"ready" | "running" | "done" | "failed", NativeGoal[]>;
-    counts: Record<"ready" | "running" | "done" | "failed", number>;
+    live: Record<"ready" | "running" | "stalled" | "done" | "failed", NativeGoal[]>;
+    counts: Record<"ready" | "running" | "stalled" | "done" | "failed", number>;
     current: NativeGoal | null;
     recentFailed: NativeGoal[];
   };
@@ -1306,11 +1306,11 @@ function GoalTile({
   onSelect,
 }: {
   goal: NativeGoal;
-  tone: "accent" | "neutral" | "down" | "up";
+  tone: "accent" | "neutral" | "down" | "up" | "warn";
   completion?: ConveyorCompletion | null;
   onSelect: (goal: NativeGoal) => void;
 }) {
-  const stateLabel = tone === "accent" ? "working" : tone === "down" ? "failed" : tone === "up" ? "done" : "ready";
+  const stateLabel = tone === "accent" ? "working" : tone === "warn" ? "stalled" : tone === "down" ? "failed" : tone === "up" ? "done" : "ready";
   const when = fmtDateTime(completion?.completedAt ?? null);
   return (
     <button
@@ -1348,9 +1348,10 @@ function NativeGoalsPanel({
   completionByGoal: Map<string, ConveyorCompletion>;
   onSelect: (goal: NativeGoal) => void;
 }) {
-  const live = goals?.goals.live ?? { ready: [], running: [], done: [], failed: [] };
-  const counts = goals?.goals.counts ?? { ready: 0, running: 0, done: 0, failed: 0 };
+  const live = goals?.goals.live ?? { ready: [], running: [], stalled: [], done: [], failed: [] };
+  const counts = goals?.goals.counts ?? { ready: 0, running: 0, stalled: 0, done: 0, failed: 0 };
   const running = live.running;
+  const stalled = live.stalled;
   const ready = live.ready;
   const done = live.done;
   const recentFailed = goals?.goals.recentFailed ?? [];
@@ -1367,6 +1368,7 @@ function NativeGoalsPanel({
       />
       <div className="mt-3 flex flex-wrap gap-1.5">
         <Pill tone={counts.running ? "accent" : "neutral"}>{counts.running} running</Pill>
+        <Pill tone={counts.stalled ? "warn" : "neutral"}>{counts.stalled} stalled</Pill>
         <Pill tone="neutral">{ready.length} ready</Pill>
         <Pill tone="up">{counts.done} done</Pill>
         <Pill tone={counts.failed ? "down" : "neutral"}>{counts.failed} failed</Pill>
@@ -1386,6 +1388,19 @@ function NativeGoalsPanel({
             </ul>
           )}
         </div>
+
+        {stalled.length > 0 && (
+          <div>
+            <Eyebrow>Stalled</Eyebrow>
+            <ul className="mt-3 space-y-2">
+              {stalled.map((goal) => (
+                <li key={goal.id} className={selectedGoal === selectedIdOf(goal) ? "ring-2 ring-[var(--warn)] rounded-[var(--r-md)]" : ""}>
+                  <GoalTile goal={goal} tone="warn" completion={completionOf(goal)} onSelect={onSelect} />
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
 
         <div>
           <Eyebrow>Up next</Eyebrow>

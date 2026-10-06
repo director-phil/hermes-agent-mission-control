@@ -2,13 +2,13 @@ import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 
-type GoalState = "ready" | "running" | "done" | "failed";
+type GoalState = "ready" | "running" | "stalled" | "done" | "failed";
 type HealthStatus = "ok" | "warning" | "error";
 type NativeSourceMode = "local-native" | "bridge-mirror";
 
 const DEFAULT_MISSION_ROOT = "/home/phillip_downs/.hermes/mission-control";
 const DEFAULT_PROFILES_ROOT = "/home/phillip_downs/.hermes/profiles";
-const GOAL_STATES: GoalState[] = ["ready", "running", "done", "failed"];
+const GOAL_STATES: GoalState[] = ["ready", "running", "stalled", "done", "failed"];
 const MAX_JSON_BYTES = 256 * 1024;
 const MAX_GOAL_BYTES = 64 * 1024;
 const MAX_CONFIG_BYTES = 128 * 1024;
@@ -326,6 +326,7 @@ async function readLiveGoals(root: string, ctx: SafeContext): Promise<Record<Goa
   const result: Record<GoalState, HermesGoalSummary[]> = {
     ready: [],
     running: [],
+    stalled: [],
     done: [],
     failed: [],
   };
@@ -582,6 +583,7 @@ function countGoalStates(goals: Record<GoalState, HermesGoalSummary[]>) {
   return {
     ready: goals.ready.length,
     running: goals.running.length,
+    stalled: goals.stalled.length,
     done: goals.done.length,
     failed: goals.failed.length,
   };
