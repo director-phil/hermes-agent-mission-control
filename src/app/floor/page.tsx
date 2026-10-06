@@ -1323,7 +1323,8 @@ function GoalTile({
         <Pill tone={tone} className="!py-0.5 !text-[10px]">{stateLabel}</Pill>
       </div>
       <p className="num mt-1.5 text-[10.5px] text-[var(--text-4)]">
-        {goal.status ?? goal.state}{goal.updatedAt ? ` · ${fmtRelative(goal.updatedAt)}` : ""}
+        {goal.status ?? goal.state}
+        {goal.updatedAt ? ` · ${fmtDateTime(goal.updatedAt)}` : ""}
       </p>
       {completion && (completion.prNumber || completion.deploymentId || when) && (
         <p className="num mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[10.5px] text-[var(--text-3)]">

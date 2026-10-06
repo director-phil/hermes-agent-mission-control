@@ -338,7 +338,7 @@ async function readLiveGoals(root: string, ctx: SafeContext): Promise<Record<Goa
       const rel = path.join(relDir, entry.name);
       const read = await readTextWithStatsAtRoot(root, rel, MAX_GOAL_BYTES, ctx, false);
       if (!read) continue;
-      rows.push(parseGoalSummary(entry.name, state, "live-native", read.text, read.bytes));
+      rows.push(parseGoalSummary(entry.name, state, "live-native", read.text, read.bytes, read.mtimeMs));
     }
     result[state] = rows.sort(newestFirst);
   }));
@@ -352,7 +352,7 @@ async function readLiveGoals(root: string, ctx: SafeContext): Promise<Record<Goa
     const rel = path.join(stagedDir, entry.name);
     const read = await readTextWithStatsAtRoot(root, rel, MAX_GOAL_BYTES, ctx, false);
     if (!read) continue;
-    result.ready.push(parseGoalSummary(entry.name, "ready", "live-native", read.text, read.bytes));
+    result.ready.push(parseGoalSummary(entry.name, "ready", "live-native", read.text, read.bytes, read.mtimeMs));
   }
   result.ready.sort(newestFirst);
 
@@ -468,6 +468,7 @@ function parseGoalSummary(
   source: "live-native" | "archive",
   text: string,
   bytes: number,
+  mtimeMs?: number | null,
 ): HermesGoalSummary {
   const trimmed = text.slice(0, MAX_GOAL_BYTES);
   const json = name.endsWith(".json") ? parseJson(trimmed, { warnings: [], errors: [] }, name) : null;
@@ -477,9 +478,16 @@ function parseGoalSummary(
     safeDisplayText(firstMarkdownHeading(trimmed)) ??
     titleFromFileName(name);
   const status = safeDisplayText(row.status) ?? safeDisplayText(frontmatterValue(trimmed, "status")) ?? state;
+  // Resolve a goal's timestamp from the richest available source: JSON fields,
+  // then frontmatter `updated_at`/`created`/`date`, then the file mtime (which
+  // the conveyor-goal-mirror preserves via copy2). Without this, most goal files
+  // carry only `created`/`status` frontmatter and rendered with no date at all.
   const updatedAt =
     safeIso(row.updated_at ?? row.updatedAt ?? row.finishedAt ?? row.createdAt) ??
-    safeIso(frontmatterValue(trimmed, "updated_at"));
+    safeIso(frontmatterValue(trimmed, "updated_at")) ??
+    safeIso(frontmatterValue(trimmed, "created")) ??
+    safeIso(frontmatterValue(trimmed, "date")) ??
+    (mtimeMs != null && Number.isFinite(mtimeMs) ? new Date(mtimeMs).toISOString() : null);
   const evidence = [
     ...stringArray(row.evidence),
     ...frontmatterList(trimmed, "evidence"),
@@ -527,7 +535,7 @@ async function readTextWithStatsAtRoot(
     if (!stat.isFile()) throw new Error("not a regular file");
     if (stat.size > maxBytes) throw new Error(`file exceeds ${maxBytes} byte cap`);
     const text = await fs.readFile(target, "utf8");
-    return { text, bytes: stat.size };
+    return { text, bytes: stat.size, mtimeMs: stat.mtimeMs };
   } catch (error) {
     if (required) ctx.errors.push(`${rel}: ${safeError(error)}`);
     return null;
