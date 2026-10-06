@@ -150,8 +150,10 @@ const DEFERRED = [
 function toneFor(state: string): Tone {
   switch (state) {
     case "running": return "accent";
+    case "shipping": return "accent";
     case "ready": return "up";
     case "failed": return "down";
+    case "stalled": return "warn";
     case "blocked": return "warn";
     case "done": return "up";
     default: return "neutral";

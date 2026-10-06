@@ -669,6 +669,7 @@ function sanitizeLiveGoals(value) {
   return {
     ready: safeGoalArray(record.ready),
     running: safeGoalArray(record.running),
+    shipping: safeGoalArray(record.shipping),
     stalled: safeGoalArray(record.stalled),
     done: safeGoalArray(record.done),
     failed: safeGoalArray(record.failed),
@@ -684,7 +685,7 @@ function sanitizeGoal(value) {
   const id = safeText(row.id, 240);
   const title = safeText(row.title, 180);
   if (!id || !title) return null;
-  const state = ["ready", "running", "stalled", "done", "failed"].includes(row.state) ? row.state : "ready";
+  const state = ["ready", "running", "shipping", "stalled", "done", "failed"].includes(row.state) ? row.state : "ready";
   return {
     id,
     title,
