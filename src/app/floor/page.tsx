@@ -1348,12 +1348,12 @@ function NativeGoalsPanel({
   completionByGoal: Map<string, ConveyorCompletion>;
   onSelect: (goal: NativeGoal) => void;
 }) {
-  const live = goals?.goals.live ?? { ready: [], running: [], stalled: [], done: [], failed: [] };
-  const counts = goals?.goals.counts ?? { ready: 0, running: 0, stalled: 0, done: 0, failed: 0 };
-  const running = live.running;
-  const stalled = live.stalled;
-  const ready = live.ready;
-  const done = live.done;
+  const live = goals?.goals.live ?? ({} as Record<"ready" | "running" | "stalled" | "done" | "failed", NativeGoal[]>);
+  const counts = goals?.goals.counts ?? ({} as Record<"ready" | "running" | "stalled" | "done" | "failed", number>);
+  const running = live.running ?? [];
+  const stalled = live.stalled ?? [];
+  const ready = live.ready ?? [];
+  const done = live.done ?? [];
   const recentFailed = goals?.goals.recentFailed ?? [];
 
   const selectedIdOf = (goal: NativeGoal) => goalIdOf(goal) ?? goal.id;
