@@ -548,17 +548,22 @@ async function listFilesAtRoot(root: string, rel: string, ctx: SafeContext, limi
   try {
     const dir = await resolveContainedPath(root, rel);
     const entries = await fs.readdir(dir, { withFileTypes: true });
-    const files = [];
+    const files: Array<{ name: string; mtimeMs: number }> = [];
     for (const entry of entries) {
-      if (files.length >= limit) break;
       if (!entry.isFile()) {
         if (entry.isSymbolicLink()) ctx.warnings.push(`${path.join(rel, entry.name)}: symlink rejected`);
         continue;
       }
       if (!safeFileName(entry.name)) continue;
-      files.push(entry);
+      const stat = await fs.stat(path.join(dir, entry.name)).catch(() => null);
+      files.push({ name: entry.name, mtimeMs: stat?.mtimeMs ?? 0 });
     }
-    return files;
+    // Newest-first so the bounded cap keeps the most recently written goals
+    // (the ones the operator actually cares about) instead of an arbitrary
+    // readdir slice. Without this, `done/` (379 goals) surfaces only old
+    // alphabetical entries and hides recent work entirely.
+    files.sort((a, b) => b.mtimeMs - a.mtimeMs);
+    return files.slice(0, limit);
   } catch (error) {
     ctx.warnings.push(`${rel}: ${safeError(error)}`);
     return [];
