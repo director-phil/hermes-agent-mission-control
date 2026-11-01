@@ -374,7 +374,7 @@ export default function OfficeView({ agents }: { agents: Agent[] }) {
           <div className="flex items-center gap-3 bg-neutral-900/80 border border-neutral-700/40 rounded-2xl px-5 py-2">
             <div className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
             <span className="text-xs font-mono font-bold tracking-[0.2em] text-neutral-400 uppercase">
-              Hermy HQ · Agent Floor
+              RT Dev HQ · Agent Floor
             </span>
             <div className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
           </div>

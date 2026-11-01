@@ -75,7 +75,7 @@ export default function StatusPage() {
       </div>
 
       <p style={{ color: "#94a3b8", fontSize: 12, marginTop: 24 }}>
-        Powered by Hermy HQ monitoring · probe engine snapshot
+        Powered by RT Dev HQ monitoring · probe engine snapshot
       </p>
     </main>
   );

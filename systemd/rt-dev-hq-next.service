@@ -1,5 +1,5 @@
 [Unit]
-Description=Hermy HQ local Mission Control Next server
+Description=RT Dev HQ local Mission Control Next server
 After=network-online.target
 Wants=network-online.target
 
@@ -8,7 +8,7 @@ Type=simple
 User=phillip_downs
 Group=phillip_downs
 WorkingDirectory=/home/phillip_downs/Documents/GitHub/hermes-agent-mission-control
-EnvironmentFile=/etc/hermy-hq/next.env
+EnvironmentFile=/etc/rt-dev-hq/next.env
 Environment=HOME=/home/phillip_downs
 Environment=PATH=/home/phillip_downs/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=NODE_ENV=production
@@ -21,10 +21,10 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ReadOnlyPaths=/home/phillip_downs/Documents/GitHub/hermes-agent-mission-control
-ReadWritePaths=/home/phillip_downs/Documents/GitHub/hermes-agent-mission-control/data /var/cache/hermy-hq /var/log/hermy-hq /run/hermy-hq
-CacheDirectory=hermy-hq
-LogsDirectory=hermy-hq
-RuntimeDirectory=hermy-hq
+ReadWritePaths=/home/phillip_downs/Documents/GitHub/hermes-agent-mission-control/data /var/cache/rt-dev-hq /var/log/rt-dev-hq /run/rt-dev-hq
+CacheDirectory=rt-dev-hq
+LogsDirectory=rt-dev-hq
+RuntimeDirectory=rt-dev-hq
 UMask=0077
 
 [Install]

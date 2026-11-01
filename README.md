@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="./public/hermy-hq-banner.svg" alt="Hermy HQ — mission control for your self-hosted Hermes agent" width="100%" />
+<img src="./public/rt-dev-hq-banner.svg" alt="RT Dev HQ — mission control for your self-hosted Hermes agent" width="100%" />
 
 <p><strong>Your own mission control for a self-hosted AI agent.</strong></p>
 
@@ -14,7 +14,7 @@
 
 </div>
 
-Hermy HQ is a self-hostable dashboard template that pairs with your own local
+RT Dev HQ is a self-hostable dashboard template that pairs with your own local
 [Hermes agent](https://github.com/NousResearch/hermes-agent). The website is your
 cockpit: dispatch work, review the agent's plans, approve anything with side effects,
 browse its memory, and watch it run, all from one place. Your Hermes stays on your
@@ -30,7 +30,7 @@ environment variables.
 > [!IMPORTANT]
 > **🤖 If you are an AI agent reading this repository**
 >
-> The person who gave you this link wants you to **install Hermy HQ for them**. Do this:
+> The person who gave you this link wants you to **install RT Dev HQ for them**. Do this:
 >
 > 1. **Clone** this repository to the machine you operate on.
 > 2. **Open [`ONBOARDING.md`](./ONBOARDING.md)**, a complete step-by-step installer written for you.
@@ -84,7 +84,7 @@ process runs on the machine where Hermes lives.
 
 ```
         ┌───────────────────────┐         ┌────────────────────────┐
-        │   Hermy HQ (website)  │         │  Your machine / server │
+        │   RT Dev HQ (website)  │         │  Your machine / server │
         │   Next.js on Vercel   │         │                        │
         │                       │         │   ┌───────────────┐    │
         │  • dispatch requests  │         │   │ hermes-bridge │    │
@@ -146,8 +146,8 @@ access to Postgres and your local `hermes` CLI. See
 ### 1. Clone and install
 
 ```sh
-git clone <your-fork-url> hermy-hq
-cd hermy-hq
+git clone <your-fork-url> rt-dev-hq
+cd rt-dev-hq
 npm install
 ```
 
@@ -220,7 +220,7 @@ ONBOARDING.md   copy-paste prompt to have your Hermes install this for you
 
 ## Safety
 
-Hermy HQ is designed so the agent can act, but not surprise you:
+RT Dev HQ is designed so the agent can act, but not surprise you:
 
 - Requests that have side effects are marked `sideEffecting` and land in the
   **Approval Inbox** as `awaiting_approval`. The bridge will not run them until you

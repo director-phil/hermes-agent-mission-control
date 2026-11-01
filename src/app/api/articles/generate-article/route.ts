@@ -359,7 +359,7 @@ Write the COMPLETE article. Match the voice, pacing, and energy of the examples 
         "Authorization": `Bearer ${process.env.OPENROUTER_API_KEY}`,
         "Content-Type": "application/json",
         "HTTP-Referer": "https://your-app.vercel.app",
-        "X-Title": "Hermy HQ Article Studio",
+        "X-Title": "RT Dev HQ Article Studio",
       },
       body: JSON.stringify({
         model: "anthropic/claude-sonnet-4-6",

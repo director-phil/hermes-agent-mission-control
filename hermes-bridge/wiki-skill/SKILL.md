@@ -11,7 +11,7 @@ version: 1.0.0
 
 `MEMORY.md` and `USER.md` are your tiny hot cache (~1,300 tokens total, always in
 context). The **wiki** at `~/.hermes/wiki/` is your warm, unlimited, git-tracked
-long-term memory. It is browsed and edited by the operator in Hermy HQ, so keep it clean.
+long-term memory. It is browsed and edited by the operator in RT Dev HQ, so keep it clean.
 
 ## When to write to the wiki (not MEMORY.md)
 - After any complex task (5+ tool calls): append a line to `log/YYYY-MM.md` and, if you

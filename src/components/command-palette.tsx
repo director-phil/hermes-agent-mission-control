@@ -1,7 +1,7 @@
 "use client";
 
 /* ───────────────────────────────────────────────────────────
-   Hermy HQ · Command Palette (⌘K / Ctrl-K)
+   RT Dev HQ · Command Palette (⌘K / Ctrl-K)
    Globally mounted. Fuzzy nav + dispatch-to-Hermes fallback.
    Calm Luxury tokens, no external deps beyond lucide-react.
    ─────────────────────────────────────────────────────────── */

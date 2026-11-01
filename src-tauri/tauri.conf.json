@@ -1,8 +1,8 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
-  "productName": "Hermy HQ",
+  "productName": "RT Dev HQ",
   "version": "0.1.0",
-  "identifier": "com.hermyhq.app",
+  "identifier": "com.rtdevhq.app",
   "build": {
     "frontendDist": "../out",
     "devUrl": "http://localhost:3000",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "Hermy HQ",
+        "title": "RT Dev HQ",
         "width": 1200,
         "height": 800,
         "minWidth": 900,

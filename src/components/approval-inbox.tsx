@@ -1,7 +1,7 @@
 "use client";
 
 /* ───────────────────────────────────────────────────────────
-   Hermy HQ · Approval inbox
+   RT Dev HQ · Approval inbox
    "Everything that needs your tap" queue.
    Self-contained: polls /api/hermes/requests, one-tap
    approve / reject / edit via PATCH. Calm Luxury.

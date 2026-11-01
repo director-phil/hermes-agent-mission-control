@@ -13,7 +13,7 @@ async function read(relativePath) {
 
 test("systemd units run services as phillip_downs with explicit home and constrained path", async () => {
   const bridge = await read("systemd/hermes-native-bridge.service");
-  const next = await read("systemd/hermy-hq-next.service");
+  const next = await read("systemd/rt-dev-hq-next.service");
 
   for (const unit of [bridge, next]) {
     assert.match(unit, /^User=phillip_downs$/m);
@@ -28,13 +28,13 @@ test("systemd units run services as phillip_downs with explicit home and constra
 
 test("systemd sandbox keeps only required writable service and Hermes state paths", async () => {
   const bridge = await read("systemd/hermes-native-bridge.service");
-  const next = await read("systemd/hermy-hq-next.service");
+  const next = await read("systemd/rt-dev-hq-next.service");
 
   assert.match(bridge, /^ProtectSystem=strict$/m);
   assert.match(next, /^ProtectSystem=strict$/m);
-  assert.match(bridge, /^ReadWritePaths=\/home\/phillip_downs\/\.hermes \/var\/cache\/hermy-hq \/var\/log\/hermy-hq \/run\/hermy-hq$/m);
+  assert.match(bridge, /^ReadWritePaths=\/home\/phillip_downs\/\.hermes \/var\/cache\/rt-dev-hq \/var\/log\/rt-dev-hq \/run\/rt-dev-hq$/m);
   assert.match(next, /^ReadOnlyPaths=\/home\/phillip_downs\/Documents\/GitHub\/hermes-agent-mission-control$/m);
-  assert.match(next, /^ReadWritePaths=\/home\/phillip_downs\/Documents\/GitHub\/hermes-agent-mission-control\/data \/var\/cache\/hermy-hq \/var\/log\/hermy-hq \/run\/hermy-hq$/m);
+  assert.match(next, /^ReadWritePaths=\/home\/phillip_downs\/Documents\/GitHub\/hermes-agent-mission-control\/data \/var\/cache\/rt-dev-hq \/var\/log\/rt-dev-hq \/run\/rt-dev-hq$/m);
   assert.doesNotMatch(next, /^ReadWritePaths=.*\/home\/phillip_downs\/Documents\/GitHub\/hermes-agent-mission-control(?:\s|$)/m);
   assert.doesNotMatch(next, /^ReadWritePaths=.*\/home\/phillip_downs\/Documents\/GitHub\/hermes-agent-mission-control\/src(?:\s|$)/m);
 });
@@ -45,7 +45,7 @@ test("installer enforces service-owned runtime paths and group-readable root-own
   assert.match(script, /SERVICE_USER="phillip_downs"/);
   assert.match(script, /SERVICE_GROUP="phillip_downs"/);
   assert.match(script, /DATA_DIR="\$\{REPO\}\/data"/);
-  assert.match(script, /install -d -m 0750 -o "\$\{SERVICE_USER\}" -g "\$\{SERVICE_GROUP\}" \/var\/cache\/hermy-hq \/var\/log\/hermy-hq \/run\/hermy-hq/);
+  assert.match(script, /install -d -m 0750 -o "\$\{SERVICE_USER\}" -g "\$\{SERVICE_GROUP\}" \/var\/cache\/rt-dev-hq \/var\/log\/rt-dev-hq \/run\/rt-dev-hq/);
   assert.match(script, /install -d -m 0750 -o "\$\{SERVICE_USER\}" -g "\$\{SERVICE_GROUP\}" "\$\{DATA_DIR\}"/);
   assert.match(script, /chown root:"\$\{SERVICE_GROUP\}" "\$\{NEXT_ENV\}"/);
   assert.match(script, /chown root:"\$\{SERVICE_GROUP\}" "\$\{BRIDGE_ENV\}"/);

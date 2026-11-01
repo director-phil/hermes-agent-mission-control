@@ -444,7 +444,7 @@ model ClientPulseAlert {
   @@index([acknowledgedAt])
 }
 
-// ─── Hermes bus (Hermy HQ website ↔ Hermes on the Mac mini) ─────
+// ─── Hermes bus (RT Dev HQ website ↔ Hermes on the Mac mini) ─────
 // Shared Postgres is the message bus. A bridge on the mini polls
 // AgentRequest, runs approved/safe ones via the `hermes` CLI, and
 // mirrors kanban tasks + activity back into HermesTask / AgentEvent.

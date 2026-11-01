@@ -41,7 +41,7 @@ CARDS: border-radius 14-20px, subtle borders rgba(255,255,255,0.07)
 BYLINE: Always include at the bottom:
 <div style="position:absolute;bottom:30px;left:56px;right:56px;display:flex;justify-content:space-between;align-items:center;z-index:10;">
   <span style="font-size:14px;color:rgba(255,255,255,0.25);">@yourhandle</span>
-  <span style="font-size:11px;font-weight:700;letter-spacing:3px;color:rgba(255,255,255,0.1);">HERMY HQ</span>
+  <span style="font-size:11px;font-weight:700;letter-spacing:3px;color:rgba(255,255,255,0.1);">RT DEV HQ</span>
 </div>
 
 RULES:
@@ -126,7 +126,7 @@ Return ONLY valid JSON. No explanation, no markdown.`;
           "Authorization": `Bearer ${process.env.OPENROUTER_API_KEY}`,
           "Content-Type": "application/json",
           "HTTP-Referer": "https://your-app.vercel.app",
-          "X-Title": "Hermy HQ Article Studio",
+          "X-Title": "RT Dev HQ Article Studio",
         },
         body: JSON.stringify({
           model: "anthropic/claude-sonnet-4-6",
@@ -176,7 +176,7 @@ Return ONLY the complete HTML document. No explanation, no markdown code blocks,
         "Authorization": `Bearer ${process.env.OPENROUTER_API_KEY}`,
         "Content-Type": "application/json",
         "HTTP-Referer": "https://your-app.vercel.app",
-        "X-Title": "Hermy HQ Article Studio",
+        "X-Title": "RT Dev HQ Article Studio",
       },
       body: JSON.stringify({
         model: "anthropic/claude-sonnet-4-6",

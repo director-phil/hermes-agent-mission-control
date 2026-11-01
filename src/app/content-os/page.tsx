@@ -1,7 +1,7 @@
 "use client";
 
 /* ───────────────────────────────────────────────────────────
-   Content OS — X pipeline board for Hermy HQ
+   Content OS — X pipeline board for RT Dev HQ
    A growth-engine view over existing tweet drafts.
    Read-first: cards link to /x-content for editing.
    ─────────────────────────────────────────────────────────── */

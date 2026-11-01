@@ -1,7 +1,7 @@
 "use client";
 
 /* ───────────────────────────────────────────────────────────
-   Hermy HQ · Calm Luxury primitive kit
+   RT Dev HQ · Calm Luxury primitive kit
    Shared building blocks so every page inherits one system.
    Import from "@/components/ui/kit".
    ─────────────────────────────────────────────────────────── */

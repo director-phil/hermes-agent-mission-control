@@ -1,5 +1,5 @@
 /**
- * Read the monitoring probe-engine SQLite snapshot for the Hermy HQ dashboard.
+ * Read the monitoring probe-engine SQLite snapshot for the RT Dev HQ dashboard.
  *
  * The probe engine (a systemd service in the `hermes-mission-control` repo)
  * continuously probes internal + external services and writes results to

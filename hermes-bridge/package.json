@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "version": "1.0.0",
-  "description": "Two-way bridge between Hermy HQ (website) and Hermes (local agent) via shared Postgres.",
+  "description": "Two-way bridge between RT Dev HQ (website) and Hermes (local agent) via shared Postgres.",
   "bin": { "hermes-bridge": "./bridge.mjs" },
   "scripts": { "start": "node bridge.mjs" },
   "dependencies": { "pg": "^8.13.1" }

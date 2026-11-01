@@ -97,7 +97,7 @@ export async function GET() {
       });
     }
 
-    // Add external tweets (posted directly on X, not through Hermy HQ)
+    // Add external tweets (posted directly on X, not through RT Dev HQ)
     for (const m of dbMetrics) {
       if (!m.tweetId || matchedTweetIds.has(m.tweetId)) continue;
       const draftIdExists = m.draftId && existingDraftIds.has(m.draftId);

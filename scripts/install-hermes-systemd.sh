@@ -3,7 +3,7 @@ set -euo pipefail
 
 REPO="/home/phillip_downs/Documents/GitHub/hermes-agent-mission-control"
 SYSTEMD_DIR="${REPO}/systemd"
-ENV_DIR="/etc/hermy-hq"
+ENV_DIR="/etc/rt-dev-hq"
 NEXT_ENV="${ENV_DIR}/next.env"
 BRIDGE_ENV="${ENV_DIR}/hermes-bridge.env"
 SERVICE_USER="phillip_downs"
@@ -43,7 +43,7 @@ validate_secret_value() {
 id -u "${SERVICE_USER}" >/dev/null || die "missing service user ${SERVICE_USER}"
 getent group "${SERVICE_GROUP}" >/dev/null || die "missing service group ${SERVICE_GROUP}"
 [[ -d "${REPO}/.next" ]] || die "built Next app not found at ${REPO}/.next"
-[[ -f "${SYSTEMD_DIR}/hermy-hq-next.service" ]] || die "missing Next service template"
+[[ -f "${SYSTEMD_DIR}/rt-dev-hq-next.service" ]] || die "missing Next service template"
 [[ -f "${SYSTEMD_DIR}/hermes-native-bridge.service" ]] || die "missing bridge service template"
 NODE_BIN="$(runuser -u "${SERVICE_USER}" -- env "HOME=${SERVICE_HOME}" "PATH=${SERVICE_PATH}" bash -lc 'command -v node')" || die "node is not on service PATH"
 NPM_BIN="$(runuser -u "${SERVICE_USER}" -- env "HOME=${SERVICE_HOME}" "PATH=${SERVICE_PATH}" bash -lc 'command -v npm')" || die "npm is not on service PATH"
@@ -53,7 +53,7 @@ HERMES_BIN="$(runuser -u "${SERVICE_USER}" -- env "HOME=${SERVICE_HOME}" "PATH=$
 [[ -x "${HERMES_BIN}" ]] || die "resolved hermes CLI is not executable: ${HERMES_BIN}"
 
 install -d -m 0750 -o root -g "${SERVICE_GROUP}" "${ENV_DIR}"
-install -d -m 0750 -o "${SERVICE_USER}" -g "${SERVICE_GROUP}" /var/cache/hermy-hq /var/log/hermy-hq /run/hermy-hq
+install -d -m 0750 -o "${SERVICE_USER}" -g "${SERVICE_GROUP}" /var/cache/rt-dev-hq /var/log/rt-dev-hq /run/rt-dev-hq
 install -d -m 0750 -o "${SERVICE_USER}" -g "${SERVICE_GROUP}" "${SERVICE_HOME}/.hermes"
 install -d -m 0750 -o "${SERVICE_USER}" -g "${SERVICE_GROUP}" "${DATA_DIR}"
 
@@ -71,7 +71,7 @@ if [[ ! -f "${BRIDGE_ENV}" ]]; then
   cat >"${BRIDGE_ENV}" <<'EOF'
 # Required: direct production Postgres URL, not an Accelerate URL.
 # DATABASE_URL=postgres://...
-# Required: must exactly match INTERNAL_API_SECRET in /etc/hermy-hq/next.env.
+# Required: must exactly match INTERNAL_API_SECRET in /etc/rt-dev-hq/next.env.
 # HERMES_NATIVE_INTERNAL_SECRET=generate-the-shared-native-bridge-secret
 # Optional:
 # BRIDGE_POLL_MS=5000
@@ -98,10 +98,10 @@ validate_secret_value "HERMES_NATIVE_INTERNAL_SECRET in ${BRIDGE_ENV}" "${BRIDGE
 [[ "${NEXT_INTERNAL_SECRET}" == "${BRIDGE_INTERNAL_SECRET}" ]] || die "bridge native secret does not match Next internal secret"
 unset NEXT_INTERNAL_SECRET BRIDGE_INTERNAL_SECRET
 
-install -m 0644 "${SYSTEMD_DIR}/hermy-hq-next.service" /etc/systemd/system/hermy-hq-next.service
+install -m 0644 "${SYSTEMD_DIR}/rt-dev-hq-next.service" /etc/systemd/system/rt-dev-hq-next.service
 install -m 0644 "${SYSTEMD_DIR}/hermes-native-bridge.service" /etc/systemd/system/hermes-native-bridge.service
 systemctl daemon-reload
-systemctl enable hermy-hq-next.service hermes-native-bridge.service
+systemctl enable rt-dev-hq-next.service hermes-native-bridge.service
 
 printf 'Installed and enabled units. Services were not started.\n'
-printf 'Start manually after final review: systemctl start hermy-hq-next hermes-native-bridge\n'
+printf 'Start manually after final review: systemctl start rt-dev-hq-next hermes-native-bridge\n'

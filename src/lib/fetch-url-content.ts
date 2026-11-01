@@ -139,7 +139,7 @@ async function braveSearchUrl(
 async function directFetch(url: string, maxChars: number): Promise<{ title: string; content: string } | null> {
   try {
     const res = await fetch(url, {
-      headers: { "User-Agent": "Mozilla/5.0 (compatible; HermyHQ/1.0)" },
+      headers: { "User-Agent": "Mozilla/5.0 (compatible; RTDevHQ/1.0)" },
       signal: AbortSignal.timeout(10000),
     });
     if (!res.ok) return null;

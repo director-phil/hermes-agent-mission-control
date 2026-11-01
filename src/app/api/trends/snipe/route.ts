@@ -90,7 +90,7 @@ Remember: connect it to the user's world (their AI agents, their trading bots, t
         "Authorization": `Bearer ${process.env.OPENROUTER_API_KEY}`,
         "Content-Type": "application/json",
         "HTTP-Referer": "https://your-app.vercel.app",
-        "X-Title": "Hermy HQ Trend Sniper",
+        "X-Title": "RT Dev HQ Trend Sniper",
       },
       body: JSON.stringify({
         model: "anthropic/claude-sonnet-4-5",
@@ -116,7 +116,7 @@ Remember: connect it to the user's world (their AI agents, their trading bots, t
       return NextResponse.json({ error: "Empty response from model" }, { status: 500 });
     }
 
-    // Save to drafts via Hermy HQ API
+    // Save to drafts via RT Dev HQ API
     let saved = false;
     try {
       const saveRes = await fetch("https://your-app.vercel.app/api/x-content", {

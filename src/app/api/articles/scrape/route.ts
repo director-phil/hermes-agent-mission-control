@@ -347,7 +347,7 @@ export async function POST(req: NextRequest) {
     if (!isXUrl) {
       try {
         const res = await fetch(url, {
-          headers: { "User-Agent": "Mozilla/5.0 (compatible; HermyHQ/1.0)" },
+          headers: { "User-Agent": "Mozilla/5.0 (compatible; RTDevHQ/1.0)" },
           signal: AbortSignal.timeout(8000),
         });
         if (res.ok) {

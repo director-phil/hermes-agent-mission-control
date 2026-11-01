@@ -25,4 +25,4 @@ website AgentRequest -> bridge -> hermes CLI
 | `BRIDGE_MIRROR_MS` | `30000` | mirror interval |
 | `BRIDGE_RUN_TIMEOUT_MS` | `240000` | single request timeout |
 
-Use the checked-in systemd templates in `../systemd` and EnvironmentFiles under `/etc/hermy-hq`. Put `INTERNAL_API_SECRET` in `/etc/hermy-hq/next.env` and the same value as `HERMES_NATIVE_INTERNAL_SECRET` in `/etc/hermy-hq/hermes-bridge.env`. The install script validates prerequisites, secret length, and secret equality without printing either secret, then enables units without starting them.
+Use the checked-in systemd templates in `../systemd` and EnvironmentFiles under `/etc/rt-dev-hq`. Put `INTERNAL_API_SECRET` in `/etc/rt-dev-hq/next.env` and the same value as `HERMES_NATIVE_INTERNAL_SECRET` in `/etc/rt-dev-hq/hermes-bridge.env`. The install script validates prerequisites, secret length, and secret equality without printing either secret, then enables units without starting them.

@@ -1,4 +1,4 @@
-# Hermy HQ — Agent Onboarding Prompt
+# RT Dev HQ — Agent Onboarding Prompt
 
 > **How to use this:** copy everything in the block below and paste it to your
 > Hermes agent, in the directory where you cloned this repo. Hermes will walk you
@@ -7,7 +7,7 @@
 
 ---
 
-You are helping your operator install **Hermy HQ**, a self-hostable mission-control
+You are helping your operator install **RT Dev HQ**, a self-hostable mission-control
 dashboard (Next.js 16, React 19, Tailwind v4, Prisma + Postgres) that pairs
 with you, their local Hermes agent, over a shared Postgres database
 used as a message bus. A small **bridge** on the operator's machine polls Postgres
@@ -44,7 +44,7 @@ Verify the operator has each of these; ask them to confirm or help them install:
 ### Step 2 — Clone and install dependencies
 If the repo is not already present, clone it, then install:
 ```sh
-git clone <repo-url> hermy-hq && cd hermy-hq
+git clone <repo-url> rt-dev-hq && cd rt-dev-hq
 npm install
 ```
 Confirm `npm install` finished without errors.
@@ -107,7 +107,7 @@ operator to confirm it matches):
 DATABASE_URL='postgres://…same as website…' HERMES_BOARD=default node bridge.mjs
 ```
 You should see `hermes-bridge up …` in the logs. Then make it permanent:
-- **macOS:** edit the placeholders in `hermes-bridge/ai.hermyhq.bridge.plist` (path,
+- **macOS:** edit the placeholders in `hermes-bridge/ai.rtdevhq.bridge.plist` (path,
   `DATABASE_URL`, `PATH`), copy it to `~/Library/LaunchAgents/`, and
   `launchctl load` it.
 - **Linux:** create an equivalent systemd service that runs
