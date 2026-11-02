@@ -325,7 +325,7 @@ export async function scoutFailedGoals(snapshot, { log }) {
 }
 
 async function scoutGoal(goalId, log) {
-  const res = await langfuseFetch("/observations", {
+  const res = await langfuseFetch("/v2/observations", {
     name: `goal:${goalId}`,
     limit: 50,
   });
