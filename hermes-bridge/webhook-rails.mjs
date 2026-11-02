@@ -94,7 +94,7 @@ function loadLangfuseEnv() {
   return fs.readFile(path.join(HERMES_ROOT, ".env"), "utf8")
     .then((text) => {
       const vals = { base: "http://127.0.0.1:3000", pk: "", sk: "" };
-      for (const line of text.splitlines()) {
+      for (const line of text.split("\n")) {
         const m = line.match(/^(HERMES_LANGFUSE_(?:BASE_URL|PUBLIC_KEY|SECRET_KEY))=(.*)$/);
         if (!m) continue;
         const value = m[2].trim().replace(/^["']|["']$/g, "");
