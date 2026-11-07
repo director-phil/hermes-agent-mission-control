@@ -887,7 +887,13 @@ function LearningBody({ learning }: { learning: LearningTrace }) {
 }
 
 function LearningPanel({ graph, conveyor, attempt }: { graph: RunGraph | null; conveyor: ConveyorRunGraph | null; attempt: number }) {
-  const learning = conveyor?.learnings.find((item) => item.attempt === attempt) ?? null;
+  // A running attempt has no scribe section yet (the distiller only appends
+  // `## Attempt N` when an attempt completes/fails). Fall back to the most
+  // recent completed attempt's evidence instead of rendering the misleading
+  // "No session evidence" empty state while the goal is mid-flight.
+  const learning =
+    conveyor?.learnings.find((item) => item.attempt === attempt) ??
+    (conveyor && conveyor.learnings.length > 0 ? conveyor.learnings.at(-1) ?? null : null);
   const latest = graph?.learnings.at(-1) ?? null;
   const hasLearning = Boolean(learning && (learning.learned.length > 0 || learning.inferred.length > 0 || learning.observed.length > 0 || learning.verdict));
 
