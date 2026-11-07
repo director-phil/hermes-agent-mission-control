@@ -245,9 +245,9 @@ export async function collectLangfuseEvaluationControl(
   const [scores, prompts, evaluators, datasets, experiments] = await Promise.all([
     readScores(config, range, fetchOptions),
     readPrompts(config, fetchOptions),
-    readOptionalResource(config, ["/api/public/evaluation-rules", "/api/public/eval/rules"], fetchOptions, parseEvaluators),
+    readOptionalResource(config, ["/api/public/v2/evaluators", "/api/public/v2/evaluation-rules"], fetchOptions, parseEvaluators),
     readOptionalResource(config, ["/api/public/datasets"], fetchOptions, parseDatasets),
-    readOptionalResource(config, ["/api/public/dataset-runs", "/api/public/experiments"], fetchOptions, parseExperiments),
+    readExperiments(config, range, fetchOptions),
   ]);
   const statuses = [scores.health.status, prompts.health.status, evaluators.health.status, datasets.health.status, experiments.health.status];
   const sourceStatus: ResourceStatus = statuses.every((status) => status === "ok")
@@ -339,6 +339,31 @@ async function readPrompts(
     return {
       health: resourceHealth(resourceStatusFromError(error), safeFailureMessage(error), 0, 0, false),
       data: emptyPromptSummary(),
+    };
+  }
+}
+
+async function readExperiments(
+  config: LangfuseConfig,
+  range: { fromTimestamp: string; toTimestamp: string },
+  options: Required<Pick<CollectOptions, "fetchImpl" | "maxPages" | "maxRows" | "timeoutMs">>,
+): Promise<ResourceResult<ExperimentStatus[]>> {
+  // /api/public/experiments REQUIRES a time window (fromStartTime/toStartTime),
+  // unlike datasets/prompts. Pass the window explicitly rather than relying on
+  // readOptionalResource (which sends no params and 400s).
+  try {
+    const result = await fetchPaginated(config, "/api/public/experiments", options, {
+      fromStartTime: range.fromTimestamp,
+      toStartTime: range.toTimestamp,
+    });
+    return {
+      health: resourceHealth("ok", "Experiments API live", result.rows.length, result.pages, result.truncated),
+      data: parseExperiments(result.rows),
+    };
+  } catch (error) {
+    return {
+      health: resourceHealth(resourceStatusFromError(error), safeFailureMessage(error), 0, 0, false),
+      data: [],
     };
   }
 }
