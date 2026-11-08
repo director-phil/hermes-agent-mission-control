@@ -1,3 +1,5 @@
+import "@xyflow/react/dist/style.css";
+
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 

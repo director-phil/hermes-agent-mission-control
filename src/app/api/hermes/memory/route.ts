@@ -28,8 +28,19 @@ export async function POST(req: Request) {
   const unauthorized = requireInternalApiSecret(req);
   if (unauthorized) return unauthorized;
 
-  return NextResponse.json(
-    { error: "Wiki memory writes are not supported in this Mission Control release." },
-    { status: 410 },
-  );
+  const b = await req.json().catch(() => ({}));
+  const title = typeof b.title === "string" ? b.title.trim() : "";
+  if (!title) return NextResponse.json({ error: "title required" }, { status: 400 });
+
+  const row = await prisma.agentRequest.create({
+    data: {
+      origin: "web",
+      kind: "memory.write",
+      title: `Memory: ${title.slice(0, 180)}`,
+      prompt: JSON.stringify(b),
+      sideEffecting: false,
+      status: "queued",
+    },
+  });
+  return NextResponse.json({ request: row });
 }

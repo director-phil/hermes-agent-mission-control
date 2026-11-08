@@ -29,17 +29,8 @@ export const CONFIG = {
   hermesRoot: process.env.HERMES_HOME || path.join(process.env.HOME || "", ".hermes"),
 };
 
-const CORE_REQUEST_KINDS = ["oneshot", "chat", "cron.create", "cron.run", "cron.pause", "cron.resume", "cron.remove", "cron.edit"];
-const UNSUPPORTED_REQUEST_FAILURES = [
-  {
-    kind: "briefing.generate",
-    error: "Daily briefing generation is not supported in this Mission Control release.",
-  },
-  {
-    kind: "memory.write",
-    error: "Wiki memory writes are not supported in this Mission Control release.",
-  },
-];
+const CORE_REQUEST_KINDS = ["oneshot", "chat", "cron.create", "cron.run", "cron.pause", "cron.resume", "cron.remove", "cron.edit", "briefing.generate", "memory.write"];
+const UNSUPPORTED_REQUEST_FAILURES = [];
 const UNSUPPORTED_REQUEST_KINDS = UNSUPPORTED_REQUEST_FAILURES.map((item) => item.kind);
 
 const DB_URL = process.env.DATABASE_URL || "";
@@ -230,6 +221,11 @@ async function setStore(key, data) {
      ON CONFLICT (key) DO UPDATE SET data = EXCLUDED.data, "updatedAt" = now()`,
     [key, JSON.stringify(data)],
   );
+}
+
+async function getStore(key) {
+  const { rows } = await q(`SELECT data FROM "DataStore" WHERE key=$1`, [key]);
+  return rows[0]?.data ?? null;
 }
 
 async function emit(kind, title, { detail = null, agent = "hermes", level = "info", meta = null } = {}) {
@@ -561,6 +557,10 @@ async function runRequest(request) {
     } else if (request.kind.startsWith("cron.")) {
       result = await runCronRequest(request.kind, request.prompt);
       await mirrorCrons();
+    } else if (request.kind === "briefing.generate") {
+      result = await generateBriefing();
+    } else if (request.kind === "memory.write") {
+      result = await writeMemory(request.prompt);
     } else {
       throw new Error("Unsupported native request kind.");
     }
@@ -595,6 +595,137 @@ async function runCronRequest(kind, prompt) {
   return await runBoundedProcess(CONFIG.hermesBin, argv, "", { timeoutMs: 20000, maxOutputChars: CONFIG.maxResultChars });
 }
 
+
+function slugify(value) {
+  const slug = String(value || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80);
+  return slug || `entry-${Date.now()}`;
+}
+
+function brisbaneDateStr(d = new Date()) {
+  return new Date(d.getTime() + 10 * 3600000).toISOString().slice(0, 10);
+}
+
+function greetingFor(d = new Date()) {
+  const hour = new Date(d.getTime() + 10 * 3600000).getUTCHours();
+  if (hour < 12) return "Good morning";
+  if (hour < 17) return "Good afternoon";
+  return "Good evening";
+}
+
+async function generateBriefing() {
+  const now = new Date();
+
+  const awaiting = (await q(
+    `SELECT title FROM "AgentRequest" WHERE status='awaiting_approval' ORDER BY "createdAt" DESC LIMIT 12`
+  )).rows.map((r) => safeText(r.title, 180)).filter(Boolean);
+
+  const monitoring = asRecord(await getStore("hermes-monitoring"));
+  const snapshot = asRecord(monitoring.snapshot);
+  const up = safeInteger(snapshot.up) ?? 0;
+  const down = safeInteger(snapshot.down) ?? 0;
+  const checkcle = asRecord(snapshot.checkcle);
+  const downServices = (Array.isArray(checkcle.services) ? checkcle.services : [])
+    .map((s) => asRecord(s))
+    .filter((s) => s.status === "down")
+    .map((s) => safeText(s.name, 120))
+    .filter(Boolean)
+    .slice(0, 10);
+
+  const conveyor = asRecord(await getStore("hermes-conveyor"));
+  const counts = numericRecord(conveyor.counts);
+  const upNext = (Array.isArray(conveyor.upNext) ? conveyor.upNext : [])
+    .map((g) => safeText(asRecord(g).title, 160))
+    .filter(Boolean)
+    .slice(0, 8);
+
+  const runs = asRecord(await getStore("hermes-conveyor-runs"));
+  const index = Array.isArray(runs.index) ? runs.index : [];
+  const shipped = [];
+  const running = [];
+  const failed = [];
+  for (const entry of index.slice(0, 80)) {
+    const row = asRecord(entry);
+    const goal = safeText(row.goal, 160);
+    if (!goal) continue;
+    const completion = asRecord(row.completion);
+    const status = safeText(completion.status, 40);
+    if (completion.shippedPr || completion.prNumber || status === "done") shipped.push(goal);
+    else if (status === "running" || status === "shipping") running.push(goal);
+    else if (status === "failed" || completion.health === "failed") failed.push(goal);
+  }
+
+  const sections = [];
+  if (awaiting.length) sections.push({ label: "Needs your decision", items: awaiting });
+  if (down > 0 || downServices.length) {
+    sections.push({ label: "System alerts", items: downServices.length ? downServices : [`${down} service(s) down`] });
+  }
+  const blocked = (counts.blocked ?? 0) + (counts.hard_stop ?? 0);
+  if (blocked > 0) sections.push({ label: "Blocked / needs attention", items: [`${blocked} goal(s) blocked or hard-stopped`] });
+  if (upNext.length) sections.push({ label: "Up next", items: upNext });
+  if (shipped.length) sections.push({ label: "Shipped", items: shipped.slice(0, 10) });
+  if (running.length) sections.push({ label: "In progress", items: running.slice(0, 10) });
+  if (failed.length) sections.push({ label: "Failed", items: failed.slice(0, 10) });
+
+  const pending = awaiting.length + down;
+  const parts = [];
+  if (shipped.length) parts.push(`${shipped.length} shipped`);
+  if (running.length) parts.push(`${running.length} in progress`);
+  if (failed.length) parts.push(`${failed.length} failed`);
+  if (pending) parts.push(`${pending} need your attention`);
+  const summary = parts.length ? `${parts.join(" · ")}.` : "Nothing needs your attention right now.";
+
+  await setStore("hermes-briefing", {
+    generatedAt: now.toISOString(),
+    generatedDate: brisbaneDateStr(now),
+    greeting: greetingFor(now),
+    summary,
+    sections,
+  });
+  return summary;
+}
+
+async function writeMemory(prompt) {
+  const payload = parseJsonObject(prompt);
+  const title = safeText(payload.title, 300);
+  if (!title) throw new Error("Memory entry title is required.");
+  const id = safeSlug(payload.id) || slugify(title);
+  const path = safeText(payload.path, 500) || `${id}.md`;
+  const type = safeText(payload.type, 40) || "note";
+  const status = ["active", "archived", "pending"].includes(payload.status) ? payload.status : "active";
+  const body = safeText(payload.body, 50000) || "";
+  const tags = safeTextArray(payload.tags, 20, 60);
+  const links = safeTextArray(payload.links, 20, 200);
+  const confidence = payload.confidence == null || payload.confidence === "" ? null : safeInteger(payload.confidence);
+  await q(
+    `INSERT INTO "HermesMemory" (id, path, type, title, status, confidence, tags, links, body, "updatedAt", "syncedAt")
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9, now(), now())
+     ON CONFLICT (id) DO UPDATE SET
+       path = EXCLUDED.path, type = EXCLUDED.type, title = EXCLUDED.title,
+       status = EXCLUDED.status, confidence = EXCLUDED.confidence,
+       tags = EXCLUDED.tags, links = EXCLUDED.links, body = EXCLUDED.body,
+       "updatedAt" = now(), "syncedAt" = now()`,
+    [id, path, type, title, status, confidence, tags, links, body],
+  );
+  await emit("memory", `Memory updated: ${title}`, { level: "info", detail: `Wiki entry ${id} saved.`, meta: { kind: "memory.write" } });
+  return `Saved memory entry: ${title}`;
+}
+
+async function maybeAutoBrief() {
+  try {
+    const existing = asRecord(await getStore("hermes-briefing"));
+    const today = brisbaneDateStr();
+    const generatedDate = safeText(existing.generatedDate, 20);
+    const generatedAt = Date.parse(existing.generatedAt);
+    const isToday = generatedDate === today || (Number.isFinite(generatedAt) && brisbaneDateStr(new Date(generatedAt)) === today);
+    if (!isToday) {
+      await generateBriefing();
+      log("daily brief auto-generated");
+    }
+  } catch (error) {
+    log("auto brief failed:", error.message);
+  }
+}
+
 async function processQueue() {
   await failUnsupportedRequests();
   await failLegacyRequests();
@@ -625,6 +756,7 @@ async function mirrorTick() {
   try { await mirrorMonitoring(); } catch (error) { log("monitoring mirror failed:", error.message); }
   try { await mirrorProcesses(); } catch (error) { log("process mirror failed:", error.message); }
   try { if (snapshot) await scoutFailedGoals(snapshot, { log }); } catch (error) { log("langfuse scout failed:", error.message); }
+  try { await maybeAutoBrief(); } catch (error) { log("auto brief failed:", error.message); }
 }
 
 async function main() {

@@ -28,6 +28,7 @@ import {
   Skeleton,
   Eyebrow,
 } from "@/components/ui/kit";
+import { internalApiHeaders } from "@/lib/client-internal-secret";
 
 // ── Types ─────────────────────────────────────────────────
 type MemType =
@@ -459,7 +460,7 @@ function EntryEditor({
     try {
       const r = await fetch("/api/hermes/memory", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...internalApiHeaders() },
         body: JSON.stringify(body),
       });
       if (r.ok) {

@@ -9,6 +9,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Sunrise, RefreshCw, ArrowUpRight } from "lucide-react";
 import { Panel, Eyebrow, Button } from "@/components/ui/kit";
+import { internalApiHeaders } from "@/lib/client-internal-secret";
 
 interface Section { label: string; items: string[] }
 interface Briefing {
@@ -68,7 +69,7 @@ export function HermesBriefing() {
   const generate = async () => {
     genAt.current = data?.generatedAt ?? null;
     setGenerating(true);
-    try { await fetch("/api/hermes/briefing", { method: "POST" }); } catch { /* ignore */ }
+    try { await fetch("/api/hermes/briefing", { method: "POST", headers: internalApiHeaders() }); } catch { /* ignore */ }
   };
 
   const empty = !data || !data.generatedAt || !data.summary;

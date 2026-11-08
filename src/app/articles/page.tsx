@@ -1188,10 +1188,6 @@ function ComposeTab({
             </div>
           </div>
 
-          <div className="rounded-[var(--r-lg)] border border-dashed border-[var(--line-strong)] p-8 text-center">
-            <p className="text-[var(--text-2)] text-[13px]">Visual generation coming soon</p>
-            <p className="text-[var(--text-3)] text-[12px] mt-1">Placeholder for hero image preview</p>
-          </div>
         </div>
       )}
     </div>
