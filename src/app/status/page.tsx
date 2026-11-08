@@ -1,5 +1,6 @@
 import { buildSnapshot } from "@/lib/monitoring";
-import type { ProbeStatus } from "@/lib/monitoring";
+import type { MonitoringSnapshot, ProbeStatus } from "@/lib/monitoring";
+import { readDataStore } from "@/lib/hermes-native-mirror";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -10,8 +11,20 @@ const DOT: Record<ProbeStatus, string> = {
   down: "#ef4444",
 };
 
-export default function StatusPage() {
-  const snap = buildSnapshot();
+async function loadSnapshot(): Promise<MonitoringSnapshot> {
+  try {
+    return buildSnapshot();
+  } catch {
+    // Deployed/serverless: the probe engine + SQLite live on coder; read the
+    // bridge-mirrored snapshot from the DataStore instead of 500ing.
+    const mirrored = await readDataStore<{ snapshot?: MonitoringSnapshot }>("hermes-monitoring");
+    if (mirrored?.snapshot) return mirrored.snapshot;
+    throw new Error("monitoring snapshot unavailable");
+  }
+}
+
+export default async function StatusPage() {
+  const snap = await loadSnapshot();
   const tone = snap.global_status === "critical" ? "#ef4444" : snap.global_status === "warning" ? "#f59e0b" : "#22c55e";
   const updated = new Date(snap.generated_ts).toLocaleTimeString("en-AU", { timeZone: "Australia/Brisbane" });
 

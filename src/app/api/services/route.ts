@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { appendFileSync } from "node:fs";
 import { buildSnapshot, setMaintenance, type MonitoringSnapshot } from "@/lib/monitoring";
+import { readDataStore } from "@/lib/hermes-native-mirror";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -49,7 +50,16 @@ export async function GET() {
     });
   } catch (err) {
     const msg = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
-    logError(`GET /api/services failed after 3 retries: ${msg}`);
+    logError(`GET /api/services local build failed: ${msg}`);
+    // Deployed/serverless fallback: the probe engine lives on coder and writes
+    // the SQLite file there; the bridge mirrors its snapshot into the DataStore
+    // under "hermes-monitoring". Serve that instead of 500ing.
+    const mirrored = await readDataStore<{ snapshot?: MonitoringSnapshot }>("hermes-monitoring").catch(() => null);
+    if (mirrored?.snapshot) {
+      return NextResponse.json(mirrored.snapshot, {
+        headers: { "Cache-Control": "no-store, no-cache, must-revalidate" },
+      });
+    }
     return NextResponse.json({ error: msg }, { status: 500 });
   }
 }

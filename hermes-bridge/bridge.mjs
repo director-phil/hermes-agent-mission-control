@@ -411,6 +411,27 @@ export function sanitizeAdmissionStatus(value) {
   };
 }
 
+async function mirrorMonitoring() {
+  // Mirror the probe-engine snapshot (monitoring.db) to the DataStore so the
+  // deployed dashboard can render /services + /status without access to coder's
+  // local SQLite file. Reads the local dashboard's own /api/services endpoint,
+  // which already does retry + stale-fallback against the engine's SQLite.
+  const baseUrl = CONFIG.nativeSnapshotUrl.replace(/\/api\/hermes\/native$/, "");
+  try {
+    const snapshot = await fetchLoopbackJson(`${baseUrl}/api/services`);
+    if (!snapshot || typeof snapshot !== "object" || !Array.isArray(snapshot.services)) {
+      throw new Error("monitoring snapshot shape invalid");
+    }
+    await setStore("hermes-monitoring", {
+      source: "probe-engine",
+      snapshot,
+      syncedAt: new Date().toISOString(),
+    });
+  } catch (error) {
+    log("monitoring mirror failed:", error.message);
+  }
+}
+
 async function mirrorAdmission() {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), CONFIG.fetchTimeoutMs);
@@ -581,6 +602,7 @@ async function mirrorTick() {
   try { await mirrorRuns(); } catch (error) { log("runs mirror failed:", error.message); }
   try { await mirrorConveyorRuns(); } catch (error) { log("conveyor runs mirror failed:", error.message); }
   try { await mirrorAdmission(); } catch (error) { log("admission mirror failed:", error.message); }
+  try { await mirrorMonitoring(); } catch (error) { log("monitoring mirror failed:", error.message); }
   try { await mirrorProcesses(); } catch (error) { log("process mirror failed:", error.message); }
   try { if (snapshot) await scoutFailedGoals(snapshot, { log }); } catch (error) { log("langfuse scout failed:", error.message); }
 }

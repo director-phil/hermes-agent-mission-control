@@ -167,6 +167,34 @@ function goalIdOf(goal: NativeGoal): string | null {
 }
 
 function conveyorAttemptToRunGraph(goal: string, attempt: ConveyorAttemptGraph, learnings: ConveyorRunGraph["learnings"]): RunGraph {
+  const attemptLearnings = learnings
+    .filter((item) => item.attempt === attempt.attempt)
+    .map((item) => ({ attempt: item.attempt, learned: item.learned, inferred: item.inferred, observed: item.observed, verdict: item.verdict }));
+  const verdict = attemptLearnings.find((item) => item.verdict)?.verdict ?? null;
+
+  // Synthesize the evaluator (DeepSeek LLM-as-judge) as a terminal node so the
+  // floor shows the full pipeline — Planner → Implementer → Evaluator — instead
+  // of hiding the judge verdict in the Session Evidence panel only.
+  const agents = [...attempt.agents];
+  const flow = [...attempt.flow];
+  const touches = [...attempt.touches];
+  if (verdict) {
+    const lastAgent = attempt.agents.at(-1)?.label ?? null;
+    agents.push({
+      id: "evaluator",
+      label: "Evaluator",
+      model: "deepseek-v4-pro",
+      startedAt: null,
+      endedAt: null,
+      modelCalls: 0,
+      toolCalls: 0,
+      tools: {},
+    });
+    if (lastAgent) {
+      flow.push({ from: lastAgent, to: "Evaluator" });
+    }
+  }
+
   return {
     goal,
     attempt: attempt.attempt,
@@ -174,13 +202,11 @@ function conveyorAttemptToRunGraph(goal: string, attempt: ConveyorAttemptGraph, 
     startedAt: attempt.startedAt,
     endedAt: attempt.endedAt,
     running: attempt.running,
-    agents: attempt.agents,
+    agents,
     files: attempt.files,
-    flow: attempt.flow,
-    touches: attempt.touches,
-    learnings: learnings
-      .filter((item) => item.attempt === attempt.attempt)
-      .map((item) => ({ attempt: item.attempt, learned: item.learned, inferred: item.inferred, observed: item.observed, verdict: item.verdict })),
+    flow,
+    touches,
+    learnings: attemptLearnings,
     currentAgent: attempt.currentAgent,
     currentActivity: attempt.currentActivity,
     timeline: attempt.timeline,
@@ -335,7 +361,7 @@ const AGENT_STAGES = [
   { key: "plan", label: "Plan", emoji: "🧠", rx: /planner|plan|architect|dispatch|context|rag|retriev/i },
   { key: "code", label: "Code", emoji: "⌨️", rx: /implement|cod|specialist|writer/i },
   { key: "gate", label: "Gate", emoji: "🧪", rx: /gate|test|diagnos|verif|check|runner/i },
-  { key: "review", label: "Review", emoji: "🔎", rx: /review/i },
+  { key: "review", label: "Review", emoji: "🔎", rx: /review|evaluator|judge|verdict/i },
   { key: "pr", label: "PR", emoji: "🚀", rx: /\bpr\b|ship|open|merge|loop/i },
 ] as const;
 
@@ -1529,7 +1555,7 @@ export default function FloorPage() {
     }
     setConveyor(data);
     if (!opts?.preserveAttempt && data.attempts?.length) {
-      setAttemptIndex(data.attempts.length - 1);
+      setAttemptIndex(0);
     }
     setGraphLoaded(true);
   }, []);
@@ -1625,22 +1651,31 @@ export default function FloorPage() {
     if (conveyor && index >= 0 && index < conveyor.attempts.length) setAttemptIndex(index);
   };
 
-  const attemptSelector = conveyor && conveyor.attempts.length > 1 ? (
+  const attemptSelector = conveyor && conveyor.attempts.length > 0 ? (
     <div className="flex flex-wrap items-center gap-1.5">
-      {conveyor.attempts.map((attempt, index) => (
-        <button
-          key={attempt.attempt}
-          type="button"
-          onClick={() => onSelectAttempt(index)}
-          className={`rounded-full border px-2.5 py-1 text-[11px] transition-colors ${
-            index === attemptIndex
-              ? "border-[var(--accent)] bg-[var(--accent)]/10 text-[var(--accent)]"
-              : "border-[var(--line)] text-[var(--text-3)] hover:border-[var(--text-2)]"
-          }`}
-        >
-          attempt {attempt.attempt}
-        </button>
-      ))}
+      {conveyor.attempts.map((attempt, index) => {
+        const status = normalizeStatus(attempt.status);
+        const failed = isFailedStatus(status);
+        const running = attempt.running;
+        const done = isTerminalSuccessStatus(status);
+        const dot = running ? "#f59e0b" : failed ? "#ef4444" : done ? "#22c55e" : "#94a3b8";
+        const label = running ? "running" : failed ? "failed" : done ? "done" : status || "—";
+        return (
+          <button
+            key={attempt.attempt}
+            type="button"
+            onClick={() => onSelectAttempt(index)}
+            className={`rounded-full border px-2.5 py-1 text-[11px] transition-colors ${
+              index === attemptIndex
+                ? "border-[var(--accent)] bg-[var(--accent)]/10 text-[var(--accent)]"
+                : "border-[var(--line)] text-[var(--text-3)] hover:border-[var(--text-2)]"
+            }`}
+          >
+            <span className="mr-1.5 inline-block h-1.5 w-1.5 rounded-full align-middle" style={{ background: dot }} />
+            attempt {attempt.attempt} · {label}
+          </button>
+        );
+      })}
     </div>
   ) : null;
 

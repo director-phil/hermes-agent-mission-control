@@ -582,10 +582,23 @@ export async function readConveyorRun(goal: string): Promise<ConveyorRunGraph | 
     return null;
   }
 
-  const attemptFiles = entries
-    .filter((e) => e.isFile() && ATTEMPT_FILE.test(e.name))
-    .map((e) => ({ name: e.name, attempt: Number(e.name.match(ATTEMPT_FILE)?.[1]) }))
-    .sort((a, b) => a.attempt - b.attempt);
+  // Order by file mtime DESC (newest first), NOT by filename number. After a
+  // redispatch resets the attempt counter the new run reuses a low number while
+  // stale higher-numbered files from the prior lifecycle remain; numbering is
+  // therefore not a reliable "latest" signal. The newest-write is.
+  const attemptFiles = [];
+  for (const e of entries) {
+    if (!e.isFile() || !ATTEMPT_FILE.test(e.name)) continue;
+    let mtimeMs = 0;
+    try {
+      const st = await fs.stat(path.join(dir, e.name));
+      mtimeMs = st.mtimeMs;
+    } catch {
+      // unreadable — keep 0 so it sorts last
+    }
+    attemptFiles.push({ name: e.name, attempt: Number(e.name.match(ATTEMPT_FILE)?.[1]), mtimeMs });
+  }
+  attemptFiles.sort((a, b) => b.mtimeMs - a.mtimeMs);
 
   if (attemptFiles.length === 0) return null;
 
@@ -597,7 +610,7 @@ export async function readConveyorRun(goal: string): Promise<ConveyorRunGraph | 
   const attempts: ConveyorAttemptGraph[] = [];
   for (let i = 0; i < attemptFiles.length; i += 1) {
     const { name, attempt } = attemptFiles[i];
-    const isLatest = i === attemptFiles.length - 1;
+    const isLatest = i === 0;
     let text: string;
     try {
       const stat = await fs.stat(path.join(dir, name));
@@ -618,7 +631,7 @@ export async function readConveyorRun(goal: string): Promise<ConveyorRunGraph | 
     // no scribe — empty learnings
   }
 
-  const latestTerminal = attempts.length > 0 ? attempts[attempts.length - 1].terminalLines : [];
+  const latestTerminal = attempts.length > 0 ? attempts[0].terminalLines : [];
 
   return {
     goal,
