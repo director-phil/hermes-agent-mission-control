@@ -23,6 +23,8 @@ export type ValueState = "known" | "partial" | "unknown";
 
 export type CostBasis =
   | "anthropic_claude_opus_4_6_estimate_cache_write_5m_assumed"
+  | "deepseek_v4_pro_off_peak_estimate"
+  | "codex_gpt53_estimate"
   | "local_zero"
   | "reported_only_unknown_cloud"
   | "reported_only_unknown"
@@ -487,6 +489,28 @@ const OFFICIAL_MODEL_PRICING = {
     cacheReadPerMTok: 0.5,
     outputPerMTok: 25,
   },
+  // DeepSeek V4 Pro, api-docs.deepseek.com/quick_start/pricing (checked 2026-11-05).
+  // Peak hours 01:00-04:00 & 06:00-10:00 UTC Mon-Fri; all else (incl. weekends)
+  // is off-peak. We estimate at off-peak (the majority of hours, conservative)
+  // and expose the peak rate as the range upper bound.
+  deepseekV4Pro: {
+    checkedAt: "2026-11-05",
+    source: "DeepSeek API pricing page (peak/off-peak)",
+    inputCacheMissOffPeakPerMTok: 0.66,
+    inputCacheMissPeakPerMTok: 1.32,
+    inputCacheHitOffPeakPerMTok: 0.022,
+    inputCacheHitPeakPerMTok: 0.044,
+    outputOffPeakPerMTok: 1.98,
+    outputPeakPerMTok: 3.96,
+  },
+  // OpenAI gpt-5.3-codex, developers.openai.com/api/docs/pricing (checked 2026-11-05).
+  codexGpt53: {
+    checkedAt: "2026-11-05",
+    source: "OpenAI API pricing page (Standard tier)",
+    inputPerMTok: 1.75,
+    cacheReadPerMTok: 0.175,
+    outputPerMTok: 14,
+  },
 } as const;
 
 export function parseObservabilityWindow(value: string | null): ObservabilityWindow | null {
@@ -774,6 +798,12 @@ function overlayModelMetrics(
     // observations path already had a row for this model, so the overlay does not
     // regress healthy-mode detail while still replacing incomplete token/cost.
     const existing = result.byModel.find((m) => m.model === model);
+    // The metrics endpoint reports 0 cost for models Langfuse cannot price
+    // (deepseek-v4-pro, codex). When the observations path already estimated a
+    // cost for that model, keep the estimate — never let the overlay zero it
+    // back out to a false $0.
+    const carryEstimate = !isLocal && reportedCost === 0 && existing?.estimatedCost != null;
+    const effectiveCost = isLocal ? 0 : reportedCost > 0 ? reportedCost : (existing?.estimatedCost ?? 0);
     byModel.push({
       model,
       provider: existing?.provider ?? null,
@@ -784,16 +814,16 @@ function overlayModelMetrics(
       cacheReadTokens: existing?.cacheReadTokens ?? 0,
       cacheWriteTokens: existing?.cacheWriteTokens ?? 0,
       reportedCost,
-      estimatedCost: null,
-      effectiveCost: isLocal ? 0 : reportedCost,
-      costBasis,
-      cost: isLocal ? 0 : reportedCost,
+      estimatedCost: carryEstimate ? existing?.estimatedCost ?? null : existing?.estimatedCost ?? null,
+      effectiveCost,
+      costBasis: carryEstimate ? (existing?.costBasis ?? costBasis) : costBasis,
+      cost: effectiveCost,
     });
     totalInput += row.inputTokens;
     totalOutput += row.outputTokens;
     totalTokens += row.totalTokens || row.inputTokens + row.outputTokens;
-    totalCost += reportedCost;
-    costBases.add(costBasis);
+    totalCost += effectiveCost;
+    costBases.add(carryEstimate ? (existing?.costBasis ?? costBasis) : costBasis);
   }
 
   if (byModel.length === 0) return;
@@ -1536,6 +1566,47 @@ function computeObservationCost({
     };
   }
 
+  if (isDeepseekV4Pro(model, metadata) && usage.hasTokenEvidence) {
+    const pricing = OFFICIAL_MODEL_PRICING.deepseekV4Pro;
+    const missLow = mtokCost(usage.inputTokens, pricing.inputCacheMissOffPeakPerMTok);
+    const hitLow = mtokCost(usage.cacheReadTokens, pricing.inputCacheHitOffPeakPerMTok);
+    const outLow = mtokCost(usage.outputTokens, pricing.outputOffPeakPerMTok);
+    const estimatedCost = roundMoney(missLow + hitLow + outLow);
+    const high = roundMoney(
+      mtokCost(usage.inputTokens, pricing.inputCacheMissPeakPerMTok) +
+      mtokCost(usage.cacheReadTokens, pricing.inputCacheHitPeakPerMTok) +
+      mtokCost(usage.outputTokens, pricing.outputPeakPerMTok),
+    );
+    return {
+      reportedCost: cleanReportedCost,
+      estimatedCost,
+      effectiveCost: estimatedCost,
+      costBasis: "deepseek_v4_pro_off_peak_estimate",
+      costState: "known",
+      estimatedCostRange: {
+        low: estimatedCost,
+        high,
+        basis: "DeepSeek V4 Pro pricing checked 2026-11-05; off-peak assumed (most hours), peak is the upper bound.",
+      },
+    };
+  }
+
+  if (isCodex(model, metadata) && usage.hasTokenEvidence) {
+    const pricing = OFFICIAL_MODEL_PRICING.codexGpt53;
+    const estimatedCost = roundMoney(
+      mtokCost(usage.inputTokens, pricing.inputPerMTok) +
+      mtokCost(usage.cacheReadTokens, pricing.cacheReadPerMTok) +
+      mtokCost(usage.outputTokens, pricing.outputPerMTok),
+    );
+    return {
+      reportedCost: cleanReportedCost,
+      estimatedCost,
+      effectiveCost: estimatedCost,
+      costBasis: "codex_gpt53_estimate",
+      costState: "known",
+    };
+  }
+
   return {
     reportedCost: cleanReportedCost,
     estimatedCost: null,
@@ -1547,6 +1618,16 @@ function computeObservationCost({
 
 function mtokCost(tokens: number, pricePerMTok: number) {
   return (Math.max(0, tokens) / 1_000_000) * pricePerMTok;
+}
+
+function isDeepseekV4Pro(model: string | null, metadata: Record<string, unknown>) {
+  const text = `${model ?? ""} ${safeText(metadata.model) ?? ""} ${safeText(metadata.model_name) ?? ""}`.toLowerCase();
+  return /\bdeepseek[-_. ]?v4[-_. ]?pro\b/.test(text) || text.includes("deepseek-v4-pro");
+}
+
+function isCodex(model: string | null, metadata: Record<string, unknown>) {
+  const text = `${model ?? ""} ${safeText(metadata.model) ?? ""} ${safeText(metadata.model_name) ?? ""}`.toLowerCase();
+  return /\b(codex|gpt[-_. ]?5[-_. ]?3[-_. ]?codex)\b/.test(text) || text.trim() === "codex";
 }
 
 function isClaudeOpus46(model: string | null, metadata: Record<string, unknown>) {
@@ -2351,7 +2432,7 @@ function inferModelClass(provider: string | null, model: string | null): Provide
   const text = `${provider ?? ""} ${model ?? ""}`.toLowerCase();
   if (!text.trim()) return "unknown";
   if (/(localhost|127\.0\.0\.1|ollama|lmstudio|custom|coder|reviewer|local|qwen|ornith)/.test(text)) return "local";
-  if (/(openai|anthropic|gemini|google|bedrock|openrouter|claude|gpt)/.test(text)) return "cloud";
+  if (/(openai|anthropic|gemini|google|bedrock|openrouter|claude|gpt|deepseek|codex)/.test(text)) return "cloud";
   return "unknown";
 }
 

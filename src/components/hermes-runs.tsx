@@ -50,6 +50,8 @@ type ObservabilityWindow = "24h" | "7d";
 type ValueState = "known" | "partial" | "unknown";
 type CostBasis =
   | "anthropic_claude_opus_4_6_estimate_cache_write_5m_assumed"
+  | "deepseek_v4_pro_off_peak_estimate"
+  | "codex_gpt53_estimate"
   | "local_zero"
   | "reported_only_unknown_cloud"
   | "reported_only_unknown"
