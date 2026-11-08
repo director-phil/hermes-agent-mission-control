@@ -28,8 +28,8 @@ export interface ProbeDef {
 //   hermes-mission-control/apps/web/lib/monitoring/config.ts
 const PROBES: ProbeDef[] = [
   // internal
-  { id: "gb10-seat-1", name: "GB10 #1 model seat", kind: "loopback-http", target: "http://gb10-box-1:1234/v1/models", cadenceSeconds: 30, group: "internal" },
-  { id: "gb10-seat-2", name: "GB10 #2 model seat", kind: "loopback-http", target: "http://gb10-box-2:1234/v1/models", cadenceSeconds: 30, group: "internal" },
+  { id: "gb10-seat-1", name: "GB10 #1 model seat", kind: "loopback-http", target: "http://127.0.0.1:1234/v1/models", cadenceSeconds: 30, group: "internal" },
+  { id: "gb10-seat-2", name: "GB10 #2 model seat", kind: "loopback-http", target: "http://10.10.10.2:1234/v1/models", cadenceSeconds: 30, group: "internal" },
   { id: "hermes-admission", name: "Hermes admission gateway", kind: "loopback-http", target: "http://127.0.0.1:19875/healthz", cadenceSeconds: 30, group: "internal" },
   { id: "qdrant", name: "Qdrant vector DB", kind: "loopback-http", target: "http://127.0.0.1:6333/collections", cadenceSeconds: 30, group: "internal" },
   { id: "goal-conveyor", name: "Goal conveyor", kind: "local-file", target: "/home/phillip_downs/ChatDev/goals/state/queue-runner-status.json", cadenceSeconds: 30, group: "internal" },
@@ -40,6 +40,7 @@ const PROBES: ProbeDef[] = [
   { id: "rt-login", name: "RT login", kind: "http", target: "https://login.reliabletradies.app/", cadenceSeconds: 60, group: "external" },
   { id: "rt-api-health", name: "RT API health", kind: "http", target: "https://dashboards.reliabletradies.app/api/health", cadenceSeconds: 60, group: "external" },
   { id: "rt-page-sweep", name: "RT pages (all routes)", kind: "page-sweep", target: "https://dashboards.reliabletradies.app", cadenceSeconds: 300, group: "external" },
+  { id: "rt-api-sweep", name: "RT API routes (error surface)", kind: "page-sweep", target: "https://dashboards.reliabletradies.app", cadenceSeconds: 60, group: "external" },
   { id: "supabase-rest", name: "Supabase REST", kind: "http", target: "https://erakxiolnoigptfemedv.supabase.co/rest/v1/", cadenceSeconds: 60, group: "external" },
   { id: "supabase-auth", name: "Supabase auth", kind: "http", target: "https://erakxiolnoigptfemedv.supabase.co/auth/v1/health", cadenceSeconds: 60, group: "external" },
   { id: "servicetitan-api", name: "ServiceTitan API", kind: "http", target: "https://api.servicetitan.io/", cadenceSeconds: 300, group: "external" },
