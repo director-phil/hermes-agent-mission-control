@@ -1600,14 +1600,41 @@ export default function FloorPage() {
     return () => clearInterval(interval);
   }, [loadRuns]);
 
-  // Poll the selected conveyor run while it is live (running attempt).
+  // Live-stream the selected conveyor run via SSE; fall back to polling when
+  // SSE is unavailable (older deployed build / transient error). The SSE path
+  // pushes graph updates within ~1.5s of the bridge mirror instead of the
+  // 4s/10s poll — and critically, the bridge now mirrors running goals fast.
   useEffect(() => {
     if (!conveyorSource) return;
-    const poll = () => void loadConveyor(conveyorSource, { preserveAttempt: true });
+    let es: EventSource | null = null;
+    let esOk = false;
+    try {
+      es = new EventSource(`/api/stream/goals/${encodeURIComponent(conveyorSource)}`);
+      es.onopen = () => { esOk = true; };
+      es.addEventListener("graph", (event) => {
+        try {
+          const data = JSON.parse((event as MessageEvent).data) as ConveyorRunGraph;
+          setConveyor(data);
+          setGraphLoaded(true);
+        } catch {
+          // malformed frame — ignore, poll will correct
+        }
+      });
+      es.onerror = () => { /* EventSource auto-reconnects; poll is the fallback */ };
+    } catch {
+      es = null;
+    }
+    const poll = () => {
+      if (esOk) return; // SSE is healthy — don't double-fetch
+      void loadConveyor(conveyorSource, { preserveAttempt: true });
+    };
     const latest = conveyor?.attempts[conveyor.attempts.length - 1];
     const interval = setInterval(poll, latest?.running ? 4_000 : 10_000);
-    return () => clearInterval(interval);
-  }, [conveyorSource, conveyor?.attempts, loadConveyor]);
+    return () => {
+      es?.close();
+      clearInterval(interval);
+    };
+  }, [conveyorSource, loadConveyor]);
 
   useEffect(() => {
     if (!selectedGoal) {

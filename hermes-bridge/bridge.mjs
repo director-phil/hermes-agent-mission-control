@@ -432,6 +432,26 @@ async function mirrorMonitoring() {
   }
 }
 
+// Fast conveyor mirror: when any goal is running, mirror conveyor runs +
+// monitoring on a ~1.5s cadence so the deployed dashboard's SSE stream carries
+// near-live data instead of the 30s-stale mirrorTick. No DB writes when idle.
+async function mirrorConveyorFast() {
+  const baseUrl = CONFIG.nativeSnapshotUrl.replace(/\/api\/hermes\/native$/, "");
+  let running = false;
+  try {
+    const list = await fetchLoopbackJson(`${baseUrl}/api/goals`);
+    const goals = Array.isArray(list?.goals) ? list.goals : [];
+    running = goals.some(
+      (g) => String(g?.completion?.status || "").toLowerCase() === "running",
+    );
+  } catch {
+    return; // can't determine running state — skip this tick
+  }
+  if (!running) return;
+  try { await mirrorConveyorRuns(); } catch (error) { log("fast conveyor mirror failed:", error.message); }
+  try { await mirrorMonitoring(); } catch (error) { log("fast monitoring mirror failed:", error.message); }
+}
+
 async function mirrorAdmission() {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), CONFIG.fetchTimeoutMs);
@@ -613,6 +633,7 @@ async function main() {
   await emit("status", "Native bridge connected", { level: "up", detail: "Bridge started with native mirror mode." });
   await mirrorTick();
   setInterval(() => mirrorTick().catch((error) => log("mirror loop", error.message)), CONFIG.mirrorMs);
+  setInterval(() => mirrorConveyorFast().catch((error) => log("fast conveyor loop", error.message)), 1500);
   const tick = async () => {
     try { await processQueue(); } catch (error) { log("queue loop", error.message); }
     try { await processWebhookQueue({ q, log }); } catch (error) { log("webhook rails loop", error.message); }

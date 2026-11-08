@@ -361,8 +361,28 @@ export default function ServicesPage() {
 
   useEffect(() => {
     void load();
-    const timer = setInterval(load, 10_000);
-    return () => clearInterval(timer);
+    let es: EventSource | null = null;
+    let esOk = false;
+    try {
+      es = new EventSource("/api/stream/services");
+      es.onopen = () => { esOk = true; };
+      es.addEventListener("services", (event) => {
+        try {
+          const snap = JSON.parse((event as MessageEvent).data) as MonitoringSnapshot;
+          setData(snap);
+          setError(null);
+          setLoaded(true);
+        } catch {
+          // malformed frame — ignore
+        }
+      });
+      es.onerror = () => { /* auto-reconnect; poll is the fallback */ };
+    } catch {
+      es = null;
+    }
+    const poll = () => { if (!esOk) void load(); };
+    const timer = setInterval(poll, 10_000);
+    return () => { es?.close(); clearInterval(timer); };
   }, [load]);
 
   const toggleMaintenance = useCallback(async (probeId: string, active: boolean) => {
