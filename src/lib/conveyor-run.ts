@@ -125,6 +125,8 @@ export interface ConveyorCompletion {
   /** Post-push verification outcomes (conveyor post-merge gate). */
   migrationApply: string | null;
   migrationVerify: string | null;
+  /** Live controller stage, written at each boundary by _set_phase. */
+  phase: string | null;
   completedAt: string | null;
 }
 
@@ -514,6 +516,7 @@ async function readGoalLedger(goal: string): Promise<ConveyorCompletion | null> 
   const migrationVerify = (record.migration_verify && typeof record.migration_verify === "object"
     ? (record.migration_verify as Record<string, unknown>).outcome
     : null);
+  const phase = typeof record.phase === "string" ? record.phase : null;
   return {
     status: typeof record.status === "string" ? record.status : "unknown",
     shippedPr: pr,
@@ -524,6 +527,7 @@ async function readGoalLedger(goal: string): Promise<ConveyorCompletion | null> 
     health: typeof shipping.health === "string" ? (shipping.health as string) : null,
     migrationApply: typeof migrationApply === "string" ? migrationApply : null,
     migrationVerify: typeof migrationVerify === "string" ? migrationVerify : null,
+    phase,
     completedAt,
   };
 }

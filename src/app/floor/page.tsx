@@ -44,6 +44,10 @@ interface RunIndex {
   specialist?: string | null;
   shipped_pr?: string | null;
   preview_url?: string | null;
+  phase?: string | null;
+  migrationApply?: string | null;
+  migrationVerify?: string | null;
+  productionUrl?: string | null;
   lastActivity: string | null;
   nodeLabels: string[];
   filesTouched: number;
@@ -124,6 +128,7 @@ interface ConveyorCompletion {
   health: string | null;
   migrationApply: string | null;
   migrationVerify: string | null;
+  phase: string | null;
   completedAt: string | null;
 }
 
@@ -220,7 +225,7 @@ function conveyorAttemptToRunGraph(goal: string, attempt: ConveyorAttemptGraph, 
 // Synthesise a pipeline-stage view for a conveyor goal so the Local → Directed
 // repair → Gate → Preview → Production strip renders for local runs too (not
 // just chat sessions). Repair depth is inferred from the attempt number.
-function conveyorGoalToRunIndex(goal: NativeGoal | null, attempt: ConveyorAttemptGraph | null): RunIndex | null {
+function conveyorGoalToRunIndex(goal: NativeGoal | null, attempt: ConveyorAttemptGraph | null, completion: ConveyorCompletion | null): RunIndex | null {
   if (!goal) return null;
   const gid = goalIdOf(goal) ?? goal.id;
   const state = goal.state;
@@ -243,8 +248,12 @@ function conveyorGoalToRunIndex(goal: NativeGoal | null, attempt: ConveyorAttemp
     traceRunning: false,
     rung: attempt ? Math.max(0, attempt.attempt - 1) : null,
     specialist: null,
-    shipped_pr: null,
-    preview_url: null,
+    shipped_pr: completion?.shippedPr ?? null,
+    preview_url: completion?.productionUrl ?? null,
+    phase: completion?.phase ?? null,
+    migrationApply: completion?.migrationApply ?? null,
+    migrationVerify: completion?.migrationVerify ?? null,
+    productionUrl: completion?.productionUrl ?? null,
     lastActivity: goal.updatedAt,
     nodeLabels: attempt ? attempt.agents.map((agent) => agent.label) : [],
     filesTouched: attempt ? attempt.files.length : 0,
@@ -998,50 +1007,72 @@ function PipelineStage({
   ) : pill;
 }
 
+// Full conveyor pipeline, driven by the controller's live `phase` field so a
+// running goal shows exactly which stage it's in instead of a coarse 5-pill
+// strip. Stage order matches the phase values written by escalate.py's
+// _set_phase: retrieve → implement → gate → review → ship → migrate →
+// production → evaluate. Migrate is omitted when the goal carried no migration.
+const PIPELINE_PHASES = [
+  { key: "retrieve", label: "Retrieve" },
+  { key: "implement", label: "Implement" },
+  { key: "gate", label: "Gate" },
+  { key: "review", label: "Review" },
+  { key: "ship", label: "Ship" },
+  { key: "migrate", label: "Migrate" },
+  { key: "production", label: "Production" },
+  { key: "evaluate", label: "Evaluate" },
+] as const;
+type PipelinePhaseKey = (typeof PIPELINE_PHASES)[number]["key"];
+
 function PipelineStrip({ run }: { run: RunIndex | null }) {
   if (!run) return null;
   const status = normalizeStatus(run.status);
-  const rung = run.rung ?? 0;
-  const running = isTrulyRunning(run);
   const failed = isFailedStatus(status);
   const terminalSuccess = isTerminalSuccessStatus(status);
-  const shipping = ["shipping", "deploying"].includes(status);
-  const productionBuilding = shipping;
+  const phase = (run.phase ?? null) as PipelinePhaseKey | null;
+  const phaseIndex = phase ? PIPELINE_PHASES.findIndex((s) => s.key === phase) : -1;
+  const hasMigration = run.migrationApply != null || run.migrationVerify != null;
+  // A shipped (or shipping) goal has entered the deploy stages even before the
+  // phase field advances, so keep ship+production lit once the PR exists.
   const hasPr = Boolean(run.shipped_pr);
-  const hasPreview = Boolean(run.preview_url);
-  const productionOk = terminalSuccess && hasPr;
 
-  const localState: PipelineStageState =
-    failed && rung === 0 ? "fail"
-    : running && rung === 0 ? "active"
-    : rung > 0 || terminalSuccess || shipping ? "ok"
-    : "idle";
-  const repairState: PipelineStageState =
-    failed && rung >= 1 ? "fail"
-    : running && rung >= 1 ? "active"
-    : rung >= 1 && (terminalSuccess || shipping) ? "ok"
-    : "idle";
-  const gateState: PipelineStageState =
-    failed ? "fail"
-    : terminalSuccess ? "ok"
-    : running ? "active"
-    : "idle";
-  const previewState: PipelineStageState =
-    hasPreview || (terminalSuccess && hasPr) ? "ok"
-    : hasPr && !productionOk ? "building"
-    : "idle";
-  const productionState: PipelineStageState =
-    productionOk ? "ok"
-    : productionBuilding ? "building"
-    : "idle";
+  const stateFor = (index: number, key: PipelinePhaseKey): PipelineStageState => {
+    if (terminalSuccess) return "ok";
+    // Fail-closed: the stage at (or past) the recorded phase shows fail when
+    // the goal died; stages before it stay ok, later ones idle.
+    if (failed) {
+      if (phaseIndex >= 0 && index <= phaseIndex) return index === phaseIndex ? "fail" : "ok";
+      // phase unknown (pre-gate goal) — fall back to PR/deploy evidence
+      if (key === "production") return "fail";
+      if (key === "ship" && hasPr) return "ok";
+      return "idle";
+    }
+    if (phaseIndex >= 0) {
+      if (index < phaseIndex) return "ok";
+      if (index === phaseIndex) return "active";
+    }
+    // phase not yet recorded but the goal is running: retrieval is the first
+    // stage, so light it while the ledger hasn't advanced.
+    if (phaseIndex < 0 && key === "retrieve") return "active";
+    if (key === "ship" && hasPr && phaseIndex < 5) return "ok";
+    return "idle";
+  };
+
+  const stages = PIPELINE_PHASES.filter((s) => s.key !== "migrate" || hasMigration);
 
   return (
-    <div className="pipeline-strip mx-5 mt-3 flex min-w-0 flex-wrap items-center gap-2 rounded-[var(--r-md)] border border-[var(--line)] bg-[var(--surface-1)] px-3 py-2">
-      <PipelineStage label="Local" state={localState} />
-      <PipelineStage label="Directed repair" state={repairState} />
-      <PipelineStage label="Gate" state={gateState} />
-      <PipelineStage label={previewState === "building" ? "Preview building" : "Preview"} state={previewState} href={run.preview_url} />
-      <PipelineStage label={productionState === "building" ? "Production building" : "Production"} state={productionState} />
+    <div className="pipeline-strip mx-5 mt-3 flex min-w-0 flex-wrap items-center gap-2 overflow-x-auto rounded-[var(--r-md)] border border-[var(--line)] bg-[var(--surface-1)] px-3 py-2">
+      {stages.map((s) => {
+        const index = PIPELINE_PHASES.findIndex((x) => x.key === s.key);
+        return (
+          <PipelineStage
+            key={s.key}
+            label={s.label}
+            state={stateFor(index, s.key)}
+            href={s.key === "production" ? run.productionUrl : null}
+          />
+        );
+      })}
     </div>
   );
 }
@@ -1702,7 +1733,7 @@ export default function FloorPage() {
 
   const selectedRun = selectedGoal
     ? runs.find((run) => run.goal === selectedGoal) ??
-      (isConveyorView ? conveyorGoalToRunIndex(selectedConveyorGoal, conveyorAttempt) : null)
+      (isConveyorView ? conveyorGoalToRunIndex(selectedConveyorGoal, conveyorAttempt, conveyor?.completion ?? null) : null)
     : null;
 
   const onSelectAttempt = (index: number) => {
