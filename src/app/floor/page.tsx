@@ -17,7 +17,7 @@ import {
   type Node,
   type NodeProps,
 } from "@xyflow/react";
-import { Bot, Check, ExternalLink, FileCode2, GitBranch, Info, Radio, RefreshCw, X } from "lucide-react";
+import { Bot, Check, ExternalLink, FileCode2, GitBranch, Info, Radio, RefreshCw, ShieldAlert, ShieldCheck, X } from "lucide-react";
 import { EmptyState, Eyebrow, Panel, Pill, SectionHeader, Skeleton, rise } from "@/components/ui/kit";
 
 
@@ -122,6 +122,8 @@ interface ConveyorCompletion {
   productionUrl: string | null;
   mergeSha: string | null;
   health: string | null;
+  migrationApply: string | null;
+  migrationVerify: string | null;
   completedAt: string | null;
 }
 
@@ -1070,8 +1072,37 @@ function ShippedBanner({ completion }: { completion: ConveyorCompletion | null }
         </span>
       )}
       {when && <span className="num text-[var(--text-3)]">Completed {when}</span>}
-      {completion.health && <span className="num text-[var(--text-3)]">health: {completion.health}</span>}
+      <VerificationBadges completion={completion} />
     </div>
+  );
+}
+
+function VerificationBadges({ completion }: { completion: ConveyorCompletion | null }) {
+  if (!completion) return null;
+  const dbState: { label: string; ok: boolean; show: boolean } = (() => {
+    if (completion.migrationVerify) {
+      return { label: `DB ${completion.migrationVerify}`, ok: completion.migrationVerify === "verified", show: true };
+    }
+    if (completion.migrationApply) {
+      // migration applied but catalog verification not recorded (pre-gate goal)
+      return { label: `DB ${completion.migrationApply}`, ok: false, show: true };
+    }
+    return { label: "DB n/a", ok: true, show: false };
+  })();
+  const vercelOk = completion.health === "passed";
+  return (
+    <>
+      {dbState.show && (
+        <span className={`num flex items-center gap-1 ${dbState.ok ? "text-[var(--up)]" : "text-[var(--down)]"}`}>
+          {dbState.ok ? <ShieldCheck className="h-3.5 w-3.5" /> : <ShieldAlert className="h-3.5 w-3.5" />} {dbState.label}
+        </span>
+      )}
+      {completion.health && (
+        <span className={`num flex items-center gap-1 ${vercelOk ? "text-[var(--up)]" : "text-[var(--down)]"}`}>
+          {vercelOk ? <ShieldCheck className="h-3.5 w-3.5" /> : <ShieldAlert className="h-3.5 w-3.5" />} Vercel {completion.health}
+        </span>
+      )}
+    </>
   );
 }
 

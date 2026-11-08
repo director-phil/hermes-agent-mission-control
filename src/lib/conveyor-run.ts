@@ -122,6 +122,9 @@ export interface ConveyorCompletion {
   productionUrl: string | null;
   mergeSha: string | null;
   health: string | null;
+  /** Post-push verification outcomes (conveyor post-merge gate). */
+  migrationApply: string | null;
+  migrationVerify: string | null;
   completedAt: string | null;
 }
 
@@ -505,6 +508,12 @@ async function readGoalLedger(goal: string): Promise<ConveyorCompletion | null> 
   const completedAt =
     safeTimestamp(record.completed_at ?? record.completedAt ?? record.finishedAt) ??
     safeTimestamp(record.queue_runner_updated_at);
+  const migrationApply = (record.migration_apply && typeof record.migration_apply === "object"
+    ? (record.migration_apply as Record<string, unknown>).outcome
+    : null);
+  const migrationVerify = (record.migration_verify && typeof record.migration_verify === "object"
+    ? (record.migration_verify as Record<string, unknown>).outcome
+    : null);
   return {
     status: typeof record.status === "string" ? record.status : "unknown",
     shippedPr: pr,
@@ -513,6 +522,8 @@ async function readGoalLedger(goal: string): Promise<ConveyorCompletion | null> 
     productionUrl: typeof shipping.production_url === "string" ? (shipping.production_url as string) : null,
     mergeSha: typeof shipping.merge_sha === "string" ? (shipping.merge_sha as string) : null,
     health: typeof shipping.health === "string" ? (shipping.health as string) : null,
+    migrationApply: typeof migrationApply === "string" ? migrationApply : null,
+    migrationVerify: typeof migrationVerify === "string" ? migrationVerify : null,
     completedAt,
   };
 }
