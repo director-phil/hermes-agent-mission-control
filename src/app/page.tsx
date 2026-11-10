@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { AlertTriangle, Bot, CheckCircle2, CircleDollarSign, Gauge, Radio, Wrench } from "lucide-react";
 import { Button, EmptyState, Eyebrow, Panel, Pill, SectionHeader, Skeleton, rise } from "@/components/ui/kit";
 
-type GoalState = "ready" | "running" | "done" | "failed";
+type GoalState = "ready" | "running" | "shipping" | "stalled" | "done" | "failed";
 
 interface Agent {
   id: string;
@@ -254,8 +254,8 @@ export default function Dashboard() {
                 action={<Pill tone={native?.goals.current ? "accent" : "neutral"}>{native?.goals.current?.status ?? "empty"}</Pill>}
                 className="!mb-0"
               />
-              <div className="mt-4 grid grid-cols-4 gap-3 text-center">
-                {(["running", "ready", "failed", "done"] as const).map((state) => (
+              <div className="mt-4 grid grid-cols-3 gap-3 text-center">
+                {(["running", "shipping", "stalled", "ready", "failed", "done"] as const).map((state) => (
                   <div key={state} className="rounded-[var(--r-md)] border border-[var(--line)] bg-[var(--surface-1)] p-3">
                     <div className="num text-[22px] font-semibold text-[var(--text)]">{native?.goals.counts[state] ?? 0}</div>
                     <div className="eyebrow mt-1">{state}</div>

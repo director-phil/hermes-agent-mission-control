@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Archive, CheckCircle2, Circle, Clock3, FileText, Radio, XCircle } from "lucide-react";
 import { EmptyState, Eyebrow, Panel, Pill, SectionHeader, Skeleton, rise } from "@/components/ui/kit";
 
-type GoalState = "ready" | "running" | "done" | "failed";
+type GoalState = "ready" | "running" | "shipping" | "stalled" | "done" | "failed";
 
 interface OperatorTask {
   id: string;
@@ -57,13 +57,17 @@ interface TasksPayload {
 
 const GOAL_LABEL: Record<GoalState, string> = {
   running: "Running now",
+  shipping: "Shipping",
+  stalled: "Stalled",
   ready: "Ready",
   failed: "Recent failed",
   done: "Recent done",
 };
 
-const GOAL_TONE: Record<GoalState, "accent" | "neutral" | "up" | "down"> = {
+const GOAL_TONE: Record<GoalState, "accent" | "neutral" | "up" | "down" | "warn"> = {
   running: "accent",
+  shipping: "warn",
+  stalled: "warn",
   ready: "neutral",
   done: "up",
   failed: "down",
@@ -170,7 +174,7 @@ export default function TasksPage() {
   }, [load]);
 
   const operatorTasks = payload?.operatorTasks.tasks ?? [];
-  const liveGoals = payload?.goals.live ?? { ready: [], running: [], done: [], failed: [] };
+  const liveGoals = payload?.goals.live ?? { ready: [], running: [], shipping: [], stalled: [], done: [], failed: [] };
   const totalLive = payload ? Object.values(payload.goals.counts).reduce((sum, count) => sum + count, 0) : 0;
   const sourceMessage = payload?.sourceHealth.errors?.[0] ?? payload?.sourceHealth.warnings[0] ?? null;
 
@@ -243,8 +247,8 @@ export default function TasksPage() {
               title="Goals by fixed runtime folder"
               action={<span className="num text-[11px] text-[var(--text-3)]">read-only display</span>}
             />
-            <div className="grid grid-cols-1 gap-4 xl:grid-cols-4">
-              {(["running", "ready", "failed", "done"] as const).map((state) => (
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
+              {(["running", "shipping", "stalled", "ready", "failed", "done"] as const).map((state) => (
                 <Panel key={state} className="flex min-h-64 flex-col p-4">
                   <div className="mb-3 flex items-center justify-between gap-3">
                     <Eyebrow>{GOAL_LABEL[state]}</Eyebrow>

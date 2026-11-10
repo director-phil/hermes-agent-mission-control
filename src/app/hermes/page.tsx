@@ -75,7 +75,7 @@ interface Health {
   };
 }
 
-type GoalState = "ready" | "running" | "done" | "failed";
+type GoalState = "ready" | "running" | "shipping" | "stalled" | "done" | "failed";
 
 interface NativeGoal {
   id: string;
@@ -456,13 +456,15 @@ function fmtBytes(bytes: number): string {
 
 const NATIVE_GOAL_LABEL: Record<GoalState, string> = {
   running: "Running now",
+  shipping: "Shipping",
+  stalled: "Stalled",
   ready: "Ready",
   failed: "Failed",
   done: "Done",
 };
 
 function NativeGoalCard({ goal }: { goal: NativeGoal }) {
-  const tone = goal.state === "running" ? "accent" : goal.state === "failed" ? "down" : goal.state === "done" ? "up" : "neutral";
+  const tone = goal.state === "running" ? "accent" : goal.state === "shipping" || goal.state === "stalled" ? "warn" : goal.state === "failed" ? "down" : goal.state === "done" ? "up" : "neutral";
   return (
     <div className="rounded-[10px] border border-[var(--line)] bg-[var(--surface-1)] p-3">
       <div className="flex items-start justify-between gap-3">
@@ -488,7 +490,7 @@ function NativeGoalCard({ goal }: { goal: NativeGoal }) {
 }
 
 function NativeWorkPanel({ snapshot }: { snapshot: NativeSnapshot | null }) {
-  const live = snapshot?.goals.live ?? { ready: [], running: [], done: [], failed: [] };
+  const live = snapshot?.goals.live ?? { ready: [], running: [], shipping: [], stalled: [], done: [], failed: [] };
   const operatorTasks = snapshot?.operatorTasks.tasks ?? [];
   const sourceLabel = snapshot?.source.mode === "bridge-mirror" ? "bridge mirror" : "local native";
   const sourceMessage = snapshot?.source.errors?.[0] ?? snapshot?.source.warnings[0] ?? null;
@@ -520,8 +522,8 @@ function NativeWorkPanel({ snapshot }: { snapshot: NativeSnapshot | null }) {
 
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1.3fr)_minmax(320px,0.7fr)]">
         <Panel className="p-4">
-          <div className="grid grid-cols-1 gap-3 lg:grid-cols-4">
-            {(["running", "ready", "failed", "done"] as const).map((state) => (
+          <div className="grid grid-cols-1 gap-3 lg:grid-cols-3 xl:grid-cols-6">
+            {(["running", "shipping", "stalled", "ready", "failed", "done"] as const).map((state) => (
               <div key={state} className="min-h-44 rounded-[10px] border border-[var(--line)] bg-[var(--surface-2)] p-3">
                 <div className="mb-3 flex items-center justify-between gap-2">
                   <Eyebrow>{NATIVE_GOAL_LABEL[state]}</Eyebrow>
